@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { groups, groupMembers, topics, users } from '../db/schema'
+import { groups, groupMembers, topics, users, comments } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, truncate } from '../lib/utils'
 
@@ -58,24 +58,24 @@ group.get('/:id', async (c) => {
     isMember = membership.length > 0
   }
 
-  // 获取小组话题
+  // 获取小组话题（包含评论数）
   const topicList = await db
     .select({
       id: topics.id,
       title: topics.title,
-      content: topics.content,
       createdAt: topics.createdAt,
+      updatedAt: topics.updatedAt,
       user: {
         id: users.id,
         username: users.username,
         displayName: users.displayName,
-        avatarUrl: users.avatarUrl,
       },
+      commentCount: sql<number>`(SELECT COUNT(*) FROM comment WHERE comment.topic_id = ${topics.id})`.as('comment_count'),
     })
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
     .where(eq(topics.groupId, groupId))
-    .orderBy(desc(topics.createdAt))
+    .orderBy(desc(topics.updatedAt))
     .limit(50)
 
   const formatDate = (date: Date) => {
@@ -136,28 +136,32 @@ group.get('/:id', async (c) => {
             {topicList.length === 0 ? (
               <p class="no-content">暂无话题</p>
             ) : (
-              <div class="topic-list">
-                {topicList.map((topic) => (
-                  <div class="topic-item" key={topic.id}>
-                    <a href={`/user/${topic.user.id}`} class="topic-author">
-                      <img
-                        src={topic.user.avatarUrl || '/static/img/default-avatar.svg'}
-                        alt=""
-                        class="avatar-sm"
-                      />
-                    </a>
-                    <div class="topic-info">
-                      <h3>
+              <table class="topic-table">
+                <thead>
+                  <tr>
+                    <th class="topic-table-title">讨论</th>
+                    <th class="topic-table-author">作者</th>
+                    <th class="topic-table-count">回复</th>
+                    <th class="topic-table-date">最后回复</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topicList.map((topic) => (
+                    <tr key={topic.id}>
+                      <td class="topic-table-title">
                         <a href={`/topic/${topic.id}`}>{topic.title}</a>
-                      </h3>
-                      <div class="topic-meta">
-                        <span>{topic.user.displayName || topic.user.username}</span>
-                        <span>{formatDate(topic.createdAt)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                      </td>
+                      <td class="topic-table-author">
+                        <a href={`/user/${topic.user.id}`}>
+                          {topic.user.displayName || topic.user.username}
+                        </a>
+                      </td>
+                      <td class="topic-table-count">{topic.commentCount}</td>
+                      <td class="topic-table-date">{formatDate(topic.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         </div>

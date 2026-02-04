@@ -690,3 +690,77 @@ a:hover {
   display: flex;
   gap: 10px;
 }
+
+/* Topic Table - 豆瓣风格 */
+.topic-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.topic-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: normal;
+  color: #999;
+  padding: 8px 0;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.topic-table td {
+  padding: 10px 0;
+  border-bottom: 1px dotted #e8e8e8;
+  vertical-align: middle;
+}
+
+.topic-table tr:last-child td {
+  border-bottom: none;
+}
+
+.topic-table-title {
+  width: auto;
+}
+
+.topic-table-title a {
+  color: #37a;
+  font-size: 14px;
+}
+
+.topic-table-title a:hover {
+  color: #072;
+}
+
+.topic-table-author {
+  width: 100px;
+  text-align: center;
+}
+
+.topic-table-author a {
+  color: #666;
+  font-size: 12px;
+}
+
+.topic-table-count {
+  width: 50px;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+}
+
+.topic-table-date {
+  width: 100px;
+  text-align: right;
+  color: #999;
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .topic-table-author,
+  .topic-table-count {
+    display: none;
+  }
+
+  .topic-table th:nth-child(2),
+  .topic-table th:nth-child(3) {
+    display: none;
+  }
+}
