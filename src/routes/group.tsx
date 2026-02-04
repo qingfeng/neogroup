@@ -3,7 +3,7 @@ import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { groups, groupMembers, topics, users } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId } from '../lib/utils'
+import { generateId, truncate } from '../lib/utils'
 
 const group = new Hono<AppContext>()
 
@@ -82,8 +82,21 @@ group.get('/:id', async (c) => {
     return date.toLocaleDateString('zh-CN')
   }
 
+  // 生成 metadata
+  const description = groupData.description
+    ? truncate(groupData.description, 160)
+    : `${groupData.name} - NeoGroup 小组`
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const groupUrl = `${baseUrl}/group/${groupId}`
+
   return c.html(
-    <Layout user={user} title={groupData.name}>
+    <Layout
+      user={user}
+      title={groupData.name}
+      description={description}
+      image={groupData.iconUrl}
+      url={groupUrl}
+    >
       <div class="group-detail">
         <div class="group-header">
           {groupData.iconUrl && (

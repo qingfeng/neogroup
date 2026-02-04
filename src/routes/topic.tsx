@@ -3,7 +3,7 @@ import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, comments } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId } from '../lib/utils'
+import { generateId, stripHtml, truncate, parseJson } from '../lib/utils'
 
 const topic = new Hono<AppContext>()
 
@@ -77,8 +77,26 @@ topic.get('/:id', async (c) => {
     })
   }
 
+  // 生成 metadata
+  const description = topicData.content
+    ? truncate(stripHtml(topicData.content), 160)
+    : undefined
+
+  const images = parseJson<string[]>(topicData.images, [])
+  const ogImage = images.length > 0 ? images[0] : undefined
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const topicUrl = `${baseUrl}/topic/${topicId}`
+
   return c.html(
-    <Layout user={user} title={topicData.title}>
+    <Layout
+      user={user}
+      title={topicData.title}
+      description={description}
+      image={ogImage}
+      url={topicUrl}
+      ogType="article"
+    >
       <div class="topic-detail">
         <div class="topic-header">
           <a href={`/group/${topicData.group.id}`} class="topic-group">

@@ -3,6 +3,7 @@ import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, topics, groups, comments } from '../db/schema'
 import { Layout } from '../components/Layout'
+import { stripHtml, truncate } from '../lib/utils'
 
 const user = new Hono<AppContext>()
 
@@ -62,8 +63,22 @@ user.get('/:id', async (c) => {
     return date.toLocaleDateString('zh-CN')
   }
 
+  // 生成 metadata
+  const displayName = profileUser.displayName || profileUser.username
+  const description = profileUser.bio
+    ? truncate(stripHtml(profileUser.bio), 160)
+    : `${displayName} 的个人主页 - NeoGroup`
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const userUrl = `${baseUrl}/user/${userId}`
+
   return c.html(
-    <Layout user={currentUser} title={profileUser.displayName || profileUser.username}>
+    <Layout
+      user={currentUser}
+      title={displayName}
+      description={description}
+      image={profileUser.avatarUrl}
+      url={userUrl}
+    >
       <div class="user-profile">
         <div class="profile-header">
           <img

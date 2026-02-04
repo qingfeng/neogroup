@@ -14,7 +14,11 @@ interface HomePageProps {
 
 export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, newUsers, userGroups }) => {
   return (
-    <Layout title="首页" user={user}>
+    <Layout
+      title="首页"
+      description="NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区"
+      user={user}
+    >
       <div class="grid grid-3">
         <div>
           <h2 style="margin-bottom: 1rem;">最新话题</h2>

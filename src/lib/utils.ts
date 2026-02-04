@@ -20,3 +20,12 @@ export function parseJson<T>(str: string | null | undefined, fallback: T): T {
 export function toJson(obj: unknown): string {
   return JSON.stringify(obj)
 }
+
+export function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+}
+
+export function truncate(str: string, maxLength: number): string {
+  if (str.length <= maxLength) return str
+  return str.slice(0, maxLength).trim() + '...'
+}
