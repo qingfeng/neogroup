@@ -17,6 +17,27 @@ const app = new Hono<AppContext>()
 // 静态文件
 app.use('/static/*', serveStatic({ root: './', manifest }))
 
+// R2 文件访问
+app.get('/r2/*', async (c) => {
+  const r2 = c.env.R2
+  if (!r2) {
+    return c.notFound()
+  }
+
+  const key = c.req.path.replace('/r2/', '')
+  const object = await r2.get(key)
+
+  if (!object) {
+    return c.notFound()
+  }
+
+  const headers = new Headers()
+  object.writeHttpMetadata(headers)
+  headers.set('Cache-Control', 'public, max-age=31536000')
+
+  return new Response(object.body, { headers })
+})
+
 // 数据库中间件
 app.use('*', async (c, next) => {
   const db = createDb(c.env.DB)
