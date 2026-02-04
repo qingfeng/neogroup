@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
-import { generateId, now } from '../lib/utils'
+import { generateId, now, uploadAvatarToR2 } from '../lib/utils'
 import {
   getOrCreateApp,
   getAuthorizationUrl,
@@ -167,11 +167,19 @@ auth.get('/callback', async (c) => {
 
       userId = authProvider.userId
 
+      // 上传头像到 R2
+      const avatarUrl = await uploadAvatarToR2(
+        c.env.R2,
+        userId,
+        account.avatar,
+        appUrl
+      )
+
       // 更新用户信息
       await db.update(users)
         .set({
           displayName: account.display_name || account.username,
-          avatarUrl: account.avatar,
+          avatarUrl,
           updatedAt: now(),
         })
         .where(eq(users.id, userId))
@@ -180,11 +188,19 @@ auth.get('/callback', async (c) => {
       userId = generateId()
       const username = `${account.username}_${domain.replace(/\./g, '_')}`
 
+      // 上传头像到 R2
+      const avatarUrl = await uploadAvatarToR2(
+        c.env.R2,
+        userId,
+        account.avatar,
+        appUrl
+      )
+
       await db.insert(users).values({
         id: userId,
         username,
         displayName: account.display_name || account.username,
-        avatarUrl: account.avatar,
+        avatarUrl,
         bio: null,
         createdAt: now(),
         updatedAt: now(),
