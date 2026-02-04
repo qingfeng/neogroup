@@ -71,7 +71,7 @@ function r2Put(key, buffer, contentType) {
 
   try {
     execSync(
-      `npx wrangler r2 object put "${R2_BUCKET}/${key}" --file="${tmpFile}" --content-type="${contentType}"`,
+      `npx wrangler r2 object put "${R2_BUCKET}/${key}" --file="${tmpFile}" --content-type="${contentType}" --remote`,
       { encoding: 'utf-8', stdio: 'pipe' }
     )
     return true
