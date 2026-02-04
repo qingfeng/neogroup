@@ -100,9 +100,7 @@ topic.get('/:id', async (c) => {
       <div class="topic-detail">
         <div class="topic-header">
           <a href={`/group/${topicData.group.id}`} class="topic-group">
-            {topicData.group.iconUrl && (
-              <img src={topicData.group.iconUrl} alt="" class="group-icon-sm" />
-            )}
+            <img src={topicData.group.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
             <span>{topicData.group.name}</span>
           </a>
         </div>
