@@ -1,0 +1,31 @@
+{
+  "name": "hono-rewrite",
+  "version": "1.0.0",
+  "description": "NeoGroup，灵感来源于 NeoDB，NeoDB 里几乎涵盖了豆瓣全部的书影音功能，但是唯独缺少了小组和同城功能，作为这两个功能的重度使用者，决定做点什么，所以也模仿 NeoDB，开发了一个基于 Mastodon 登录的去中心化小组产品",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply neogroup",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "hono": "^4.11.7",
+    "nanoid": "^5.1.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260203.0",
+    "better-sqlite3": "^12.6.2",
+    "drizzle-kit": "^0.31.8",
+    "drizzle-orm": "^0.45.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.47.0"
+  }
+}

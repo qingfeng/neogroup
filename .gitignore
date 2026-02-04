@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+migrate.sql
+
+# 本地配置（包含真实的数据库ID等）
+wrangler.toml

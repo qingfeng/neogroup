@@ -1,0 +1,109 @@
+import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+
+// 用户表
+export const users = sqliteTable('user', {
+  id: text('id').primaryKey(),
+  username: text('username').notNull().unique(),
+  displayName: text('display_name'),
+  avatarUrl: text('avatar_url'),
+  bio: text('bio'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 认证方式表
+export const authProviders = sqliteTable('auth_provider', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  providerType: text('provider_type').notNull(), // mastodon | wallet | agent
+  providerId: text('provider_id').notNull(), // user@mastodon.social
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  metadata: text('metadata'), // JSON
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 小组表
+export const groups = sqliteTable('group', {
+  id: text('id').primaryKey(),
+  creatorId: text('creator_id').notNull().references(() => users.id),
+  name: text('name').notNull().unique(),
+  description: text('description'),
+  iconUrl: text('icon_url'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 小组成员表
+export const groupMembers = sqliteTable('group_member', {
+  id: text('id').primaryKey(),
+  groupId: text('group_id').notNull().references(() => groups.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  joinReason: text('join_reason'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 话题表
+export const topics = sqliteTable('topic', {
+  id: text('id').primaryKey(),
+  groupId: text('group_id').notNull().references(() => groups.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  title: text('title').notNull(),
+  content: text('content'),
+  type: integer('type').default(0), // 0=话题 1=问题 2=投票
+  images: text('images'), // JSON array
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 评论表
+export const comments = sqliteTable('comment', {
+  id: text('id').primaryKey(),
+  topicId: text('topic_id').notNull().references(() => topics.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  content: text('content').notNull(),
+  replyToId: text('reply_to_id'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 评论点赞表
+export const commentLikes = sqliteTable('comment_like', {
+  id: text('id').primaryKey(),
+  commentId: text('comment_id').notNull().references(() => comments.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 举报表
+export const reports = sqliteTable('report', {
+  id: text('id').primaryKey(),
+  reporterId: text('reporter_id').notNull().references(() => users.id),
+  reportedUserId: text('reported_user_id').notNull().references(() => users.id),
+  message: text('message'),
+  imageUrl: text('image_url'),
+  isRead: integer('is_read').default(0),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Mastodon 应用配置表
+export const mastodonApps = sqliteTable('mastodon_app', {
+  id: text('id').primaryKey(),
+  domain: text('domain').notNull().unique(),
+  clientId: text('client_id').notNull(),
+  clientSecret: text('client_secret').notNull(),
+  vapidKey: text('vapid_key'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 类型导出
+export type User = typeof users.$inferSelect
+export type NewUser = typeof users.$inferInsert
+export type AuthProvider = typeof authProviders.$inferSelect
+export type Group = typeof groups.$inferSelect
+export type GroupMember = typeof groupMembers.$inferSelect
+export type Topic = typeof topics.$inferSelect
+export type Comment = typeof comments.$inferSelect
+export type CommentLike = typeof commentLikes.$inferSelect
+export type Report = typeof reports.$inferSelect
+export type MastodonApp = typeof mastodonApps.$inferSelect

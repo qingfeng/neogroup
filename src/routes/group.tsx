@@ -1,0 +1,305 @@
+import { Hono } from 'hono'
+import { eq, desc, sql, and } from 'drizzle-orm'
+import type { AppContext } from '../types'
+import { groups, groupMembers, topics, users } from '../db/schema'
+import { Layout } from '../components/Layout'
+import { generateId } from '../lib/utils'
+
+const group = new Hono<AppContext>()
+
+group.get('/:id', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  // 获取小组详情
+  const groupResult = await db
+    .select({
+      id: groups.id,
+      creatorId: groups.creatorId,
+      name: groups.name,
+      description: groups.description,
+      iconUrl: groups.iconUrl,
+      createdAt: groups.createdAt,
+      creator: {
+        id: users.id,
+        username: users.username,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+    })
+    .from(groups)
+    .innerJoin(users, eq(groups.creatorId, users.id))
+    .where(eq(groups.id, groupId))
+    .limit(1)
+
+  if (groupResult.length === 0) {
+    return c.notFound()
+  }
+
+  const groupData = groupResult[0]
+
+  // 获取成员数
+  const memberCountResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(groupMembers)
+    .where(eq(groupMembers.groupId, groupId))
+  const memberCount = memberCountResult[0]?.count || 0
+
+  // 检查当前用户是否是成员
+  let isMember = false
+  if (user) {
+    const membership = await db
+      .select()
+      .from(groupMembers)
+      .where(eq(groupMembers.groupId, groupId))
+      .where(eq(groupMembers.userId, user.id))
+      .limit(1)
+    isMember = membership.length > 0
+  }
+
+  // 获取小组话题
+  const topicList = await db
+    .select({
+      id: topics.id,
+      title: topics.title,
+      content: topics.content,
+      createdAt: topics.createdAt,
+      user: {
+        id: users.id,
+        username: users.username,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+    })
+    .from(topics)
+    .innerJoin(users, eq(topics.userId, users.id))
+    .where(eq(topics.groupId, groupId))
+    .orderBy(desc(topics.createdAt))
+    .limit(50)
+
+  const formatDate = (date: Date) => {
+    return date.toLocaleDateString('zh-CN')
+  }
+
+  return c.html(
+    <Layout user={user} title={groupData.name}>
+      <div class="group-detail">
+        <div class="group-header">
+          {groupData.iconUrl && (
+            <img src={groupData.iconUrl} alt="" class="group-icon" />
+          )}
+          <div class="group-info">
+            <h1>{groupData.name}</h1>
+            {groupData.description && (
+              <p class="group-description">{groupData.description}</p>
+            )}
+            <div class="group-meta">
+              <span>{memberCount} 成员</span>
+              <span>创建者: {groupData.creator.displayName || groupData.creator.username}</span>
+            </div>
+          </div>
+          <div class="group-actions">
+            {user && !isMember && (
+              <form action={`/group/${groupId}/join`} method="POST">
+                <button type="submit" class="btn btn-primary">加入小组</button>
+              </form>
+            )}
+            {user && isMember && (
+              <span class="member-badge">已加入</span>
+            )}
+          </div>
+        </div>
+
+        <div class="group-content">
+          <div class="group-topics">
+            <div class="section-header">
+              <h2>话题</h2>
+              {user && isMember && (
+                <a href={`/group/${groupId}/topic/new`} class="btn btn-primary">发布话题</a>
+              )}
+            </div>
+
+            {topicList.length === 0 ? (
+              <p class="no-content">暂无话题</p>
+            ) : (
+              <div class="topic-list">
+                {topicList.map((topic) => (
+                  <div class="topic-item" key={topic.id}>
+                    <a href={`/user/${topic.user.id}`} class="topic-author">
+                      <img
+                        src={topic.user.avatarUrl || '/static/img/default-avatar.svg'}
+                        alt=""
+                        class="avatar-sm"
+                      />
+                    </a>
+                    <div class="topic-info">
+                      <h3>
+                        <a href={`/topic/${topic.id}`}>{topic.title}</a>
+                      </h3>
+                      <div class="topic-meta">
+                        <span>{topic.user.displayName || topic.user.username}</span>
+                        <span>{formatDate(topic.createdAt)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Layout>
+  )
+})
+
+// 加入小组
+group.post('/:id/join', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  // 检查小组是否存在
+  const groupResult = await db
+    .select()
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1)
+
+  if (groupResult.length === 0) {
+    return c.notFound()
+  }
+
+  // 检查是否已加入
+  const existing = await db
+    .select()
+    .from(groupMembers)
+    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+    .limit(1)
+
+  if (existing.length === 0) {
+    await db.insert(groupMembers).values({
+      id: generateId(),
+      groupId,
+      userId: user.id,
+      createdAt: new Date(),
+    })
+  }
+
+  return c.redirect(`/group/${groupId}`)
+})
+
+// 发布话题页面
+group.get('/:id/topic/new', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  // 获取小组信息
+  const groupResult = await db
+    .select()
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1)
+
+  if (groupResult.length === 0) {
+    return c.notFound()
+  }
+
+  const groupData = groupResult[0]
+
+  // 检查是否是成员
+  const membership = await db
+    .select()
+    .from(groupMembers)
+    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+    .limit(1)
+
+  if (membership.length === 0) {
+    return c.redirect(`/group/${groupId}`)
+  }
+
+  return c.html(
+    <Layout user={user} title={`发布话题 - ${groupData.name}`}>
+      <div class="new-topic-page">
+        <div class="page-header">
+          <h1>发布新话题</h1>
+          <p class="page-subtitle">发布到 <a href={`/group/${groupId}`}>{groupData.name}</a></p>
+        </div>
+
+        <form action={`/group/${groupId}/topic/new`} method="POST" class="topic-form">
+          <div class="form-group">
+            <label for="title">标题</label>
+            <input type="text" id="title" name="title" required placeholder="话题标题" />
+          </div>
+
+          <div class="form-group">
+            <label for="content">内容</label>
+            <textarea id="content" name="content" rows={10} placeholder="话题内容（可选）"></textarea>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">发布话题</button>
+            <a href={`/group/${groupId}`} class="btn">取消</a>
+          </div>
+        </form>
+      </div>
+    </Layout>
+  )
+})
+
+// 发布话题处理
+group.post('/:id/topic/new', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  // 检查是否是成员
+  const membership = await db
+    .select()
+    .from(groupMembers)
+    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+    .limit(1)
+
+  if (membership.length === 0) {
+    return c.redirect(`/group/${groupId}`)
+  }
+
+  const body = await c.req.parseBody()
+  const title = body.title as string
+  const content = body.content as string
+
+  if (!title || !title.trim()) {
+    return c.redirect(`/group/${groupId}/topic/new`)
+  }
+
+  const topicId = generateId()
+  const now = new Date()
+
+  await db.insert(topics).values({
+    id: topicId,
+    groupId,
+    userId: user.id,
+    title: title.trim(),
+    content: content ? `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>` : null,
+    type: 0,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  return c.redirect(`/topic/${topicId}`)
+})
+
+export default group
