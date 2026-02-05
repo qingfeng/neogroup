@@ -15,7 +15,7 @@ export const Navbar: FC<NavbarProps> = ({ user }) => {
         {user ? (
           <>
             <a href="/group/create">创建小组</a>
-            <a href={`/user/${user.username}`}>{user.displayName || user.username}</a>
+            <a href={`/user/${user.id}`}>{user.displayName || user.username}</a>
             <a href="/auth/logout">登出</a>
           </>
         ) : (
