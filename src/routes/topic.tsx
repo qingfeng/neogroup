@@ -228,7 +228,16 @@ topic.get('/:id', async (c) => {
           </a>
           <span class="topic-date">{formatDate(topicData.createdAt)}</span>
           {user && user.id === topicData.userId && (
-            <a href={`/topic/${topicId}/edit`} class="topic-edit-link">编辑</a>
+            <span class="topic-actions-inline">
+              <a href={`/topic/${topicId}/edit`} class="topic-edit-link">编辑</a>
+              {commentList.length > 0 ? (
+                <button type="button" class="topic-edit-link" style="border: none; background: none; cursor: pointer; color: #c00; padding: 0;" onclick="alert('该话题下还有评论，请先删除全部评论后再删除话题。')">删除</button>
+              ) : (
+                <form action={`/topic/${topicId}/delete`} method="POST" style="display: inline;" onsubmit="return confirm('确定要删除这个话题吗？删除后无法恢复。')">
+                  <button type="submit" class="topic-edit-link" style="border: none; background: none; cursor: pointer; color: #c00; padding: 0;">删除</button>
+                </form>
+              )}
+            </span>
           )}
         </div>
 
@@ -363,6 +372,11 @@ topic.get('/:id', async (c) => {
                           >
                             编辑
                           </button>
+                        )}
+                        {user && user.id === comment.user.id && (
+                          <form action={`/topic/${topicId}/comment/${comment.id}/delete`} method="POST" style="display: inline;" onsubmit="return confirm('确定要删除这条评论吗？')">
+                            <button type="submit" class="comment-action-btn" style="color: #c00;">删除</button>
+                          </form>
                         )}
                       </div>
                       {user && user.id === comment.user.id && (
@@ -604,6 +618,55 @@ topic.post('/:id/comment/:commentId/edit', async (c) => {
     .where(eq(comments.id, commentId))
 
   return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+})
+
+// 删除评论
+topic.post('/:id/comment/:commentId/delete', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+  const commentId = c.req.param('commentId')
+
+  if (!user) return c.redirect('/auth/login')
+
+  const comment = await db.select().from(comments).where(eq(comments.id, commentId)).limit(1)
+  if (comment.length === 0 || comment[0].userId !== user.id) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  // 删除评论的点赞，再删除评论
+  await db.delete(commentLikes).where(eq(commentLikes.commentId, commentId))
+  await db.delete(comments).where(eq(comments.id, commentId))
+
+  return c.redirect(`/topic/${topicId}`)
+})
+
+// 删除话题
+topic.post('/:id/delete', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) return c.redirect('/auth/login')
+
+  const topicResult = await db.select().from(topics).where(eq(topics.id, topicId)).limit(1)
+  if (topicResult.length === 0 || topicResult[0].userId !== user.id) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const groupId = topicResult[0].groupId
+
+  // 有评论时不允许删除
+  const commentCount = await db.select({ count: sql<number>`count(*)` }).from(comments).where(eq(comments.topicId, topicId))
+  if (commentCount[0].count > 0) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  // 删除关联数据：话题点赞 → 话题
+  await db.delete(topicLikes).where(eq(topicLikes.topicId, topicId))
+  await db.delete(topics).where(eq(topics.id, topicId))
+
+  return c.redirect(`/group/${groupId}`)
 })
 
 // 编辑话题页面

@@ -602,8 +602,14 @@ a:hover {
   color: #999;
 }
 
-.topic-edit-link {
+.topic-actions-inline {
   margin-left: auto;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.topic-edit-link {
   color: #999;
   font-size: 12px;
 }
