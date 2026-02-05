@@ -70,6 +70,21 @@ app.get('/r2/*', async (c) => {
     return c.notFound()
   }
 
+  // 防外链：有 Referer 时必须来自本站
+  const referer = c.req.header('referer')
+  if (referer) {
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    const allowedHost = new URL(baseUrl).host
+    try {
+      const refererHost = new URL(referer).host
+      if (refererHost !== allowedHost && refererHost !== 'www.' + allowedHost) {
+        return c.body(null, 403)
+      }
+    } catch {
+      return c.body(null, 403)
+    }
+  }
+
   const key = c.req.path.replace('/r2/', '')
 
   // 获取裁剪参数
