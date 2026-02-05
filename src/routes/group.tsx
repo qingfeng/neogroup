@@ -8,6 +8,100 @@ import { postStatus } from '../services/mastodon'
 
 const group = new Hono<AppContext>()
 
+// 创建小组页面
+group.get('/create', async (c) => {
+  const user = c.get('user')
+  if (!user) return c.redirect('/auth/login')
+
+  return c.html(
+    <Layout user={user} title="创建小组">
+      <div class="new-topic-page">
+        <div class="page-header">
+          <h1>创建小组</h1>
+        </div>
+        <form action="/group/create" method="POST" enctype="multipart/form-data" class="topic-form">
+          <div class="form-group">
+            <label for="name">小组名称</label>
+            <input type="text" id="name" name="name" placeholder="给小组取个名字" required />
+          </div>
+          <div class="form-group">
+            <label for="icon">小组 LOGO</label>
+            <input type="file" id="icon" name="icon" accept="image/*" />
+            <p style="color: #999; font-size: 12px; margin-top: 5px;">支持 JPG、PNG、GIF、WebP 格式</p>
+          </div>
+          <div class="form-group">
+            <label for="description">小组简介</label>
+            <textarea id="description" name="description" rows={3} placeholder="介绍一下这个小组..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="tags">分类标签 <span style="color: #999; font-weight: normal;">(空格分隔)</span></label>
+            <input type="text" id="tags" name="tags" placeholder="如：电影 读书 音乐" />
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">创建小组</button>
+            <a href="/" class="btn">取消</a>
+          </div>
+        </form>
+      </div>
+    </Layout>
+  )
+})
+
+// 创建小组处理
+group.post('/create', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  if (!user) return c.redirect('/auth/login')
+
+  const body = await c.req.parseBody()
+  const name = (body.name as string)?.trim()
+  const description = (body.description as string)?.trim() || null
+  const tags = (body.tags as string)?.trim() || null
+  const iconFile = body.icon as File | undefined
+
+  if (!name) return c.redirect('/group/create')
+
+  const groupId = generateId()
+  const timestamp = now()
+  let iconUrl: string | null = null
+
+  // 处理 LOGO 上传
+  if (iconFile && iconFile.size > 0 && c.env.R2) {
+    try {
+      const buffer = await iconFile.arrayBuffer()
+      const ext = getExtFromFile(iconFile.name, iconFile.type)
+      const contentType = getContentType(ext)
+      const key = `groups/${groupId}.${ext}`
+      await c.env.R2.put(key, buffer, { httpMetadata: { contentType } })
+      const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+      iconUrl = `${baseUrl}/r2/${key}`
+    } catch (error) {
+      console.error('Failed to upload group icon:', error)
+    }
+  }
+
+  await db.insert(groups).values({
+    id: groupId,
+    creatorId: user.id,
+    name,
+    description,
+    tags,
+    iconUrl,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+
+  // 创建者自动加入小组
+  await db.insert(groupMembers).values({
+    id: generateId(),
+    groupId,
+    userId: user.id,
+    createdAt: timestamp,
+  })
+
+  return c.redirect(`/group/${groupId}`)
+})
+
 group.get('/:id', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
@@ -563,11 +657,11 @@ group.get('/:id/settings', async (c) => {
 
         <form action={`/group/${groupId}/settings`} method="POST" enctype="multipart/form-data" class="topic-form">
           <div class="form-group">
-            <label>当前头像</label>
+            <label>当前 LOGO</label>
             <div style="margin-bottom: 10px;">
               <img src={resizeImage(groupData.iconUrl, 160) || '/static/img/default-group.svg'} alt="" class="group-icon" style="width: 80px; height: 80px;" />
             </div>
-            <label for="icon">更换头像</label>
+            <label for="icon">更换 LOGO</label>
             <input type="file" id="icon" name="icon" accept="image/*" />
             <p style="color: #999; font-size: 12px; margin-top: 5px;">支持 JPG、PNG、GIF、WebP 格式</p>
           </div>
