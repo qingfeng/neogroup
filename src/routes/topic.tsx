@@ -217,6 +217,12 @@ topic.get('/:id', async (c) => {
               document.getElementById('replyToId').value = '';
               document.getElementById('reply-hint').style.display = 'none';
             }
+            function showEditForm(commentId) {
+              document.getElementById('edit-form-' + commentId).style.display = 'block';
+            }
+            function hideEditForm(commentId) {
+              document.getElementById('edit-form-' + commentId).style.display = 'none';
+            }
           ` }} />
 
           <div class="comment-list">
@@ -276,7 +282,27 @@ topic.get('/:id', async (c) => {
                             回复
                           </button>
                         )}
+                        {user && user.id === comment.user.id && (
+                          <button
+                            type="button"
+                            class="comment-action-btn"
+                            onclick={`showEditForm('${comment.id}')`}
+                          >
+                            编辑
+                          </button>
+                        )}
                       </div>
+                      {user && user.id === comment.user.id && (
+                        <div class="comment-edit-form" id={`edit-form-${comment.id}`} style="display: none;">
+                          <form action={`/topic/${topicId}/comment/${comment.id}/edit`} method="POST">
+                            <textarea name="content" rows={3} class="comment-edit-textarea">{stripHtml(comment.content)}</textarea>
+                            <div class="comment-edit-actions">
+                              <button type="submit" class="btn btn-primary">保存</button>
+                              <button type="button" class="btn" onclick={`hideEditForm('${comment.id}')`}>取消</button>
+                            </div>
+                          </form>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )
@@ -432,6 +458,44 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
       createdAt: new Date(),
     })
   }
+
+  return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+})
+
+// 编辑评论
+topic.post('/:id/comment/:commentId/edit', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+  const commentId = c.req.param('commentId')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const commentResult = await db
+    .select()
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .limit(1)
+
+  if (commentResult.length === 0 || commentResult[0].userId !== user.id) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const body = await c.req.parseBody()
+  const content = body.content as string
+
+  if (!content || !content.trim()) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  await db.update(comments)
+    .set({
+      content: `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>`,
+      updatedAt: new Date(),
+    })
+    .where(eq(comments.id, commentId))
 
   return c.redirect(`/topic/${topicId}#comment-${commentId}`)
 })

@@ -703,6 +703,31 @@ a:hover {
   cursor: default;
 }
 
+.comment-edit-form {
+  margin-top: 10px;
+}
+
+.comment-edit-textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  font-size: 13px;
+  min-height: 60px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.comment-edit-textarea:focus {
+  border-color: #9bc07d;
+  outline: none;
+}
+
+.comment-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .login-hint {
   color: #999;
   padding: 15px;
