@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { groups, groupMembers, topics, users, comments } from '../db/schema'
+import { groups, groupMembers, topics, users, comments, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage } from '../lib/utils'
+import { postStatus } from '../services/mastodon'
 
 const group = new Hono<AppContext>()
 
@@ -271,6 +272,13 @@ group.get('/:id/topic/new', async (c) => {
             <input type="hidden" id="content" name="content" />
           </div>
 
+          <div class="form-option">
+            <label class="checkbox-label">
+              <input type="checkbox" name="syncMastodon" value="1" />
+              同步发布到 Mastodon
+            </label>
+          </div>
+
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">发布话题</button>
             <a href={`/group/${groupId}`} class="btn">取消</a>
@@ -375,13 +383,14 @@ group.post('/:id/topic/new', async (c) => {
   const body = await c.req.parseBody()
   const title = body.title as string
   const content = body.content as string
+  const syncMastodon = body.syncMastodon as string
 
   if (!title || !title.trim()) {
     return c.redirect(`/group/${groupId}/topic/new`)
   }
 
   const topicId = generateId()
-  const now = new Date()
+  const topicNow = new Date()
 
   await db.insert(topics).values({
     id: topicId,
@@ -390,9 +399,30 @@ group.post('/:id/topic/new', async (c) => {
     title: title.trim(),
     content: content?.trim() || null,
     type: 0,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: topicNow,
+    updatedAt: topicNow,
   })
+
+  // 同步发布到 Mastodon
+  if (syncMastodon === '1') {
+    try {
+      const authProvider = await db.query.authProviders.findFirst({
+        where: and(
+          eq(authProviders.userId, user.id),
+          eq(authProviders.providerType, 'mastodon')
+        ),
+      })
+
+      if (authProvider?.accessToken) {
+        const domain = authProvider.providerId.split('@')[1]
+        const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+        const tootContent = `${title.trim()}\n\n${baseUrl}/topic/${topicId}`
+        await postStatus(domain, authProvider.accessToken, tootContent)
+      }
+    } catch (e) {
+      console.error('Failed to sync toot:', e)
+    }
+  }
 
   return c.redirect(`/topic/${topicId}`)
 })

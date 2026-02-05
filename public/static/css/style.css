@@ -992,6 +992,24 @@ a:hover {
   outline: none;
 }
 
+.form-option {
+  margin-bottom: 15px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;
