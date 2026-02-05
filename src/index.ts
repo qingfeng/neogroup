@@ -84,6 +84,43 @@ app.use('*', async (c, next) => {
 // 加载用户
 app.use('*', loadUser)
 
+// 图片上传 API（需要登录）
+app.post('/api/upload', async (c) => {
+  const user = c.get('user')
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const r2 = c.env.R2
+  if (!r2) {
+    return c.json({ error: 'Storage not configured' }, 500)
+  }
+
+  try {
+    const formData = await c.req.formData()
+    const file = formData.get('image') as File
+    if (!file) {
+      return c.json({ error: 'No image provided' }, 400)
+    }
+
+    const buffer = await file.arrayBuffer()
+    const ext = getExtFromFile(file.name, file.type)
+    const contentType = getContentType(ext)
+    const id = Math.random().toString(36).substring(2, 14)
+    const key = `images/${id}.${ext}`
+
+    await r2.put(key, buffer, {
+      httpMetadata: { contentType },
+    })
+
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    return c.json({ url: `${baseUrl}/r2/${key}` })
+  } catch (error) {
+    console.error('Upload error:', error)
+    return c.json({ error: 'Upload failed' }, 500)
+  }
+})
+
 // 路由
 app.route('/auth', authRoutes)
 app.route('/topic', topicRoutes)
@@ -92,3 +129,30 @@ app.route('/user', userRoutes)
 app.route('/', homeRoutes)
 
 export default app
+
+function getExtFromFile(filename: string, mimeType: string): string {
+  const match = filename.match(/\.(\w+)$/)
+  if (match) {
+    const ext = match[1].toLowerCase()
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+      return ext === 'jpg' ? 'jpeg' : ext
+    }
+  }
+  const mimeMap: Record<string, string> = {
+    'image/jpeg': 'jpeg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  }
+  return mimeMap[mimeType] || 'png'
+}
+
+function getContentType(ext: string): string {
+  const types: Record<string, string> = {
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  }
+  return types[ext] || 'image/png'
+}

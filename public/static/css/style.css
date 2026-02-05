@@ -464,6 +464,46 @@ a:hover {
   margin-bottom: 10px;
 }
 
+.topic-content img {
+  max-width: 100%;
+  height: auto;
+  margin: 10px 0;
+}
+
+.topic-content pre {
+  background: #2d2d2d;
+  color: #ccc;
+  border-radius: 3px;
+  padding: 12px;
+  font-size: 13px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.topic-content blockquote {
+  border-left: 3px solid #c7deb8;
+  padding-left: 12px;
+  color: #666;
+  margin: 10px 0;
+}
+
+.topic-content ul, .topic-content ol {
+  padding-left: 24px;
+  margin-bottom: 10px;
+}
+
+.topic-content code {
+  background: #f0f0f0;
+  padding: 2px 5px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.topic-content pre code {
+  background: none;
+  padding: 0;
+}
+
 /* Comments - 豆瓣风格 */
 .comments-section {
   padding: 15px;
@@ -955,6 +995,43 @@ a:hover {
 .form-actions {
   display: flex;
   gap: 10px;
+}
+
+/* Quill Editor */
+#editor {
+  min-height: 250px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+#editor .ql-editor {
+  min-height: 250px;
+}
+
+.ql-toolbar.ql-snow {
+  border-color: #ccc;
+  background: #faf9f5;
+}
+
+.ql-container.ql-snow {
+  border-color: #ccc;
+}
+
+.ql-editor:focus {
+  outline: none;
+}
+
+.ql-snow .ql-editor img {
+  max-width: 100%;
+}
+
+.ql-snow .ql-editor pre.ql-syntax {
+  background: #2d2d2d;
+  color: #ccc;
+  border-radius: 3px;
+  padding: 12px;
+  font-size: 13px;
+  overflow-x: auto;
 }
 
 /* Topic Table - 豆瓣风格 */

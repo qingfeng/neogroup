@@ -248,23 +248,27 @@ group.get('/:id/topic/new', async (c) => {
     return c.redirect(`/group/${groupId}`)
   }
 
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
   return c.html(
     <Layout user={user} title={`发布话题 - ${groupData.name}`}>
+      <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">
           <h1>发布新话题</h1>
           <p class="page-subtitle">发布到 <a href={`/group/${groupId}`}>{groupData.name}</a></p>
         </div>
 
-        <form action={`/group/${groupId}/topic/new`} method="POST" class="topic-form">
+        <form action={`/group/${groupId}/topic/new`} method="POST" class="topic-form" id="topic-form">
           <div class="form-group">
             <label for="title">标题</label>
             <input type="text" id="title" name="title" required placeholder="话题标题" />
           </div>
 
           <div class="form-group">
-            <label for="content">内容</label>
-            <textarea id="content" name="content" rows={10} placeholder="话题内容（可选）"></textarea>
+            <label>内容</label>
+            <div id="editor"></div>
+            <input type="hidden" id="content" name="content" />
           </div>
 
           <div class="form-actions">
@@ -273,6 +277,76 @@ group.get('/:id/topic/new', async (c) => {
           </div>
         </form>
       </div>
+
+      <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+      <script dangerouslySetInnerHTML={{ __html: `
+        const quill = new Quill('#editor', {
+          theme: 'snow',
+          placeholder: '话题内容（可选）...',
+          modules: {
+            toolbar: [
+              ['bold', 'italic', 'underline', 'strike'],
+              ['blockquote', 'code-block'],
+              [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+              ['link', 'image'],
+              ['clean']
+            ]
+          }
+        });
+
+        // 图片上传处理
+        quill.getModule('toolbar').addHandler('image', function() {
+          const input = document.createElement('input');
+          input.setAttribute('type', 'file');
+          input.setAttribute('accept', 'image/*');
+          input.click();
+          input.onchange = async () => {
+            const file = input.files[0];
+            if (file) {
+              await uploadImage(file);
+            }
+          };
+        });
+
+        // 粘贴图片处理
+        quill.root.addEventListener('paste', async (e) => {
+          const items = e.clipboardData?.items;
+          if (!items) return;
+          for (const item of items) {
+            if (item.type.startsWith('image/')) {
+              e.preventDefault();
+              const file = item.getAsFile();
+              if (file) {
+                await uploadImage(file);
+              }
+              break;
+            }
+          }
+        });
+
+        async function uploadImage(file) {
+          const formData = new FormData();
+          formData.append('image', file);
+          try {
+            const res = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.url) {
+              const range = quill.getSelection(true);
+              quill.insertEmbed(range.index, 'image', data.url);
+              quill.setSelection(range.index + 1);
+            }
+          } catch (err) {
+            console.error('Upload failed:', err);
+            alert('图片上传失败');
+          }
+        }
+
+        // 表单提交前将内容写入隐藏字段
+        document.getElementById('topic-form').addEventListener('submit', function(e) {
+          const content = quill.root.innerHTML;
+          document.getElementById('content').value = content === '<p><br></p>' ? '' : content;
+        });
+      ` }} />
     </Layout>
   )
 })
@@ -314,7 +388,7 @@ group.post('/:id/topic/new', async (c) => {
     groupId,
     userId: user.id,
     title: title.trim(),
-    content: content ? `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>` : null,
+    content: content?.trim() || null,
     type: 0,
     createdAt: now,
     updatedAt: now,
