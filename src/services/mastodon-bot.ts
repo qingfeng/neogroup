@@ -168,7 +168,7 @@ async function processMention(
   // 回复用户确认消息
   const replyContent = `@${status.account.acct} 已发布到「${groupName}」小组 👉 ${baseUrl}/topic/${topicId}`
   try {
-    await postStatus(domain, token, replyContent, 'unlisted', status.id)
+    await postStatus(domain, token, replyContent, 'unlisted')
   } catch (e) {
     console.error('Failed to reply confirmation:', e)
   }
