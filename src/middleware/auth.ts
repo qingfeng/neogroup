@@ -1,7 +1,7 @@
 import { createMiddleware } from 'hono/factory'
-import { eq } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users } from '../db/schema'
+import { users, notifications } from '../db/schema'
 import { getSession, getSessionIdFromCookie } from '../services/session'
 
 // 加载用户信息（不强制登录）
@@ -19,6 +19,11 @@ export const loadUser = createMiddleware<AppContext>(async (c, next) => {
       if (user) {
         c.set('user', user)
         c.set('sessionId', sessionId)
+        const unread = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(notifications)
+          .where(and(eq(notifications.userId, user.id), eq(notifications.isRead, 0)))
+        c.set('unreadNotificationCount', unread[0]?.count || 0)
       }
     }
   }

@@ -25,9 +25,10 @@ interface HomePageProps {
   newUsers: User[]
   userGroups: Group[]
   baseUrl: string
+  unreadCount?: number
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, randomGroups, newUsers, userGroups, baseUrl }) => {
+export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, randomGroups, newUsers, userGroups, baseUrl, unreadCount }) => {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
@@ -43,6 +44,7 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
       url={baseUrl}
       jsonLd={jsonLd}
       user={user}
+      unreadCount={unreadCount}
     >
       <div class="grid grid-3">
         <div>

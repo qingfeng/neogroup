@@ -14,7 +14,7 @@ group.get('/create', async (c) => {
   if (!user) return c.redirect('/auth/login')
 
   return c.html(
-    <Layout user={user} title="创建小组">
+    <Layout user={user} title="创建小组" unreadCount={c.get('unreadNotificationCount')}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>创建小组</h1>
@@ -194,6 +194,7 @@ group.get('/:id', async (c) => {
       description={description}
       image={groupData.iconUrl}
       url={groupUrl}
+      unreadCount={c.get('unreadNotificationCount')}
     >
       <div class="group-detail">
         <div class="group-header">
@@ -353,7 +354,7 @@ group.get('/:id/topic/new', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
   return c.html(
-    <Layout user={user} title={`发布话题 - ${groupData.name}`}>
+    <Layout user={user} title={`发布话题 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">
@@ -648,7 +649,7 @@ group.get('/:id/settings', async (c) => {
   }
 
   return c.html(
-    <Layout user={user} title={`小组设置 - ${groupData.name}`}>
+    <Layout user={user} title={`小组设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>小组设置</h1>

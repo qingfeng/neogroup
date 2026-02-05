@@ -170,6 +170,7 @@ home.get('/', async (c) => {
       newUsers={newUsers}
       userGroups={userGroups}
       baseUrl={baseUrl}
+      unreadCount={c.get('unreadNotificationCount')}
     />
   )
 })

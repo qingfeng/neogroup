@@ -100,6 +100,18 @@ export const reports = sqliteTable('report', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 站内提醒表
+export const notifications = sqliteTable('notification', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  actorId: text('actor_id').notNull().references(() => users.id),
+  type: text('type').notNull(), // reply | comment_reply | topic_like | comment_like
+  topicId: text('topic_id'),
+  commentId: text('comment_id'),
+  isRead: integer('is_read').default(0).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // Mastodon 应用配置表
 export const mastodonApps = sqliteTable('mastodon_app', {
   id: text('id').primaryKey(),
@@ -121,4 +133,5 @@ export type Comment = typeof comments.$inferSelect
 export type CommentLike = typeof commentLikes.$inferSelect
 export type TopicLike = typeof topicLikes.$inferSelect
 export type Report = typeof reports.$inferSelect
+export type Notification = typeof notifications.$inferSelect
 export type MastodonApp = typeof mastodonApps.$inferSelect

@@ -4,6 +4,7 @@ import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
+import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies } from '../services/mastodon-sync'
 
 const topic = new Hono<AppContext>()
@@ -205,6 +206,7 @@ topic.get('/:id', async (c) => {
       url={topicUrl}
       ogType="article"
       jsonLd={jsonLd}
+      unreadCount={c.get('unreadNotificationCount')}
     >
       <div class="topic-page-layout">
       <div class="topic-detail">
@@ -505,6 +507,28 @@ topic.post('/:id/comment', async (c) => {
     .set({ updatedAt: now })
     .where(eq(topics.id, topicId))
 
+  // 提醒话题作者
+  await createNotification(db, {
+    userId: topicResult[0].userId,
+    actorId: user.id,
+    type: 'reply',
+    topicId,
+  })
+
+  // 如果是回复某条评论，提醒该评论作者
+  if (replyToId) {
+    const replyComment = await db.select({ userId: comments.userId }).from(comments).where(eq(comments.id, replyToId)).limit(1)
+    if (replyComment.length > 0 && replyComment[0].userId !== topicResult[0].userId) {
+      await createNotification(db, {
+        userId: replyComment[0].userId,
+        actorId: user.id,
+        type: 'comment_reply',
+        topicId,
+        commentId: replyToId,
+      })
+    }
+  }
+
   return c.redirect(`/topic/${topicId}`)
 })
 
@@ -536,6 +560,17 @@ topic.post('/:id/like', async (c) => {
       userId: user.id,
       createdAt: new Date(),
     })
+
+    // 提醒话题作者
+    const topicData = await db.select({ userId: topics.userId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+    if (topicData.length > 0) {
+      await createNotification(db, {
+        userId: topicData[0].userId,
+        actorId: user.id,
+        type: 'topic_like',
+        topicId,
+      })
+    }
   }
 
   return c.redirect(`/topic/${topicId}`)
@@ -582,6 +617,15 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
       commentId,
       userId: user.id,
       createdAt: new Date(),
+    })
+
+    // 提醒评论作者
+    await createNotification(db, {
+      userId: commentResult[0].userId,
+      actorId: user.id,
+      type: 'comment_like',
+      topicId,
+      commentId,
     })
   }
 
@@ -723,7 +767,7 @@ topic.get('/:id/edit', async (c) => {
   }
 
   return c.html(
-    <Layout user={user} title={`编辑话题 - ${topicData.title}`}>
+    <Layout user={user} title={`编辑话题 - ${topicData.title}`} unreadCount={c.get('unreadNotificationCount')}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">

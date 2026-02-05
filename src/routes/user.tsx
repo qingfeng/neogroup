@@ -113,6 +113,7 @@ user.get('/:id', async (c) => {
       description={description}
       image={profileUser.avatarUrl}
       url={userUrl}
+      unreadCount={c.get('unreadNotificationCount')}
     >
       <div class="user-profile">
         <div class="profile-header">

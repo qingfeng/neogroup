@@ -9,6 +9,7 @@ import homeRoutes from './routes/home'
 import topicRoutes from './routes/topic'
 import groupRoutes from './routes/group'
 import userRoutes from './routes/user'
+import notificationRoutes from './routes/notification'
 import type { AppContext, Bindings } from './types'
 import { pollMentions } from './services/mastodon-bot'
 
@@ -235,6 +236,7 @@ app.route('/auth', authRoutes)
 app.route('/topic', topicRoutes)
 app.route('/group', groupRoutes)
 app.route('/user', userRoutes)
+app.route('/notifications', notificationRoutes)
 app.route('/', homeRoutes)
 
 export default {

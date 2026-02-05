@@ -10,9 +10,10 @@ interface LayoutProps {
   ogType?: 'website' | 'article'
   jsonLd?: Record<string, any>
   user: User | null
+  unreadCount?: number
 }
 
-export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, children }) => {
+export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, unreadCount, children }) => {
   const siteName = 'NeoGroup'
   const fullTitle = title ? `${title} - ${siteName}` : siteName
 
@@ -53,7 +54,7 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         <link rel="stylesheet" href="/static/css/style.css" />
       </head>
       <body>
-        <Navbar user={user} />
+        <Navbar user={user} unreadCount={unreadCount} />
         <main class="container">
           {children}
         </main>

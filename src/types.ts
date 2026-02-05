@@ -16,6 +16,7 @@ export type Variables = {
   db: Database
   user: import('./db/schema').User | null
   sessionId: string | null
+  unreadNotificationCount: number
 }
 
 export type AppContext = {
