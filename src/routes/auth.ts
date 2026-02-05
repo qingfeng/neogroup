@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
-import { generateId, now, uploadAvatarToR2 } from '../lib/utils'
+import { generateId, now, uploadAvatarToR2, mastodonUsername } from '../lib/utils'
 import {
   getOrCreateApp,
   getAuthorizationUrl,
@@ -184,9 +184,30 @@ auth.get('/callback', async (c) => {
         })
         .where(eq(users.id, userId))
     } else {
-      // 创建新用户
-      userId = generateId()
-      const username = `${account.username}_${domain.replace(/\./g, '_')}`
+      const username = mastodonUsername(account.username, domain)
+
+      // 检查是否已有同名用户（从 Mastodon 同步创建的）
+      const existingByUsername = await db.query.users.findFirst({
+        where: eq(users.username, username),
+      })
+
+      if (existingByUsername) {
+        // 复用已有用户，补充 OAuth 信息
+        userId = existingByUsername.id
+      } else {
+        // 创建新用户
+        userId = generateId()
+
+        await db.insert(users).values({
+          id: userId,
+          username,
+          displayName: account.display_name || account.username,
+          avatarUrl: account.avatar,
+          bio: null,
+          createdAt: now(),
+          updatedAt: now(),
+        })
+      }
 
       // 上传头像到 R2
       const avatarUrl = await uploadAvatarToR2(
@@ -196,15 +217,14 @@ auth.get('/callback', async (c) => {
         appUrl
       )
 
-      await db.insert(users).values({
-        id: userId,
-        username,
-        displayName: account.display_name || account.username,
-        avatarUrl,
-        bio: null,
-        createdAt: now(),
-        updatedAt: now(),
-      })
+      // 更新用户信息（头像、昵称）
+      await db.update(users)
+        .set({
+          displayName: account.display_name || account.username,
+          avatarUrl,
+          updatedAt: now(),
+        })
+        .where(eq(users.id, userId))
 
       await db.insert(authProviders).values({
         id: generateId(),

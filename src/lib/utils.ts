@@ -8,6 +8,11 @@ export function isSuperAdmin(user: { role?: string | null } | null): boolean {
   return user?.role === 'admin'
 }
 
+// 统一的 Mastodon 用户名生成：qingfeng@douban.city → qingfeng_douban_city
+export function mastodonUsername(username: string, domain: string): string {
+  return `${username}_${domain.replace(/\./g, '_')}`
+}
+
 export function now(): Date {
   return new Date()
 }

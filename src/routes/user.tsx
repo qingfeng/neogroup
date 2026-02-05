@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, topics, groups, comments, topicLikes } from '../db/schema'
+import { users, topics, groups, comments, topicLikes, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { stripHtml, truncate, resizeImage } from '../lib/utils'
 
@@ -24,6 +24,23 @@ user.get('/:id', async (c) => {
   }
 
   const profileUser = userResult[0]
+
+  // 获取 Mastodon 账号信息
+  let mastodonHandle: string | null = null
+  let mastodonUrl: string | null = null
+  const authProvider = await db.query.authProviders.findFirst({
+    where: eq(authProviders.userId, userId),
+  })
+  if (authProvider?.providerType === 'mastodon' && authProvider.metadata) {
+    try {
+      const meta = JSON.parse(authProvider.metadata) as { username: string; url: string }
+      const domain = authProvider.providerId.split('@')[1]
+      if (meta.username && domain) {
+        mastodonHandle = `@${meta.username}@${domain}`
+        mastodonUrl = meta.url || `https://${domain}/@${meta.username}`
+      }
+    } catch {}
+  }
 
   // 获取用户发布的话题
   const userTopics = await db
@@ -106,7 +123,13 @@ user.get('/:id', async (c) => {
           />
           <div class="profile-info">
             <h1>{profileUser.displayName || profileUser.username}</h1>
-            <div class="profile-username">@{profileUser.username}</div>
+            {mastodonHandle && mastodonUrl ? (
+              <div class="profile-username">
+                <a href={mastodonUrl} target="_blank" rel="noopener">{mastodonHandle}</a>
+              </div>
+            ) : (
+              <div class="profile-username">@{profileUser.username}</div>
+            )}
             {profileUser.bio && (
               <div class="profile-bio" dangerouslySetInnerHTML={{ __html: profileUser.bio }} />
             )}

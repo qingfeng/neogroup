@@ -1,7 +1,7 @@
 import type { Database } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { topics, comments, users, authProviders } from '../db/schema'
-import { generateId } from '../lib/utils'
+import { generateId, mastodonUsername } from '../lib/utils'
 
 const SYNC_COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -152,7 +152,7 @@ export async function getOrCreateMastodonUser(
 ): Promise<string> {
   const isLocalAccount = !account.acct.includes('@')
 
-  // 1. For local accounts, try matching to existing registered user
+  // 1. For local accounts, try matching by auth_provider (OAuth user)
   if (isLocalAccount) {
     const providerId = `${account.id}@${queriedDomain}`
     const existing = await db.query.authProviders.findFirst({
@@ -166,32 +166,42 @@ export async function getOrCreateMastodonUser(
     }
   }
 
-  // 2. Generate virtual username
-  const acctFull = isLocalAccount
-    ? `${account.username}@${queriedDomain}`
-    : account.acct
-  const virtualUsername = `m_${acctFull.replace(/@/g, '_').replace(/\./g, '_')}`
+  // 2. Generate unified username (same format as OAuth login)
+  const acctParts = isLocalAccount
+    ? { username: account.username, domain: queriedDomain }
+    : { username: account.acct.split('@')[0], domain: account.acct.split('@')[1] }
+  const username = mastodonUsername(acctParts.username, acctParts.domain)
 
-  // 3. Check if virtual user already exists
+  // 3. Check if user already exists (OAuth or previously synced)
   const existingUser = await db.query.users.findFirst({
-    where: eq(users.username, virtualUsername),
+    where: eq(users.username, username),
   })
   if (existingUser) {
     return existingUser.id
   }
 
-  // 4. Create new virtual user
+  // 4. Create new user
   const userId = generateId()
   const now = new Date()
 
   await db.insert(users).values({
     id: userId,
-    username: virtualUsername,
+    username,
     displayName: account.display_name || account.username,
     avatarUrl: account.avatar,
     bio: null,
     createdAt: now,
     updatedAt: now,
+  })
+
+  // 5. Create auth_provider entry (for profile page to show Mastodon info)
+  await db.insert(authProviders).values({
+    id: generateId(),
+    userId,
+    providerType: 'mastodon',
+    providerId: `${account.id}@${queriedDomain}`,
+    metadata: JSON.stringify(account),
+    createdAt: now,
   })
 
   return userId
