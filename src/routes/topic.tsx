@@ -3,7 +3,7 @@ import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes, groupMembers } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, stripHtml, truncate, parseJson, resizeImage } from '../lib/utils'
+import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages } from '../lib/utils'
 
 const topic = new Hono<AppContext>()
 
@@ -175,7 +175,7 @@ topic.get('/:id', async (c) => {
         </div>
 
         {topicData.content && (
-          <div class="topic-content" dangerouslySetInnerHTML={{ __html: topicData.content }} />
+          <div class="topic-content" dangerouslySetInnerHTML={{ __html: processContentImages(topicData.content) }} />
         )}
 
         <div class="comments-section">

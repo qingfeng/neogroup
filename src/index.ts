@@ -30,13 +30,17 @@ app.get('/r2/*', async (c) => {
   const width = c.req.query('w')
   const height = c.req.query('h')
 
+  // 获取 fit 模式参数
+  const fit = c.req.query('fit')
+
   // 如果有裁剪参数，使用 Cloudflare Image Resizing
   if (width || height) {
     const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
     const originalUrl = `${baseUrl}/r2/${key}`
 
     const options: RequestInitCfPropertiesImage = {
-      fit: 'cover',
+      // cover: 头像裁剪（固定宽高）; scale-down: 内容图片（等比缩放，只缩不放大）
+      fit: (fit as any) || (width && height ? 'cover' : 'scale-down'),
       gravity: 'auto',
     }
     if (width) options.width = parseInt(width)

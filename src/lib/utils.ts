@@ -41,6 +41,20 @@ export function resizeImage(url: string | null | undefined, size: number): strin
   return url
 }
 
+// 处理内容中的 R2 图片，添加裁剪参数
+export function processContentImages(html: string, maxWidth: number = 800): string {
+  if (!html) return html
+  return html.replace(
+    /(<img\s[^>]*src=["'])([^"']*\/r2\/[^"'?]*)([^"']*)(["'][^>]*>)/gi,
+    (match, prefix, url, existingQuery, suffix) => {
+      // 跳过已有裁剪参数的
+      if (existingQuery.includes('w=')) return match
+      const separator = existingQuery ? '&' : '?'
+      return `${prefix}${url}${existingQuery}${separator}w=${maxWidth}${suffix}`
+    }
+  )
+}
+
 // 从 URL 获取文件扩展名
 export function getExtensionFromUrl(url: string): string {
   const match = url.match(/\.(\w+)(\?|$)/)
