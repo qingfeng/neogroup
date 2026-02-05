@@ -471,7 +471,13 @@ a:hover {
 }
 
 .topic-content p {
-  margin-bottom: 10px;
+  margin-bottom: 0;
+}
+
+.topic-content p:empty,
+.topic-content p > br:only-child {
+  margin: 0;
+  line-height: 1;
 }
 
 .topic-content img {
