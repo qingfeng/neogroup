@@ -1,0 +1,33 @@
+name: Notify Mastodon on Push
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  toot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get commit info
+        id: commit
+        run: |
+          MSG=$(git log -1 --pretty=format:'%s')
+          echo "message=$MSG" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Mastodon
+        env:
+          MASTODON_DOMAIN: ${{ secrets.MASTODON_DOMAIN }}
+          MASTODON_ACCESS_TOKEN: ${{ secrets.MASTODON_ACCESS_TOKEN }}
+        run: |
+          TOOT="NeoGroup 更新: ${{ steps.commit.outputs.message }}
+
+          https://github.com/qingfeng/neogroup"
+
+          curl -s -X POST "https://${MASTODON_DOMAIN}/api/v1/statuses" \
+            -H "Authorization: Bearer ${MASTODON_ACCESS_TOKEN}" \
+            -F "status=${TOOT}" \
+            -F "visibility=public"
