@@ -677,6 +677,42 @@ topic.get('/:id/edit', async (c) => {
 
       <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
       <script dangerouslySetInnerHTML={{ __html: `
+        // NeoDB 卡片内部 HTML
+        function buildNeoDBCardInner(data) {
+          var img = data.coverUrl ? '<img src="' + data.coverUrl + '" alt="" />' : '';
+          var rating = data.rating ? '<span class="neodb-card-rating">\\u2b50 ' + data.rating + '</span>' : '';
+          var meta = [];
+          if (data.year) meta.push(data.year);
+          if (data.genre && data.genre.length) meta.push(data.genre.slice(0, 3).join(', '));
+          var metaHtml = meta.length ? '<span class="neodb-card-meta">' + meta.join(' / ') + '</span>' : '';
+          var brief = data.brief ? '<span class="neodb-card-brief">' + data.brief.slice(0, 100) + (data.brief.length > 100 ? '...' : '') + '</span>' : '';
+          return '<a href="' + data.url + '" target="_blank" rel="noopener">'
+            + img
+            + '<span class="neodb-card-info">'
+            + '<span class="neodb-card-title">' + data.title + '</span>'
+            + rating + metaHtml + brief
+            + '</span></a>';
+        }
+
+        // 注册自定义 NeoDB 卡片 Blot
+        var BlockEmbed = Quill.import('blots/block/embed');
+        class NeoDBCardBlot extends BlockEmbed {
+          static create(data) {
+            var node = super.create();
+            node.setAttribute('contenteditable', 'false');
+            node.dataset.neodb = JSON.stringify(data);
+            node.innerHTML = buildNeoDBCardInner(data);
+            return node;
+          }
+          static value(node) {
+            try { return JSON.parse(node.dataset.neodb); } catch(e) { return {}; }
+          }
+        }
+        NeoDBCardBlot.blotName = 'neodb-card';
+        NeoDBCardBlot.tagName = 'DIV';
+        NeoDBCardBlot.className = 'neodb-card';
+        Quill.register(NeoDBCardBlot);
+
         const quill = new Quill('#editor', {
           theme: 'snow',
           placeholder: '话题内容（可选）...',
@@ -709,18 +745,72 @@ topic.get('/:id/edit', async (c) => {
           };
         });
 
-        quill.root.addEventListener('paste', async function(e) {
+        // 添加 NeoDB 工具栏按钮
+        (function() {
+          var toolbarEl = document.querySelector('.ql-toolbar');
+          var grp = document.createElement('span');
+          grp.className = 'ql-formats';
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ql-neodb';
+          btn.title = '插入 NeoDB 书影音链接';
+          btn.addEventListener('click', function() {
+            var url = prompt('请输入 NeoDB 链接（书影音游戏等）\\nhttps://neodb.social/movie/...');
+            if (!url || !url.trim()) return;
+            url = url.trim();
+            if (!/neodb\\.social\\/(movie|book|tv|music|game|podcast|album)\\//.test(url)) {
+              alert('请输入有效的 NeoDB 链接');
+              return;
+            }
+            insertNeoDBLink(url);
+          });
+          grp.appendChild(btn);
+          toolbarEl.appendChild(grp);
+        })();
+
+        async function insertNeoDBLink(url) {
+          var range = quill.getSelection(true);
+          var loadingText = '加载中...';
+          quill.insertText(range.index, loadingText, { color: '#999' });
+          try {
+            var res = await fetch('/api/neodb?url=' + encodeURIComponent(url));
+            var data = await res.json();
+            quill.deleteText(range.index, loadingText.length);
+            if (data.title) {
+              quill.insertEmbed(range.index, 'neodb-card', data, Quill.sources.USER);
+              quill.setSelection(range.index + 1);
+            } else {
+              quill.insertText(range.index, url, { link: url });
+            }
+          } catch (err) {
+            quill.deleteText(range.index, loadingText.length);
+            quill.insertText(range.index, url, { link: url });
+          }
+        }
+
+        // 粘贴处理 - capture 阶段拦截，在 Quill 之前处理
+        document.querySelector('#editor').addEventListener('paste', async function(e) {
+          // 检查 NeoDB 链接
+          var text = (e.clipboardData ? e.clipboardData.getData('text/plain') : '') || '';
+          if (text && /neodb\\.social\\/(movie|book|tv|music|game|podcast|album)\\//.test(text.trim())) {
+            e.preventDefault();
+            e.stopPropagation();
+            insertNeoDBLink(text.trim());
+            return;
+          }
+          // 检查粘贴图片
           var items = e.clipboardData && e.clipboardData.items;
           if (!items) return;
           for (var i = 0; i < items.length; i++) {
             if (items[i].type.indexOf('image/') === 0) {
               e.preventDefault();
+              e.stopPropagation();
               var file = items[i].getAsFile();
               if (file) await uploadImage(file);
               break;
             }
           }
-        });
+        }, true);
 
         async function uploadImage(file) {
           var formData = new FormData();

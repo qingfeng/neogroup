@@ -1200,6 +1200,106 @@ a:hover {
   overflow-x: auto;
 }
 
+/* NeoDB Card */
+.neodb-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: #faf9f5;
+}
+
+.neodb-card a {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  text-decoration: none !important;
+  color: inherit;
+}
+
+.neodb-card a:hover {
+  background: #f0efe8;
+  text-decoration: none !important;
+}
+
+.neodb-card img {
+  width: 75px;
+  height: auto;
+  max-height: 110px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 2px;
+  margin: 0 !important;
+}
+
+.neodb-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.neodb-card-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #37a;
+  line-height: 1.4;
+}
+
+.neodb-card-rating {
+  font-size: 13px;
+  color: #e09015;
+}
+
+.neodb-card-meta {
+  font-size: 12px;
+  color: #999;
+}
+
+.neodb-card-brief {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Quill editor NeoDB card */
+.ql-editor .neodb-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: #faf9f5;
+}
+
+.ql-editor .neodb-card a {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  text-decoration: none;
+  color: inherit;
+}
+
+/* NeoDB toolbar button */
+button.ql-neodb {
+  width: auto !important;
+  padding: 0 8px !important;
+  cursor: pointer;
+}
+
+button.ql-neodb::after {
+  content: '书影音';
+  font-size: 12px;
+  color: #444;
+}
+
+button.ql-neodb:hover::after {
+  color: #072;
+}
+
 /* Topic Table - 豆瓣风格 */
 .topic-table {
   width: 100%;

@@ -169,6 +169,66 @@ app.post('/api/upload', async (c) => {
   }
 })
 
+// NeoDB 元数据代理 API
+app.get('/api/neodb', async (c) => {
+  const url = c.req.query('url')
+  if (!url) {
+    return c.json({ error: 'Missing url' }, 400)
+  }
+
+  const match = url.match(/neodb\.social\/(movie|book|tv|music|game|podcast|album)((?:\/[a-zA-Z]+)*)\/([a-zA-Z0-9_-]+)/)
+  if (!match) {
+    return c.json({ error: 'Invalid NeoDB URL' }, 400)
+  }
+
+  const [, urlCategory, subPath, id] = match
+  // URL 路径到 API 端点的映射（音乐页面路径是 /music/ 但 API 是 /api/album/）
+  const apiCategoryMap: Record<string, string> = { music: 'album' }
+  const apiCategory = apiCategoryMap[urlCategory] || urlCategory
+  const apiPath = `${apiCategory}${subPath}/${id}`
+  const cacheKey = `neodb:${apiPath}`
+
+  // Check KV cache
+  const kv = c.env.KV
+  if (kv) {
+    const cached = await kv.get(cacheKey)
+    if (cached) {
+      return c.json(JSON.parse(cached))
+    }
+  }
+
+  try {
+    const response = await fetch(`https://neodb.social/api/${apiPath}`)
+    if (!response.ok) {
+      return c.json({ error: 'NeoDB API error' }, 502)
+    }
+
+    const data = await response.json() as Record<string, any>
+    const result = {
+      title: data.display_title || data.title,
+      origTitle: data.orig_title,
+      coverUrl: data.cover_image_url,
+      rating: data.rating,
+      ratingCount: data.rating_count,
+      year: data.year,
+      genre: data.genre,
+      brief: data.brief,
+      url: url.trim(),
+      category: data.category,
+    }
+
+    // Cache in KV for 24h
+    if (kv) {
+      await kv.put(cacheKey, JSON.stringify(result), { expirationTtl: 86400 })
+    }
+
+    return c.json(result)
+  } catch (error) {
+    console.error('NeoDB fetch error:', error)
+    return c.json({ error: 'Failed to fetch' }, 502)
+  }
+})
+
 // 路由
 app.route('/auth', authRoutes)
 app.route('/topic', topicRoutes)
