@@ -175,3 +175,29 @@ export async function postStatus(
 
   return response.json() as Promise<{ id: string; url: string }>
 }
+
+// 解析跨实例 status ID（用于回复其他实例的 toot）
+export async function resolveStatusId(
+  userDomain: string,
+  userToken: string,
+  targetDomain: string,
+  targetStatusId: string
+): Promise<string | null> {
+  if (userDomain === targetDomain) return targetStatusId
+
+  try {
+    const statusRes = await fetch(`https://${targetDomain}/api/v1/statuses/${targetStatusId}`)
+    if (!statusRes.ok) return null
+    const status = await statusRes.json() as { url: string }
+
+    const searchRes = await fetch(
+      `https://${userDomain}/api/v2/search?q=${encodeURIComponent(status.url)}&type=statuses&resolve=true`,
+      { headers: { Authorization: `Bearer ${userToken}` } }
+    )
+    if (!searchRes.ok) return null
+    const data = await searchRes.json() as { statuses?: { id: string }[] }
+    return data.statuses?.[0]?.id || null
+  } catch {
+    return null
+  }
+}

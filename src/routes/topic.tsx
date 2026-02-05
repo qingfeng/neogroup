@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies } from '../services/mastodon-sync'
+import { postStatus, resolveStatusId } from '../services/mastodon'
 
 const topic = new Hono<AppContext>()
 
@@ -97,6 +98,15 @@ topic.get('/:id', async (c) => {
       .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
       .limit(1)
     isTopicLiked = existingLike.length > 0
+  }
+
+  // 检查用户是否有 Mastodon 账号（用于评论同步）
+  let hasMastodonAuth = false
+  if (user) {
+    const ap = await db.query.authProviders.findFirst({
+      where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+    })
+    hasMastodonAuth = !!(ap?.accessToken)
   }
 
   // 获取小组最新话题（排除当前话题）
@@ -286,6 +296,14 @@ topic.get('/:id', async (c) => {
                 rows={3}
                 required
               ></textarea>
+              {hasMastodonAuth && topicData.mastodonStatusId && (
+                <div class="form-option">
+                  <label class="checkbox-label">
+                    <input type="checkbox" name="syncMastodon" value="1" />
+                    同步到 Mastodon
+                  </label>
+                </div>
+              )}
               <button type="submit" class="btn btn-primary">发表评论</button>
             </form>
           ) : (
@@ -484,15 +502,17 @@ topic.post('/:id/comment', async (c) => {
   const body = await c.req.parseBody()
   const content = body.content as string
   const replyToId = body.replyToId as string | undefined
+  const syncMastodon = body.syncMastodon as string
 
   if (!content || !content.trim()) {
     return c.redirect(`/topic/${topicId}`)
   }
 
   const now = new Date()
+  const commentId = generateId()
 
   await db.insert(comments).values({
-    id: generateId(),
+    id: commentId,
     topicId,
     userId: user.id,
     content: `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>`,
@@ -526,6 +546,32 @@ topic.post('/:id/comment', async (c) => {
         topicId,
         commentId: replyToId,
       })
+    }
+  }
+
+  // 同步评论到 Mastodon
+  if (syncMastodon === '1' && topicResult[0].mastodonStatusId && topicResult[0].mastodonDomain) {
+    try {
+      const authProvider = await db.query.authProviders.findFirst({
+        where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+      })
+      if (authProvider?.accessToken) {
+        const userDomain = authProvider.providerId.split('@')[1]
+        const replyToStatusId = await resolveStatusId(
+          userDomain, authProvider.accessToken,
+          topicResult[0].mastodonDomain, topicResult[0].mastodonStatusId
+        )
+        if (replyToStatusId) {
+          const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+          const plainText = stripHtml(content.trim())
+          const link = `${baseUrl}/topic/${topicId}`
+          const tootContent = plainText.length > 450 ? `${plainText.slice(0, 450)}...\n\n${link}` : `${plainText}\n\n${link}`
+          const toot = await postStatus(userDomain, authProvider.accessToken, tootContent, 'unlisted', replyToStatusId)
+          await db.update(comments).set({ mastodonStatusId: toot.id }).where(eq(comments.id, commentId))
+        }
+      }
+    } catch (e) {
+      console.error('Failed to sync comment to Mastodon:', e)
     }
   }
 
