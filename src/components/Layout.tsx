@@ -28,7 +28,7 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         {url && <link rel="canonical" href={url} />}
 
         {/* Favicon */}
-        <link rel="icon" href="/static/img/default-group.svg" type="image/svg+xml" />
+        <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
 
         {/* Open Graph */}
         <meta property="og:title" content={title || siteName} />
