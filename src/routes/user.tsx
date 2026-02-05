@@ -3,7 +3,7 @@ import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, topics, groups, comments } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { stripHtml, truncate } from '../lib/utils'
+import { stripHtml, truncate, resizeImage } from '../lib/utils'
 
 const user = new Hono<AppContext>()
 
@@ -82,7 +82,7 @@ user.get('/:id', async (c) => {
       <div class="user-profile">
         <div class="profile-header">
           <img
-            src={profileUser.avatarUrl || '/static/img/default-avatar.svg'}
+            src={resizeImage(profileUser.avatarUrl, 128) || '/static/img/default-avatar.svg'}
             alt=""
             class="avatar-lg"
           />

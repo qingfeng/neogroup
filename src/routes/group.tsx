@@ -3,7 +3,7 @@ import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { groups, groupMembers, topics, users, comments } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, truncate, now, getExtensionFromUrl, getContentType } from '../lib/utils'
+import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage } from '../lib/utils'
 
 const group = new Hono<AppContext>()
 
@@ -102,7 +102,7 @@ group.get('/:id', async (c) => {
     >
       <div class="group-detail">
         <div class="group-header">
-          <img src={groupData.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon" />
+          <img src={resizeImage(groupData.iconUrl, 160) || '/static/img/default-group.svg'} alt="" class="group-icon" />
           <div class="group-info">
             <h1>{groupData.name}</h1>
             {groupData.description && (
@@ -363,7 +363,7 @@ group.get('/:id/settings', async (c) => {
           <div class="form-group">
             <label>当前头像</label>
             <div style="margin-bottom: 10px;">
-              <img src={groupData.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon" style="width: 80px; height: 80px;" />
+              <img src={resizeImage(groupData.iconUrl, 160) || '/static/img/default-group.svg'} alt="" class="group-icon" style="width: 80px; height: 80px;" />
             </div>
             <label for="icon">更换头像</label>
             <input type="file" id="icon" name="icon" accept="image/*" />

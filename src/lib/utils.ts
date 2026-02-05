@@ -30,6 +30,17 @@ export function truncate(str: string, maxLength: number): string {
   return str.slice(0, maxLength).trim() + '...'
 }
 
+// 生成带裁剪参数的图片 URL
+export function resizeImage(url: string | null | undefined, size: number): string {
+  if (!url) return ''
+  // 只对 R2 图片添加裁剪参数
+  if (url.includes('/r2/')) {
+    const separator = url.includes('?') ? '&' : '?'
+    return `${url}${separator}w=${size}&h=${size}`
+  }
+  return url
+}
+
 // 从 URL 获取文件扩展名
 export function getExtensionFromUrl(url: string): string {
   const match = url.match(/\.(\w+)(\?|$)/)

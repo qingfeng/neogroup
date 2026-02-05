@@ -17,7 +17,7 @@ const app = new Hono<AppContext>()
 // 静态文件
 app.use('/static/*', serveStatic({ root: './', manifest }))
 
-// R2 文件访问
+// R2 文件访问（支持图片裁剪）
 app.get('/r2/*', async (c) => {
   const r2 = c.env.R2
   if (!r2) {
@@ -25,6 +25,40 @@ app.get('/r2/*', async (c) => {
   }
 
   const key = c.req.path.replace('/r2/', '')
+
+  // 获取裁剪参数
+  const width = c.req.query('w')
+  const height = c.req.query('h')
+
+  // 如果有裁剪参数，使用 Cloudflare Image Resizing
+  if (width || height) {
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    const originalUrl = `${baseUrl}/r2/${key}`
+
+    const options: RequestInitCfPropertiesImage = {
+      fit: 'cover',
+      gravity: 'auto',
+    }
+    if (width) options.width = parseInt(width)
+    if (height) options.height = parseInt(height)
+
+    try {
+      const response = await fetch(originalUrl, {
+        cf: { image: options }
+      })
+
+      if (response.ok) {
+        const headers = new Headers(response.headers)
+        headers.set('Cache-Control', 'public, max-age=31536000')
+        return new Response(response.body, { headers })
+      }
+    } catch (e) {
+      // 如果裁剪失败，继续返回原图
+      console.error('Image resize failed:', e)
+    }
+  }
+
+  // 返回原图
   const object = await r2.get(key)
 
   if (!object) {

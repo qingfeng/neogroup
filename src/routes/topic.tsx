@@ -3,7 +3,7 @@ import { eq, desc, and, sql } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, stripHtml, truncate, parseJson } from '../lib/utils'
+import { generateId, stripHtml, truncate, parseJson, resizeImage } from '../lib/utils'
 
 const topic = new Hono<AppContext>()
 
@@ -114,7 +114,7 @@ topic.get('/:id', async (c) => {
       <div class="topic-detail">
         <div class="topic-header">
           <a href={`/group/${topicData.group.id}`} class="topic-group">
-            <img src={topicData.group.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
+            <img src={resizeImage(topicData.group.iconUrl, 40) || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
             <span>{topicData.group.name}</span>
           </a>
         </div>
@@ -124,7 +124,7 @@ topic.get('/:id', async (c) => {
         <div class="topic-meta">
           <a href={`/user/${topicData.user.id}`} class="topic-author">
             <img
-              src={topicData.user.avatarUrl || '/static/img/default-avatar.svg'}
+              src={resizeImage(topicData.user.avatarUrl, 64) || '/static/img/default-avatar.svg'}
               alt=""
               class="avatar-sm"
             />
@@ -191,7 +191,7 @@ topic.get('/:id', async (c) => {
                     <div class="comment-avatar">
                       <a href={`/user/${comment.user.id}`}>
                         <img
-                          src={comment.user.avatarUrl || '/static/img/default-avatar.svg'}
+                          src={resizeImage(comment.user.avatarUrl, 96) || '/static/img/default-avatar.svg'}
                           alt=""
                           class="avatar"
                         />
