@@ -1,27 +1,33 @@
 import type { FC } from 'hono/jsx'
 import type { Topic, User, Group } from '../db/schema'
-import { resizeImage } from '../lib/utils'
+import { stripHtml, truncate } from '../lib/utils'
 
 interface TopicCardProps {
-  topic: Topic & { user: User; group: Group }
+  topic: Topic & { user: User; group: Group; likeCount: number }
 }
 
 export const TopicCard: FC<TopicCardProps> = ({ topic }) => {
   const date = new Date(topic.createdAt).toLocaleDateString('zh-CN')
+  const preview = topic.content ? truncate(stripHtml(topic.content), 150) : null
 
   return (
-    <div class="card">
-      <div class="topic-header">
-        <a href={`/user/${topic.user.id}`}>
-          <img src={resizeImage(topic.user.avatarUrl, 64) || '/static/img/default-avatar.svg'} alt="" class="avatar-sm" />
-        </a>
-        <a href={`/user/${topic.user.id}`}>{topic.user.displayName || topic.user.username}</a>
-        <span class="card-meta">发布于 <a href={`/group/${topic.group.id}`}>{topic.group.name}</a></span>
+    <div class="topic-card">
+      <div class="topic-card-likes">
+        <span class="topic-card-like-count">{topic.likeCount}</span>
+        <span class="topic-card-like-label">喜欢</span>
       </div>
-      <h3 class="card-title">
-        <a href={`/topic/${topic.id}`}>{topic.title}</a>
-      </h3>
-      <div class="card-meta">{date}</div>
+      <div class="topic-card-main">
+        <h3 class="topic-card-title">
+          <a href={`/topic/${topic.id}`}>{topic.title}</a>
+        </h3>
+        {preview && (
+          <p class="topic-card-preview">{preview}</p>
+        )}
+        <div class="topic-card-meta">
+          来自<a href={`/group/${topic.group.id}`}>{topic.group.name}</a>
+          <span class="topic-card-date">{date}</span>
+        </div>
+      </div>
     </div>
   )
 }

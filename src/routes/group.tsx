@@ -417,7 +417,11 @@ group.post('/:id/topic/new', async (c) => {
         const domain = authProvider.providerId.split('@')[1]
         const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
         const tootContent = `${title.trim()}\n\n${baseUrl}/topic/${topicId}`
-        await postStatus(domain, authProvider.accessToken, tootContent)
+        const toot = await postStatus(domain, authProvider.accessToken, tootContent)
+        // Save Mastodon status ID for reply sync
+        await db.update(topics)
+          .set({ mastodonStatusId: toot.id, mastodonDomain: domain })
+          .where(eq(topics.id, topicId))
       }
     } catch (e) {
       console.error('Failed to sync toot:', e)

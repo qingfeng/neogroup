@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, groupMembers } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages } from '../lib/utils'
+import { syncMastodonReplies } from '../services/mastodon-sync'
 
 const topic = new Hono<AppContext>()
 
@@ -22,6 +23,8 @@ topic.get('/:id', async (c) => {
       content: topics.content,
       type: topics.type,
       images: topics.images,
+      mastodonStatusId: topics.mastodonStatusId,
+      mastodonDomain: topics.mastodonDomain,
       createdAt: topics.createdAt,
       updatedAt: topics.updatedAt,
       user: {
@@ -50,6 +53,15 @@ topic.get('/:id', async (c) => {
   const topicData = topicResult[0]
   const groupId = topicData.groupId
 
+  // Sync Mastodon replies if applicable
+  if (topicData.mastodonStatusId && topicData.mastodonDomain) {
+    try {
+      await syncMastodonReplies(db, topicId, topicData.mastodonDomain, topicData.mastodonStatusId)
+    } catch (e) {
+      console.error('Failed to sync Mastodon replies:', e)
+    }
+  }
+
   // 获取小组成员数
   const memberCountResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -66,6 +78,24 @@ topic.get('/:id', async (c) => {
       .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
       .limit(1)
     isMember = membership.length > 0
+  }
+
+  // 获取话题喜欢数
+  const topicLikeCountResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(topicLikes)
+    .where(eq(topicLikes.topicId, topicId))
+  const topicLikeCount = topicLikeCountResult[0]?.count || 0
+
+  // 检查当前用户是否喜欢
+  let isTopicLiked = false
+  if (user) {
+    const existingLike = await db
+      .select()
+      .from(topicLikes)
+      .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+      .limit(1)
+    isTopicLiked = existingLike.length > 0
   }
 
   // 获取小组最新话题（排除当前话题）
@@ -205,6 +235,21 @@ topic.get('/:id', async (c) => {
         {topicData.content && (
           <div class="topic-content" dangerouslySetInnerHTML={{ __html: processContentImages(topicData.content) }} />
         )}
+
+        <div class="topic-like-section">
+          {user ? (
+            <form action={`/topic/${topicId}/like`} method="POST" style="display: inline;">
+              <button type="submit" class={`topic-like-btn ${isTopicLiked ? 'liked' : ''}`}>
+                {isTopicLiked ? '已喜欢' : '喜欢'}
+                {topicLikeCount > 0 ? ` (${topicLikeCount})` : ''}
+              </button>
+            </form>
+          ) : (
+            <span class="topic-like-btn disabled">
+              喜欢{topicLikeCount > 0 ? ` (${topicLikeCount})` : ''}
+            </span>
+          )}
+        </div>
 
         <div class="comments-section">
           <h2>评论 ({commentList.length})</h2>
@@ -439,6 +484,39 @@ topic.post('/:id/comment', async (c) => {
     .update(topics)
     .set({ updatedAt: now })
     .where(eq(topics.id, topicId))
+
+  return c.redirect(`/topic/${topicId}`)
+})
+
+// 喜欢话题
+topic.post('/:id/like', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  // 检查是否已喜欢
+  const existingLike = await db
+    .select()
+    .from(topicLikes)
+    .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+    .limit(1)
+
+  if (existingLike.length > 0) {
+    await db
+      .delete(topicLikes)
+      .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+  } else {
+    await db.insert(topicLikes).values({
+      id: generateId(),
+      topicId,
+      userId: user.id,
+      createdAt: new Date(),
+    })
+  }
 
   return c.redirect(`/topic/${topicId}`)
 })

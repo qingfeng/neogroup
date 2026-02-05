@@ -397,6 +397,81 @@ a:hover {
   font-size: 12px;
 }
 
+/* Topic Card - 豆瓣风格 */
+.topic-card {
+  display: flex;
+  gap: 0;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  margin-bottom: 10px;
+}
+
+.topic-card-likes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  padding: 15px 10px;
+  border-right: 1px solid #e8e8e8;
+  background: #faf9f5;
+}
+
+.topic-card-like-count {
+  font-size: 20px;
+  color: #e09015;
+  font-weight: bold;
+  line-height: 1;
+}
+
+.topic-card-like-label {
+  font-size: 11px;
+  color: #e09015;
+  margin-top: 4px;
+}
+
+.topic-card-main {
+  flex: 1;
+  padding: 15px;
+  min-width: 0;
+}
+
+.topic-card-title {
+  font-size: 14px;
+  font-weight: normal;
+  margin-bottom: 8px;
+}
+
+.topic-card-title a {
+  color: #37a;
+}
+
+.topic-card-title a:hover {
+  color: #072;
+}
+
+.topic-card-preview {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dotted #e8e8e8;
+}
+
+.topic-card-meta {
+  color: #999;
+  font-size: 12px;
+}
+
+.topic-card-meta a {
+  color: #37a;
+}
+
+.topic-card-date {
+  margin-left: 15px;
+}
+
 /* Topic Detail - 豆瓣风格 */
 .topic-detail {
   background: #fff;
@@ -518,6 +593,38 @@ a:hover {
 .topic-content pre code {
   background: none;
   padding: 0;
+}
+
+/* Topic Like */
+.topic-like-section {
+  padding: 15px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.topic-like-btn {
+  display: inline-block;
+  padding: 6px 20px;
+  border: 1px solid #e8e8e8;
+  border-radius: 3px;
+  background: #faf9f5;
+  color: #666;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.topic-like-btn:hover {
+  background: #f0efe8;
+  border-color: #ccc;
+}
+
+.topic-like-btn.liked {
+  background: #fff8f0;
+  border-color: #e09015;
+  color: #e09015;
+}
+
+.topic-like-btn.disabled {
+  cursor: default;
 }
 
 /* Comments - 豆瓣风格 */

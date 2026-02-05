@@ -6,7 +6,7 @@ import type { Topic, User, Group } from '../db/schema'
 
 interface HomePageProps {
   user: User | null
-  topics: (Topic & { user: User; group: Group })[]
+  topics: (Topic & { user: User; group: Group; likeCount: number })[]
   hotGroups: (Group & { memberCount: number })[]
   newUsers: User[]
   userGroups: Group[]

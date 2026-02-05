@@ -52,6 +52,9 @@ export const topics = sqliteTable('topic', {
   content: text('content'),
   type: integer('type').default(0), // 0=话题 1=问题 2=投票
   images: text('images'), // JSON array
+  mastodonStatusId: text('mastodon_status_id'),
+  mastodonDomain: text('mastodon_domain'),
+  mastodonSyncedAt: integer('mastodon_synced_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -63,6 +66,7 @@ export const comments = sqliteTable('comment', {
   userId: text('user_id').notNull().references(() => users.id),
   content: text('content').notNull(),
   replyToId: text('reply_to_id'),
+  mastodonStatusId: text('mastodon_status_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -71,6 +75,14 @@ export const comments = sqliteTable('comment', {
 export const commentLikes = sqliteTable('comment_like', {
   id: text('id').primaryKey(),
   commentId: text('comment_id').notNull().references(() => comments.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 话题喜欢表
+export const topicLikes = sqliteTable('topic_like', {
+  id: text('id').primaryKey(),
+  topicId: text('topic_id').notNull().references(() => topics.id),
   userId: text('user_id').notNull().references(() => users.id),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
@@ -105,5 +117,6 @@ export type GroupMember = typeof groupMembers.$inferSelect
 export type Topic = typeof topics.$inferSelect
 export type Comment = typeof comments.$inferSelect
 export type CommentLike = typeof commentLikes.$inferSelect
+export type TopicLike = typeof topicLikes.$inferSelect
 export type Report = typeof reports.$inferSelect
 export type MastodonApp = typeof mastodonApps.$inferSelect
