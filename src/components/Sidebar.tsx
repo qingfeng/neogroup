@@ -3,11 +3,12 @@ import type { Group, User } from '../db/schema'
 
 interface SidebarProps {
   hotGroups: (Group & { memberCount: number })[]
+  randomGroups?: Group[]
   newUsers: User[]
   userGroups?: Group[]
 }
 
-export const Sidebar: FC<SidebarProps> = ({ hotGroups, newUsers, userGroups }) => {
+export const Sidebar: FC<SidebarProps> = ({ hotGroups, randomGroups, newUsers, userGroups }) => {
   return (
     <aside>
       {userGroups && userGroups.length > 0 && (
@@ -34,6 +35,19 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, newUsers, userGroups }) =
           ))}
         </ul>
       </div>
+
+      {randomGroups && randomGroups.length > 0 && (
+        <div class="sidebar" style="margin-top: 1rem;">
+          <h3 class="sidebar-title">随机小组</h3>
+          <ul class="sidebar-list">
+            {randomGroups.map((group) => (
+              <li>
+                <a href={`/group/${group.id}`}>{group.name}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div class="sidebar" style="margin-top: 1rem;">
         <h3 class="sidebar-title">新用户</h3>

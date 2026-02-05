@@ -8,12 +8,13 @@ interface HomePageProps {
   user: User | null
   topics: (Topic & { user: User; group: Group; likeCount: number })[]
   hotGroups: (Group & { memberCount: number })[]
+  randomGroups: Group[]
   newUsers: User[]
   userGroups: Group[]
   baseUrl: string
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, newUsers, userGroups, baseUrl }) => {
+export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, randomGroups, newUsers, userGroups, baseUrl }) => {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
@@ -39,7 +40,7 @@ export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, newUsers,
             <p class="card">还没有话题，快去创建一个小组开始讨论吧！</p>
           )}
         </div>
-        <Sidebar hotGroups={hotGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} />
+        <Sidebar hotGroups={hotGroups} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} />
       </div>
     </Layout>
   )

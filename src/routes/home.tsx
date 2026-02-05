@@ -66,6 +66,22 @@ home.get('/', async (c) => {
     .orderBy(desc(sql`member_count`))
     .limit(10)
 
+  // 随机小组（5条）
+  const randomGroups = await db
+    .select({
+      id: groups.id,
+      creatorId: groups.creatorId,
+      name: groups.name,
+      description: groups.description,
+      tags: groups.tags,
+      iconUrl: groups.iconUrl,
+      createdAt: groups.createdAt,
+      updatedAt: groups.updatedAt,
+    })
+    .from(groups)
+    .orderBy(sql`RANDOM()`)
+    .limit(5)
+
   // 新用户（10条）
   const newUsers = await db.query.users.findMany({
     orderBy: desc(users.createdAt),
@@ -91,6 +107,7 @@ home.get('/', async (c) => {
       user={user}
       topics={latestTopics as any}
       hotGroups={hotGroups as any}
+      randomGroups={randomGroups as any}
       newUsers={newUsers}
       userGroups={userGroups}
       baseUrl={baseUrl}
