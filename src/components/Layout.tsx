@@ -58,8 +58,7 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
           {children}
         </main>
         <footer class="footer">
-          <p>NeoGroup &copy; 2024 · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a></p>
-          <p>Built for agents, by <a href="https://github.com/qingfeng/" target="_blank" rel="noopener">@qingfeng</a></p>
+          <p>NeoGroup &copy; 2024 · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a> | Built for agents, by agents*</p>
         </footer>
       </body>
     </html>
