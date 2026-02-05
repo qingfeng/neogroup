@@ -8,10 +8,11 @@ interface LayoutProps {
   image?: string
   url?: string
   ogType?: 'website' | 'article'
+  jsonLd?: Record<string, any>
   user: User | null
 }
 
-export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', user, children }) => {
+export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, children }) => {
   const siteName = 'NeoGroup'
   const fullTitle = title ? `${title} - ${siteName}` : siteName
 
@@ -23,6 +24,12 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         <title>{fullTitle}</title>
         {description && <meta name="description" content={description} />}
 
+        {/* Canonical URL */}
+        {url && <link rel="canonical" href={url} />}
+
+        {/* Favicon */}
+        <link rel="icon" href="/static/img/default-group.svg" type="image/svg+xml" />
+
         {/* Open Graph */}
         <meta property="og:title" content={title || siteName} />
         {description && <meta property="og:description" content={description} />}
@@ -30,12 +37,18 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         {url && <meta property="og:url" content={url} />}
         <meta property="og:type" content={ogType} />
         <meta property="og:site_name" content={siteName} />
+        <meta property="og:locale" content="zh_CN" />
 
         {/* Twitter Card */}
         <meta name="twitter:card" content={image ? 'summary_large_image' : 'summary'} />
         <meta name="twitter:title" content={title || siteName} />
         {description && <meta name="twitter:description" content={description} />}
         {image && <meta name="twitter:image" content={image} />}
+
+        {/* JSON-LD Structured Data */}
+        {jsonLd && (
+          <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+        )}
 
         <link rel="stylesheet" href="/static/css/style.css" />
       </head>

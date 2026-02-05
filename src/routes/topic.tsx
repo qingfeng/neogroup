@@ -139,6 +139,33 @@ topic.get('/:id', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
   const topicUrl = `${baseUrl}/topic/${topicId}`
 
+  // JSON-LD 结构化数据
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'DiscussionForumPosting',
+    headline: topicData.title,
+    url: topicUrl,
+    datePublished: topicData.createdAt.toISOString(),
+    dateModified: topicData.updatedAt.toISOString(),
+    author: {
+      '@type': 'Person',
+      name: topicData.user.displayName || topicData.user.username,
+      url: `${baseUrl}/user/${topicData.user.id}`,
+    },
+    interactionStatistic: {
+      '@type': 'InteractionCounter',
+      interactionType: 'https://schema.org/CommentAction',
+      userInteractionCount: commentList.length,
+    },
+    isPartOf: {
+      '@type': 'WebPage',
+      name: topicData.group.name,
+      url: `${baseUrl}/group/${topicData.group.id}`,
+    },
+    ...(description ? { description } : {}),
+    ...(ogImage ? { image: ogImage } : {}),
+  }
+
   return c.html(
     <Layout
       user={user}
@@ -147,6 +174,7 @@ topic.get('/:id', async (c) => {
       image={ogImage}
       url={topicUrl}
       ogType="article"
+      jsonLd={jsonLd}
     >
       <div class="topic-page-layout">
       <div class="topic-detail">

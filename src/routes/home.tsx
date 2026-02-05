@@ -83,6 +83,8 @@ home.get('/', async (c) => {
     userGroups = memberships.map((m) => m.group)
   }
 
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
   return c.html(
     <HomePage
       user={user}
@@ -90,6 +92,7 @@ home.get('/', async (c) => {
       hotGroups={hotGroups as any}
       newUsers={newUsers}
       userGroups={userGroups}
+      baseUrl={baseUrl}
     />
   )
 })

@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { serveStatic } from 'hono/cloudflare-workers'
+import { desc } from 'drizzle-orm'
 import { createDb } from './db'
+import { groups as groupsTable, topics as topicsTable } from './db/schema'
 import { loadUser } from './middleware/auth'
 import authRoutes from './routes/auth'
 import homeRoutes from './routes/home'
@@ -16,6 +18,48 @@ const app = new Hono<AppContext>()
 
 // 静态文件
 app.use('/static/*', serveStatic({ root: './', manifest }))
+
+// robots.txt
+app.get('/robots.txt', (c) => {
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  return c.text(`User-agent: *
+Allow: /
+Disallow: /auth/
+Disallow: /api/
+
+Sitemap: ${baseUrl}/sitemap.xml
+`)
+})
+
+// sitemap.xml
+app.get('/sitemap.xml', async (c) => {
+  const db = createDb(c.env.DB)
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  const allGroups = await db.select({ id: groupsTable.id, updatedAt: groupsTable.updatedAt }).from(groupsTable)
+  const recentTopics = await db
+    .select({ id: topicsTable.id, updatedAt: topicsTable.updatedAt })
+    .from(topicsTable)
+    .orderBy(desc(topicsTable.updatedAt))
+    .limit(500)
+
+  const urls = [
+    `<url><loc>${baseUrl}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+    ...allGroups.map(g =>
+      `<url><loc>${baseUrl}/group/${g.id}</loc><lastmod>${g.updatedAt.toISOString().split('T')[0]}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>`
+    ),
+    ...recentTopics.map(t =>
+      `<url><loc>${baseUrl}/topic/${t.id}</loc><lastmod>${t.updatedAt.toISOString().split('T')[0]}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>`
+    ),
+  ]
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.join('\n')}
+</urlset>`
+
+  return c.body(xml, 200, { 'Content-Type': 'application/xml' })
+})
 
 // R2 文件访问（支持图片裁剪）
 app.get('/r2/*', async (c) => {

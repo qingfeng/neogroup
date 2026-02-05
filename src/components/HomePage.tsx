@@ -10,13 +10,24 @@ interface HomePageProps {
   hotGroups: (Group & { memberCount: number })[]
   newUsers: User[]
   userGroups: Group[]
+  baseUrl: string
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, newUsers, userGroups }) => {
+export const HomePage: FC<HomePageProps> = ({ user, topics, hotGroups, newUsers, userGroups, baseUrl }) => {
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: 'NeoGroup',
+    url: baseUrl,
+    description: 'NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区',
+  }
+
   return (
     <Layout
       title="首页"
       description="NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区"
+      url={baseUrl}
+      jsonLd={jsonLd}
       user={user}
     >
       <div class="grid grid-3">
