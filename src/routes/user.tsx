@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, topics, groups, comments } from '../db/schema'
+import { users, topics, groups, comments, topicLikes } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { stripHtml, truncate, resizeImage } from '../lib/utils'
 
@@ -58,6 +58,24 @@ user.get('/:id', async (c) => {
     .where(eq(comments.userId, userId))
     .orderBy(desc(comments.createdAt))
     .limit(10)
+
+  // 获取用户喜欢的话题
+  const likedTopics = await db
+    .select({
+      id: topics.id,
+      title: topics.title,
+      likedAt: topicLikes.createdAt,
+      group: {
+        id: groups.id,
+        name: groups.name,
+      },
+    })
+    .from(topicLikes)
+    .innerJoin(topics, eq(topicLikes.topicId, topics.id))
+    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .where(eq(topicLikes.userId, userId))
+    .orderBy(desc(topicLikes.createdAt))
+    .limit(20)
 
   const formatDate = (date: Date) => {
     return date.toLocaleDateString('zh-CN')
@@ -130,6 +148,25 @@ user.get('/:id', async (c) => {
                     <span class="meta">
                       评论于 <a href={`/topic/${comment.topic.id}`}>{comment.topic.title}</a>
                       · {formatDate(comment.createdAt)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div class="profile-section">
+            <h2>喜欢的话题 ({likedTopics.length})</h2>
+            {likedTopics.length === 0 ? (
+              <p class="no-content">暂无喜欢</p>
+            ) : (
+              <ul class="topic-simple-list">
+                {likedTopics.map((topic) => (
+                  <li key={topic.id}>
+                    <a href={`/topic/${topic.id}`}>{topic.title}</a>
+                    <span class="meta">
+                      <a href={`/group/${topic.group.id}`}>{topic.group.name}</a>
+                      · {formatDate(topic.likedAt)}
                     </span>
                   </li>
                 ))}
