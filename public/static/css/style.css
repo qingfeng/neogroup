@@ -397,6 +397,80 @@ a:hover {
   font-size: 12px;
 }
 
+/* Feed Section - 随便看看 */
+.feed-section {
+  margin-bottom: 2rem;
+}
+
+.feed-item {
+  display: flex;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.feed-item:last-child {
+  border-bottom: none;
+}
+
+.feed-item-avatar img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.feed-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.feed-item-header {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.feed-item-user {
+  color: #37a;
+  font-weight: bold;
+}
+
+.feed-item-action {
+  color: #999;
+}
+
+.feed-item-action a {
+  color: #37a;
+}
+
+.feed-item-title {
+  color: #37a;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.feed-item-preview {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+.feed-item-meta {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+
+.feed-item-meta a {
+  color: #999;
+}
+
+.feed-item-meta a:hover {
+  color: #37a;
+}
+
 /* Topic Card - 豆瓣风格 */
 .topic-card {
   display: flex;

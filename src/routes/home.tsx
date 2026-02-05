@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { desc, eq, sql } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, groupMembers } from '../db/schema'
+import { topics, users, groups, groupMembers, comments } from '../db/schema'
 import { HomePage } from '../components/HomePage'
 
 const home = new Hono<AppContext>()
@@ -47,6 +47,64 @@ home.get('/', async (c) => {
     .innerJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(desc(topics.updatedAt))
     .limit(30)
+
+  // 随机话题（5条）
+  const randomTopics = await db
+    .select({
+      id: topics.id,
+      title: topics.title,
+      content: topics.content,
+      createdAt: topics.createdAt,
+      user: {
+        id: users.id,
+        username: users.username,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+      group: {
+        id: groups.id,
+        name: groups.name,
+      },
+    })
+    .from(topics)
+    .innerJoin(users, eq(topics.userId, users.id))
+    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .orderBy(sql`RANDOM()`)
+    .limit(5)
+
+  // 随机回复（5条）
+  const randomComments = await db
+    .select({
+      id: comments.id,
+      content: comments.content,
+      createdAt: comments.createdAt,
+      user: {
+        id: users.id,
+        username: users.username,
+        displayName: users.displayName,
+        avatarUrl: users.avatarUrl,
+      },
+      topic: {
+        id: topics.id,
+        title: topics.title,
+      },
+      group: {
+        id: groups.id,
+        name: groups.name,
+      },
+    })
+    .from(comments)
+    .innerJoin(users, eq(comments.userId, users.id))
+    .innerJoin(topics, eq(comments.topicId, topics.id))
+    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .orderBy(sql`RANDOM()`)
+    .limit(5)
+
+  // 混合并打乱顺序
+  const feedItems = [
+    ...randomTopics.map(t => ({ type: 'topic' as const, ...t })),
+    ...randomComments.map(c => ({ type: 'comment' as const, ...c })),
+  ].sort(() => Math.random() - 0.5)
 
   // 热门小组（10条，按成员数排序）
   const hotGroups = await db
@@ -105,6 +163,7 @@ home.get('/', async (c) => {
   return c.html(
     <HomePage
       user={user}
+      feedItems={feedItems as any}
       topics={latestTopics as any}
       hotGroups={hotGroups as any}
       randomGroups={randomGroups as any}
