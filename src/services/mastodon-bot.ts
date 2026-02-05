@@ -123,8 +123,8 @@ async function processMention(
     body = `<p>${content.replace(/\n/g, '</p><p>')}</p>`
   }
 
-  // AI 选择小组
-  const groupId = await selectGroup(env.AI!, db, content)
+  // 统一发到杂谈小组
+  const groupId = FALLBACK_GROUP_ID
 
   // 创建或关联用户
   const userId = await getOrCreateMastodonUser(db, status.account, domain)
