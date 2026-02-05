@@ -7,6 +7,7 @@ export const users = sqliteTable('user', {
   displayName: text('display_name'),
   avatarUrl: text('avatar_url'),
   bio: text('bio'),
+  role: text('role'), // 'admin' = 超级管理员
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })

@@ -154,18 +154,19 @@ export async function postStatus(
   domain: string,
   accessToken: string,
   status: string,
-  visibility: 'public' | 'unlisted' | 'private' | 'direct' = 'public'
+  visibility: 'public' | 'unlisted' | 'private' | 'direct' = 'public',
+  inReplyToId?: string
 ): Promise<{ id: string; url: string }> {
+  const body: Record<string, string> = { status, visibility }
+  if (inReplyToId) body.in_reply_to_id = inReplyToId
+
   const response = await fetch(`https://${domain}/api/v1/statuses`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      status,
-      visibility,
-    }),
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {

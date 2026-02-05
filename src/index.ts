@@ -9,7 +9,8 @@ import homeRoutes from './routes/home'
 import topicRoutes from './routes/topic'
 import groupRoutes from './routes/group'
 import userRoutes from './routes/user'
-import type { AppContext } from './types'
+import type { AppContext, Bindings } from './types'
+import { pollMentions } from './services/mastodon-bot'
 
 // @ts-ignore - Workers Sites manifest
 import manifest from '__STATIC_CONTENT_MANIFEST'
@@ -236,7 +237,13 @@ app.route('/group', groupRoutes)
 app.route('/user', userRoutes)
 app.route('/', homeRoutes)
 
-export default app
+export default {
+  fetch: app.fetch,
+  scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
+    const db = createDb(env.DB)
+    ctx.waitUntil(pollMentions(env, db))
+  },
+}
 
 function getExtFromFile(filename: string, mimeType: string): string {
   const match = filename.match(/\.(\w+)$/)

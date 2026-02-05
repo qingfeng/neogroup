@@ -3,7 +3,7 @@ import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages } from '../lib/utils'
+import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { syncMastodonReplies } from '../services/mastodon-sync'
 
 const topic = new Hono<AppContext>()
@@ -227,10 +227,16 @@ topic.get('/:id', async (c) => {
             <span>{topicData.user.displayName || topicData.user.username}</span>
           </a>
           <span class="topic-date">{formatDate(topicData.createdAt)}</span>
-          {user && user.id === topicData.userId && (
+          {user && (user.id === topicData.userId || isSuperAdmin(user)) && (
             <span class="topic-actions-inline">
-              <a href={`/topic/${topicId}/edit`} class="topic-edit-link">编辑</a>
-              {commentList.length > 0 ? (
+              {user.id === topicData.userId && (
+                <a href={`/topic/${topicId}/edit`} class="topic-edit-link">编辑</a>
+              )}
+              {isSuperAdmin(user) ? (
+                <form action={`/topic/${topicId}/delete`} method="POST" style="display: inline;" onsubmit={`return confirm('确定要删除这个话题吗？${commentList.length > 0 ? '将同时删除 ' + commentList.length + ' 条评论。' : ''}删除后无法恢复。')`}>
+                  <button type="submit" class="topic-edit-link" style="border: none; background: none; cursor: pointer; color: #c00; padding: 0;">删除</button>
+                </form>
+              ) : commentList.length > 0 ? (
                 <button type="button" class="topic-edit-link" style="border: none; background: none; cursor: pointer; color: #c00; padding: 0;" onclick="alert('该话题下还有评论，请先删除全部评论后再删除话题。')">删除</button>
               ) : (
                 <form action={`/topic/${topicId}/delete`} method="POST" style="display: inline;" onsubmit="return confirm('确定要删除这个话题吗？删除后无法恢复。')">
@@ -373,7 +379,7 @@ topic.get('/:id', async (c) => {
                             编辑
                           </button>
                         )}
-                        {user && user.id === comment.user.id && (
+                        {user && (user.id === comment.user.id || isSuperAdmin(user)) && (
                           <form action={`/topic/${topicId}/comment/${comment.id}/delete`} method="POST" style="display: inline;" onsubmit="return confirm('确定要删除这条评论吗？')">
                             <button type="submit" class="comment-action-btn" style="color: #c00;">删除</button>
                           </form>
@@ -630,7 +636,7 @@ topic.post('/:id/comment/:commentId/delete', async (c) => {
   if (!user) return c.redirect('/auth/login')
 
   const comment = await db.select().from(comments).where(eq(comments.id, commentId)).limit(1)
-  if (comment.length === 0 || comment[0].userId !== user.id) {
+  if (comment.length === 0 || (comment[0].userId !== user.id && !isSuperAdmin(user))) {
     return c.redirect(`/topic/${topicId}`)
   }
 
@@ -650,19 +656,29 @@ topic.post('/:id/delete', async (c) => {
   if (!user) return c.redirect('/auth/login')
 
   const topicResult = await db.select().from(topics).where(eq(topics.id, topicId)).limit(1)
-  if (topicResult.length === 0 || topicResult[0].userId !== user.id) {
+  if (topicResult.length === 0) return c.redirect(`/topic/${topicId}`)
+
+  const isAdmin = isSuperAdmin(user)
+  if (topicResult[0].userId !== user.id && !isAdmin) {
     return c.redirect(`/topic/${topicId}`)
   }
 
   const groupId = topicResult[0].groupId
 
-  // 有评论时不允许删除
-  const commentCount = await db.select({ count: sql<number>`count(*)` }).from(comments).where(eq(comments.topicId, topicId))
-  if (commentCount[0].count > 0) {
-    return c.redirect(`/topic/${topicId}`)
+  // 普通用户：有评论时不允许删除
+  if (!isAdmin) {
+    const commentCount = await db.select({ count: sql<number>`count(*)` }).from(comments).where(eq(comments.topicId, topicId))
+    if (commentCount[0].count > 0) {
+      return c.redirect(`/topic/${topicId}`)
+    }
   }
 
-  // 删除关联数据：话题点赞 → 话题
+  // 超级管理员：级联删除评论点赞 → 评论 → 话题点赞 → 话题
+  const topicComments = await db.select({ id: comments.id }).from(comments).where(eq(comments.topicId, topicId))
+  for (const comment of topicComments) {
+    await db.delete(commentLikes).where(eq(commentLikes.commentId, comment.id))
+  }
+  await db.delete(comments).where(eq(comments.topicId, topicId))
   await db.delete(topicLikes).where(eq(topicLikes.topicId, topicId))
   await db.delete(topics).where(eq(topics.id, topicId))
 

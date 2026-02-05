@@ -145,7 +145,7 @@ export async function syncMastodonReplies(
     .where(eq(topics.id, topicId))
 }
 
-async function getOrCreateMastodonUser(
+export async function getOrCreateMastodonUser(
   db: Database,
   account: MastodonStatus['account'],
   queriedDomain: string

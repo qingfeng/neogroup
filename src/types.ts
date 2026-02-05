@@ -5,9 +5,11 @@ export type Bindings = {
   KV: KVNamespace
   APP_URL: string
   APP_NAME: string
-  // 阶段二才需要
   R2?: R2Bucket
   QUEUE?: Queue
+  AI?: Ai
+  MASTODON_BOT_TOKEN?: string
+  MASTODON_BOT_DOMAIN?: string
 }
 
 export type Variables = {

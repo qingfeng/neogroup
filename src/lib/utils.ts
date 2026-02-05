@@ -4,6 +4,10 @@ export function generateId(): string {
   return nanoid(12)
 }
 
+export function isSuperAdmin(user: { role?: string | null } | null): boolean {
+  return user?.role === 'admin'
+}
+
 export function now(): Date {
   return new Date()
 }
