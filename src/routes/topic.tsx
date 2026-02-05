@@ -169,6 +169,9 @@ topic.get('/:id', async (c) => {
             <span>{topicData.user.displayName || topicData.user.username}</span>
           </a>
           <span class="topic-date">{formatDate(topicData.createdAt)}</span>
+          {user && user.id === topicData.userId && (
+            <a href={`/topic/${topicId}/edit`} class="topic-edit-link">编辑</a>
+          )}
         </div>
 
         {topicData.content && (
@@ -431,6 +434,191 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
   }
 
   return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+})
+
+// 编辑话题页面
+topic.get('/:id/edit', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const topicResult = await db
+    .select({
+      id: topics.id,
+      groupId: topics.groupId,
+      userId: topics.userId,
+      title: topics.title,
+      content: topics.content,
+      group: {
+        id: groups.id,
+        name: groups.name,
+      },
+    })
+    .from(topics)
+    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .where(eq(topics.id, topicId))
+    .limit(1)
+
+  if (topicResult.length === 0) {
+    return c.notFound()
+  }
+
+  const topicData = topicResult[0]
+
+  if (topicData.userId !== user.id) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  return c.html(
+    <Layout user={user} title={`编辑话题 - ${topicData.title}`}>
+      <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
+      <div class="new-topic-page">
+        <div class="page-header">
+          <h1>编辑话题</h1>
+          <p class="page-subtitle">
+            <a href={`/group/${topicData.groupId}`}>{topicData.group.name}</a>
+            {' · '}
+            <a href={`/topic/${topicId}`}>返回话题</a>
+          </p>
+        </div>
+
+        <form action={`/topic/${topicId}/edit`} method="POST" class="topic-form" id="topic-form">
+          <div class="form-group">
+            <label for="title">标题</label>
+            <input type="text" id="title" name="title" required value={topicData.title} />
+          </div>
+
+          <div class="form-group">
+            <label>内容</label>
+            <div id="editor"></div>
+            <input type="hidden" id="content" name="content" />
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存修改</button>
+            <a href={`/topic/${topicId}`} class="btn">取消</a>
+          </div>
+        </form>
+      </div>
+
+      <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+      <script dangerouslySetInnerHTML={{ __html: `
+        const quill = new Quill('#editor', {
+          theme: 'snow',
+          placeholder: '话题内容（可选）...',
+          modules: {
+            toolbar: [
+              ['bold', 'italic', 'underline', 'strike'],
+              ['blockquote', 'code-block'],
+              [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+              ['link', 'image'],
+              ['clean']
+            ]
+          }
+        });
+
+        // 加载已有内容
+        var existingContent = ${JSON.stringify(topicData.content || '')};
+        if (existingContent) {
+          quill.root.innerHTML = existingContent;
+        }
+
+        // 图片上传处理
+        quill.getModule('toolbar').addHandler('image', function() {
+          var input = document.createElement('input');
+          input.setAttribute('type', 'file');
+          input.setAttribute('accept', 'image/*');
+          input.click();
+          input.onchange = async function() {
+            var file = input.files[0];
+            if (file) await uploadImage(file);
+          };
+        });
+
+        quill.root.addEventListener('paste', async function(e) {
+          var items = e.clipboardData && e.clipboardData.items;
+          if (!items) return;
+          for (var i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf('image/') === 0) {
+              e.preventDefault();
+              var file = items[i].getAsFile();
+              if (file) await uploadImage(file);
+              break;
+            }
+          }
+        });
+
+        async function uploadImage(file) {
+          var formData = new FormData();
+          formData.append('image', file);
+          try {
+            var res = await fetch('/api/upload', { method: 'POST', body: formData });
+            var data = await res.json();
+            if (data.url) {
+              var range = quill.getSelection(true);
+              quill.insertEmbed(range.index, 'image', data.url);
+              quill.setSelection(range.index + 1);
+            }
+          } catch (err) {
+            console.error('Upload failed:', err);
+            alert('图片上传失败');
+          }
+        }
+
+        document.getElementById('topic-form').addEventListener('submit', function(e) {
+          var content = quill.root.innerHTML;
+          document.getElementById('content').value = content === '<p><br></p>' ? '' : content;
+        });
+      ` }} />
+    </Layout>
+  )
+})
+
+// 保存编辑话题
+topic.post('/:id/edit', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const topicResult = await db
+    .select()
+    .from(topics)
+    .where(eq(topics.id, topicId))
+    .limit(1)
+
+  if (topicResult.length === 0) {
+    return c.notFound()
+  }
+
+  if (topicResult[0].userId !== user.id) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const body = await c.req.parseBody()
+  const title = body.title as string
+  const content = body.content as string
+
+  if (!title || !title.trim()) {
+    return c.redirect(`/topic/${topicId}/edit`)
+  }
+
+  await db.update(topics)
+    .set({
+      title: title.trim(),
+      content: content?.trim() || null,
+      updatedAt: new Date(),
+    })
+    .where(eq(topics.id, topicId))
+
+  return c.redirect(`/topic/${topicId}`)
 })
 
 export default topic

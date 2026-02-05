@@ -453,6 +453,16 @@ a:hover {
   color: #999;
 }
 
+.topic-edit-link {
+  margin-left: auto;
+  color: #999;
+  font-size: 12px;
+}
+
+.topic-edit-link:hover {
+  color: #37a;
+}
+
 .topic-content {
   padding: 20px 15px;
   line-height: 1.8;
