@@ -251,6 +251,152 @@ a:hover {
   font-size: 12px;
 }
 
+/* Topic Page Layout */
+.topic-page-layout {
+  display: flex;
+  gap: 20px;
+}
+
+.topic-page-layout .topic-detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.topic-sidebar {
+  width: 270px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .topic-page-layout {
+    flex-direction: column;
+  }
+  .topic-sidebar {
+    width: 100%;
+  }
+}
+
+/* Sidebar Group Card */
+.sidebar-group-card {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  margin-bottom: 15px;
+}
+
+.sidebar-group-header {
+  display: flex;
+  gap: 12px;
+  padding: 15px;
+}
+
+.sidebar-group-icon {
+  width: 70px;
+  height: 70px;
+  flex-shrink: 0;
+}
+
+.sidebar-group-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-group-name {
+  display: block;
+  font-size: 14px;
+  color: #072;
+  font-weight: bold;
+  margin-bottom: 5px;
+  line-height: 1.4;
+}
+
+.sidebar-group-name:hover {
+  text-decoration: none;
+  color: #37a;
+}
+
+.sidebar-group-desc {
+  font-size: 12px;
+  color: #999;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.sidebar-group-stats {
+  padding: 12px 15px;
+  text-align: center;
+  color: #072;
+  font-size: 13px;
+  border-top: 1px solid #e8e8e8;
+}
+
+.sidebar-group-stats strong {
+  font-size: 16px;
+}
+
+.sidebar-join-btn {
+  display: block;
+  width: calc(100% - 30px);
+  margin: 0 15px 15px;
+  text-align: center;
+}
+
+.sidebar-member-status {
+  padding: 0 15px 15px;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+}
+
+/* Sidebar Latest Discussions */
+.sidebar-latest {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+}
+
+.sidebar-latest-header {
+  padding: 12px 15px;
+  font-size: 15px;
+  font-weight: bold;
+  color: #333;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.sidebar-more {
+  font-size: 12px;
+  font-weight: normal;
+  color: #37a;
+}
+
+.sidebar-latest-list {
+  list-style: none;
+  padding: 10px 15px;
+  margin: 0;
+}
+
+.sidebar-latest-list li {
+  padding: 8px 0;
+  border-bottom: 1px dotted #e8e8e8;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sidebar-latest-list li:last-child {
+  border-bottom: none;
+}
+
+.sidebar-topic-title {
+  color: #37a;
+}
+
+.sidebar-topic-title:hover {
+  color: #072;
+}
+
+.sidebar-topic-author {
+  color: #999;
+  font-size: 12px;
+}
+
 /* Topic Detail - 豆瓣风格 */
 .topic-detail {
   background: #fff;

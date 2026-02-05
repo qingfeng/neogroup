@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import { eq, desc, and, sql } from 'drizzle-orm'
+import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, groupMembers } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage } from '../lib/utils'
 
@@ -33,6 +33,7 @@ topic.get('/:id', async (c) => {
       group: {
         id: groups.id,
         name: groups.name,
+        description: groups.description,
         iconUrl: groups.iconUrl,
       },
     })
@@ -47,6 +48,42 @@ topic.get('/:id', async (c) => {
   }
 
   const topicData = topicResult[0]
+  const groupId = topicData.groupId
+
+  // 获取小组成员数
+  const memberCountResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(groupMembers)
+    .where(eq(groupMembers.groupId, groupId))
+  const memberCount = memberCountResult[0]?.count || 0
+
+  // 检查当前用户是否是成员
+  let isMember = false
+  if (user) {
+    const membership = await db
+      .select()
+      .from(groupMembers)
+      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+      .limit(1)
+    isMember = membership.length > 0
+  }
+
+  // 获取小组最新话题（排除当前话题）
+  const latestTopics = await db
+    .select({
+      id: topics.id,
+      title: topics.title,
+      user: {
+        id: users.id,
+        username: users.username,
+        displayName: users.displayName,
+      },
+    })
+    .from(topics)
+    .innerJoin(users, eq(topics.userId, users.id))
+    .where(and(eq(topics.groupId, groupId), ne(topics.id, topicId)))
+    .orderBy(desc(topics.updatedAt))
+    .limit(5)
 
   // 获取评论列表（包含点赞数）
   const commentList = await db
@@ -111,6 +148,7 @@ topic.get('/:id', async (c) => {
       url={topicUrl}
       ogType="article"
     >
+      <div class="topic-page-layout">
       <div class="topic-detail">
         <div class="topic-header">
           <a href={`/group/${topicData.group.id}`} class="topic-group">
@@ -243,6 +281,56 @@ topic.get('/:id', async (c) => {
             )}
           </div>
         </div>
+      </div>
+
+      {/* 右侧边栏 */}
+      <aside class="topic-sidebar">
+        {/* 小组信息卡片 */}
+        <div class="sidebar-group-card">
+          <div class="sidebar-group-header">
+            <img
+              src={resizeImage(topicData.group.iconUrl, 160) || '/static/img/default-group.svg'}
+              alt=""
+              class="sidebar-group-icon"
+            />
+            <div class="sidebar-group-info">
+              <a href={`/group/${groupId}`} class="sidebar-group-name">{topicData.group.name}</a>
+              {topicData.group.description && (
+                <p class="sidebar-group-desc">{truncate(topicData.group.description, 50)}</p>
+              )}
+            </div>
+          </div>
+          <div class="sidebar-group-stats">
+            <strong>{memberCount}</strong> 人聚集在这个小组
+          </div>
+          {user && !isMember && (
+            <form action={`/group/${groupId}/join`} method="POST">
+              <button type="submit" class="btn btn-primary sidebar-join-btn">加入小组</button>
+            </form>
+          )}
+          {user && isMember && (
+            <div class="sidebar-member-status">已加入</div>
+          )}
+        </div>
+
+        {/* 最新讨论 */}
+        {latestTopics.length > 0 && (
+          <div class="sidebar-latest">
+            <div class="sidebar-latest-header">
+              <span>最新讨论</span>
+              <a href={`/group/${groupId}`} class="sidebar-more">（更多）</a>
+            </div>
+            <ul class="sidebar-latest-list">
+              {latestTopics.map((t) => (
+                <li key={t.id}>
+                  <a href={`/topic/${t.id}`} class="sidebar-topic-title">{truncate(t.title, 25)}</a>
+                  <span class="sidebar-topic-author">（{t.user.displayName || t.user.username}）</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </aside>
       </div>
     </Layout>
   )
