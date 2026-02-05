@@ -113,6 +113,13 @@ group.get('/:id', async (c) => {
               <span>{memberCount} 成员</span>
               <span>创建者: {groupData.creator.displayName || groupData.creator.username}</span>
             </div>
+            {groupData.tags && (
+              <div class="group-tags">
+                {groupData.tags.split(/\s+/).filter(Boolean).map(tag => (
+                  <span class="group-tag">{tag}</span>
+                ))}
+              </div>
+            )}
           </div>
           <div class="group-actions">
             {user && !isMember && (
@@ -570,6 +577,11 @@ group.get('/:id/settings', async (c) => {
             <textarea id="description" name="description" rows={5} placeholder="介绍一下这个小组...">{groupData.description || ''}</textarea>
           </div>
 
+          <div class="form-group">
+            <label for="tags">分类标签 <span style="color: #999; font-weight: normal;">(空格分隔)</span></label>
+            <input type="text" id="tags" name="tags" value={groupData.tags || ''} placeholder="输入标签，空格分隔，如：电影 读书 音乐" />
+          </div>
+
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">保存设置</button>
             <a href={`/group/${groupId}`} class="btn">取消</a>
@@ -610,6 +622,7 @@ group.post('/:id/settings', async (c) => {
 
   const body = await c.req.parseBody()
   const description = body.description as string
+  const tags = body.tags as string
   const iconFile = body.icon as File | undefined
 
   let iconUrl = groupData.iconUrl
@@ -637,6 +650,7 @@ group.post('/:id/settings', async (c) => {
   await db.update(groups)
     .set({
       description: description?.trim() || null,
+      tags: tags?.trim() || null,
       iconUrl,
       updatedAt: now(),
     })

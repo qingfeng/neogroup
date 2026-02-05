@@ -903,6 +903,22 @@ a:hover {
   font-size: 12px;
 }
 
+.group-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.group-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: #527a42;
+  background: #f0f5ec;
+  border-radius: 3px;
+}
+
 .group-actions {
   display: flex;
   align-items: flex-start;

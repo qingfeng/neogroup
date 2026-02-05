@@ -29,6 +29,7 @@ export const groups = sqliteTable('group', {
   creatorId: text('creator_id').notNull().references(() => users.id),
   name: text('name').notNull().unique(),
   description: text('description'),
+  tags: text('tags'),
   iconUrl: text('icon_url'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
