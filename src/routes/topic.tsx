@@ -279,7 +279,12 @@ topic.get('/:id', async (c) => {
         </div>
 
         <div class="comments-section">
-          <h2>评论 ({commentList.length})</h2>
+          <div class="comments-header">
+            <h2>评论 ({commentList.length})</h2>
+            {commentList.some(c => c.user.id === topicData.userId) && (
+              <button type="button" class="btn-text" id="toggle-author-only" onclick="toggleAuthorOnly()">只看楼主</button>
+            )}
+          </div>
 
           {user ? (
             <form action={`/topic/${topicId}/comment`} method="POST" class="comment-form" id="comment-form">
@@ -331,6 +336,20 @@ topic.get('/:id', async (c) => {
             function hideEditForm(commentId) {
               document.getElementById('edit-form-' + commentId).style.display = 'none';
             }
+            var authorOnlyMode = false;
+            function toggleAuthorOnly() {
+              authorOnlyMode = !authorOnlyMode;
+              var btn = document.getElementById('toggle-author-only');
+              btn.textContent = authorOnlyMode ? '查看全部' : '只看楼主';
+              var items = document.querySelectorAll('.comment-item');
+              items.forEach(function(item) {
+                if (authorOnlyMode && item.dataset.isAuthor !== 'true') {
+                  item.style.display = 'none';
+                } else {
+                  item.style.display = '';
+                }
+              });
+            }
           ` }} />
 
           <div class="comment-list">
@@ -342,7 +361,7 @@ topic.get('/:id', async (c) => {
                 const isLiked = userLikedCommentIds.has(comment.id)
                 const replyTo = comment.replyToId ? commentMap.get(comment.replyToId) : null
                 return (
-                  <div class="comment-item" key={comment.id} id={`comment-${comment.id}`}>
+                  <div class={`comment-item ${isAuthor ? 'is-author' : ''}`} key={comment.id} id={`comment-${comment.id}`} data-is-author={isAuthor ? 'true' : 'false'}>
                     <div class="comment-avatar">
                       <a href={`/user/${comment.user.id}`}>
                         <img

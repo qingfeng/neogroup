@@ -1543,3 +1543,28 @@ button.ql-neodb:hover::after {
   font-size: 12px;
   color: #999;
 }
+
+/* 评论区头部 */
+.comments-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.comments-header h2 {
+  margin: 0;
+}
+
+.btn-text {
+  background: none;
+  border: none;
+  color: #007722;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+
+.btn-text:hover {
+  text-decoration: underline;
+}
