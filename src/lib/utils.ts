@@ -30,69 +30,116 @@ export function toJson(obj: unknown): string {
   return JSON.stringify(obj)
 }
 
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+export function unescapeHtml(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 export function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
 }
 
 /**
  * Sanitize HTML to prevent XSS attacks.
- * Only allows safe tags: p, br, a, span
- * Only allows safe attributes: href (for a), class, rel
- * Removes all dangerous elements: script, style, form, input, etc.
+ * Uses strict whitelist approach:
+ * - Allowed tags: p, br, a, span, strong, em, b, i, u, ul, ol, li, img, blockquote, pre, code, div, h1-h3
+ * - Non-whitelisted tags are escaped (< > become &lt; &gt;)
+ * - Allowed attributes are strictly filtered
+ * - Event handlers and dangerous URLs are removed
  */
 export function sanitizeHtml(html: string): string {
   if (!html) return ''
 
-  // Remove dangerous tags completely (including content)
-  let sanitized = html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
-    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
-    .replace(/<embed\b[^>]*>/gi, '')
+  // Whitelist of allowed tags
+  const allowedTags = new Set([
+    'p', 'br', 'a', 'span', 'strong', 'em', 'b', 'i', 'u',
+    'ul', 'ol', 'li', 'img', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3', 'div'
+  ])
 
-  // Remove dangerous self-closing/void tags
-  sanitized = sanitized
-    .replace(/<(input|form|button|select|textarea|label|fieldset|meta|link|base)[^>]*\/?>/gi, '')
-    .replace(/<\/(input|form|button|select|textarea|label|fieldset)>/gi, '')
+  // Process each tag in the HTML
+  let result = html.replace(/<(\/?)([\w-]+)([^>]*)>/gi, (match, slash, tagName, attrs) => {
+    const tag = tagName.toLowerCase()
 
-  // Remove event handlers (onclick, onerror, etc.)
-  sanitized = sanitized.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
-  sanitized = sanitized.replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '')
-
-  // Remove javascript: and data: URLs
-  sanitized = sanitized.replace(/href\s*=\s*["']javascript:[^"']*["']/gi, '')
-  sanitized = sanitized.replace(/href\s*=\s*["']data:[^"']*["']/gi, '')
-  sanitized = sanitized.replace(/src\s*=\s*["']javascript:[^"']*["']/gi, '')
-  sanitized = sanitized.replace(/src\s*=\s*["']data:[^"']*["']/gi, '')
-
-  // Remove dangerous attributes (except href on a tags, class, rel, target)
-  sanitized = sanitized.replace(/<a\b([^>]*)>/gi, (match, attrs) => {
-    // Keep only safe attributes for <a> tags
-    const safeAttrs: string[] = []
-    const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i)
-    const relMatch = attrs.match(/rel\s*=\s*["']([^"']+)["']/i)
-    const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
-
-    if (hrefMatch && !hrefMatch[1].match(/^(javascript|data):/i)) {
-      safeAttrs.push(`href="${hrefMatch[1]}"`)
-      safeAttrs.push('target="_blank"')
-      safeAttrs.push('rel="noopener nofollow"')
-    }
-    if (classMatch) {
-      safeAttrs.push(`class="${classMatch[1]}"`)
+    // If tag is not in whitelist, escape it
+    if (!allowedTags.has(tag)) {
+      return match.replace(/</g, '&lt;').replace(/>/g, '&gt;')
     }
 
-    return `<a ${safeAttrs.join(' ')}>`
+    // For closing tags, just return the clean version
+    if (slash === '/') {
+      return `</${tag}>`
+    }
+
+    // For opening tags, sanitize attributes
+    let safeAttrs = ''
+
+    // Remove all event handlers first
+    attrs = attrs.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
+    attrs = attrs.replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '')
+
+    if (tag === 'a') {
+      // For <a> tags, only allow safe href
+      const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i)
+      if (hrefMatch && !hrefMatch[1].match(/^(javascript|data|vbscript):/i)) {
+        safeAttrs = ` href="${escapeAttr(hrefMatch[1])}" target="_blank" rel="noopener nofollow"`
+      }
+    } else if (tag === 'img') {
+      // For <img> tags, only allow safe src and alt
+      const srcMatch = attrs.match(/src\s*=\s*["']([^"']+)["']/i)
+      const altMatch = attrs.match(/alt\s*=\s*["']([^"']*?)["']/i)
+      if (srcMatch && !srcMatch[1].match(/^(javascript|data|vbscript):/i)) {
+        safeAttrs = ` src="${escapeAttr(srcMatch[1])}"`
+        if (altMatch) {
+          safeAttrs += ` alt="${escapeAttr(altMatch[1])}"`
+        }
+      } else {
+        // Invalid img, escape it
+        return match.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
+    } else if (tag === 'span' || tag === 'div') {
+      // For <span> and <div> tags, allow class and data-neodb attributes
+      const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
+      const dataMatch = attrs.match(/data-neodb\s*=\s*["']([^"']+)["']/i)
+      const editableMatch = attrs.match(/contenteditable\s*=\s*["']([^"']+)["']/i)
+      if (classMatch) {
+        safeAttrs += ` class="${escapeAttr(classMatch[1])}"`
+      }
+      if (dataMatch) {
+        safeAttrs += ` data-neodb="${escapeAttr(dataMatch[1])}"`
+      }
+      if (editableMatch && editableMatch[1] === 'false') {
+        safeAttrs += ' contenteditable="false"'
+      }
+    }
+    // Other allowed tags: no attributes
+
+    return `<${tag}${safeAttrs}>`
   })
 
-  // For span tags, only keep class attribute
-  sanitized = sanitized.replace(/<span\b([^>]*)>/gi, (match, attrs) => {
-    const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
-    return classMatch ? `<span class="${classMatch[1]}">` : '<span>'
-  })
+  return result
+}
 
-  return sanitized
+// Helper: escape attribute values
+function escapeAttr(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 export function truncate(str: string, maxLength: number): string {

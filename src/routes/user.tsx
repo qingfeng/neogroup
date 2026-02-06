@@ -3,7 +3,8 @@ import { eq, desc } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, topics, groups, comments, topicLikes, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { stripHtml, truncate, resizeImage } from '../lib/utils'
+import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml } from '../lib/utils'
+import { SafeHtml } from '../components/SafeHtml'
 
 const user = new Hono<AppContext>()
 
@@ -24,6 +25,7 @@ user.get('/:id', async (c) => {
   }
 
   const profileUser = userResult[0]
+  const isOwnProfile = currentUser?.id === userId
 
   // 获取 Mastodon 账号信息
   let mastodonHandle: string | null = null
@@ -39,7 +41,7 @@ user.get('/:id', async (c) => {
         mastodonHandle = `@${meta.username}@${domain}`
         mastodonUrl = meta.url || `https://${domain}/@${meta.username}`
       }
-    } catch {}
+    } catch { }
   }
 
   // 获取用户发布的话题
@@ -111,7 +113,7 @@ user.get('/:id', async (c) => {
       user={currentUser}
       title={displayName}
       description={description}
-      image={profileUser.avatarUrl}
+      image={profileUser.avatarUrl || undefined}
       url={userUrl}
       unreadCount={c.get('unreadNotificationCount')}
     >
@@ -132,10 +134,13 @@ user.get('/:id', async (c) => {
               <div class="profile-username">@{profileUser.username}</div>
             )}
             {profileUser.bio && (
-              <div class="profile-bio" dangerouslySetInnerHTML={{ __html: profileUser.bio }} />
+              <SafeHtml html={profileUser.bio} className="profile-bio" />
             )}
             <div class="profile-meta">
               加入于 {formatDate(profileUser.createdAt)}
+              {isOwnProfile && (
+                <a href={`/user/${userId}/edit`} class="edit-profile-link">编辑资料</a>
+              )}
             </div>
           </div>
         </div>
@@ -201,6 +206,171 @@ user.get('/:id', async (c) => {
       </div>
     </Layout>
   )
+})
+
+// 编辑资料页面
+user.get('/:id/edit', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+
+  // 必须登录且只能编辑自己的资料
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+
+  const userResult = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1)
+
+  if (userResult.length === 0) {
+    return c.notFound()
+  }
+
+  const profileUser = userResult[0]
+
+  return c.html(
+    <Layout
+      user={currentUser}
+      title="编辑资料"
+      unreadCount={c.get('unreadNotificationCount')}
+    >
+      <div class="edit-profile-page">
+        <h1>编辑资料</h1>
+        <form action={`/user/${userId}/edit`} method="post" enctype="multipart/form-data" class="edit-profile-form">
+          <div class="form-group">
+            <label>头像</label>
+            <div class="avatar-upload">
+              <img
+                src={resizeImage(profileUser.avatarUrl, 128) || '/static/img/default-avatar.svg'}
+                alt=""
+                class="avatar-preview"
+                id="avatarPreview"
+              />
+              <input type="file" name="avatar" accept="image/*" id="avatarInput" />
+              <p class="form-hint">支持 JPG、PNG、GIF，最大 2MB</p>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="displayName">昵称</label>
+            <input
+              type="text"
+              name="displayName"
+              id="displayName"
+              value={profileUser.displayName || ''}
+              placeholder="显示的名称"
+              maxLength={50}
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="bio">简介</label>
+            <textarea
+              name="bio"
+              id="bio"
+              rows={4}
+              placeholder="介绍一下自己..."
+              maxLength={500}
+            >{unescapeHtml(stripHtml(profileUser.bio || ''))}</textarea>
+            <p class="form-hint">最多 500 字</p>
+          </div>
+
+          <div class="form-actions">
+            <a href={`/user/${userId}`} class="btn-secondary">取消</a>
+            <button type="submit" class="btn-primary">保存</button>
+          </div>
+        </form>
+      </div>
+
+      <script dangerouslySetInnerHTML={{
+        __html: `
+          document.getElementById('avatarInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+              const reader = new FileReader();
+              reader.onload = function(e) {
+                document.getElementById('avatarPreview').src = e.target.result;
+              };
+              reader.readAsDataURL(file);
+            }
+          });
+        `
+      }} />
+    </Layout>
+  )
+})
+
+// 保存资料
+user.post('/:id/edit', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+  const r2 = c.env.R2
+
+  // 必须登录且只能编辑自己的资料
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+
+  const formData = await c.req.formData()
+  const displayName = (formData.get('displayName') as string || '').trim().slice(0, 50)
+  const bioText = (formData.get('bio') as string || '').trim().slice(0, 500)
+  const avatarFile = formData.get('avatar') as File | null
+
+  // 处理 bio：将纯文本转换为 HTML 段落（先转义特殊字符）
+  const bio = bioText
+    ? bioText.split('\n').filter(line => line.trim()).map(line => `<p>${escapeHtml(line)}</p>`).join('')
+    : null
+
+  let avatarUrl: string | undefined
+
+  // 处理头像上传
+  if (avatarFile && avatarFile.size > 0 && r2) {
+    // 验证文件大小（2MB）
+    if (avatarFile.size > 2 * 1024 * 1024) {
+      return c.redirect(`/user/${userId}/edit?error=文件过大`)
+    }
+
+    // 验证文件类型
+    const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+    if (!validTypes.includes(avatarFile.type)) {
+      return c.redirect(`/user/${userId}/edit?error=不支持的文件类型`)
+    }
+
+    try {
+      const buffer = await avatarFile.arrayBuffer()
+      const ext = getExtensionFromUrl(avatarFile.name) || 'png'
+      const contentType = getContentType(ext)
+      const key = `avatars/${userId}.${ext}`
+
+      await r2.put(key, buffer, {
+        httpMetadata: { contentType },
+      })
+
+      const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+      avatarUrl = `${baseUrl}/r2/${key}`
+    } catch (error) {
+      console.error('Failed to upload avatar:', error)
+    }
+  }
+
+  // 更新用户信息
+  const updateData: Record<string, unknown> = {
+    displayName: displayName || null,
+    bio,
+    updatedAt: new Date(),
+  }
+
+  if (avatarUrl) {
+    updateData.avatarUrl = avatarUrl
+  }
+
+  await db.update(users).set(updateData).where(eq(users.id, userId))
+
+  return c.redirect(`/user/${userId}`)
 })
 
 export default user

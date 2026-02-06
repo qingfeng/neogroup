@@ -1593,3 +1593,114 @@ button.ql-neodb:hover::after {
   color: #666;
   font-size: 14px;
 }
+
+/* Edit Profile Page */
+.edit-profile-link {
+  margin-left: 15px;
+  color: #37a;
+  font-size: 12px;
+}
+
+.edit-profile-link:hover {
+  color: #072;
+}
+
+.edit-profile-page {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  padding: 20px;
+  max-width: 600px;
+}
+
+.edit-profile-page h1 {
+  font-size: 18px;
+  font-weight: normal;
+  color: #072;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.edit-profile-form .form-group {
+  margin-bottom: 20px;
+}
+
+.edit-profile-form label {
+  display: block;
+  margin-bottom: 8px;
+  color: #333;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.edit-profile-form input[type="text"],
+.edit-profile-form textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.edit-profile-form input:focus,
+.edit-profile-form textarea:focus {
+  border-color: #9bc07d;
+  outline: none;
+}
+
+.avatar-upload {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.avatar-preview {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid #e8e8e8;
+}
+
+.avatar-upload input[type="file"] {
+  font-size: 13px;
+}
+
+.form-hint {
+  color: #999;
+  font-size: 12px;
+  margin-top: 5px;
+}
+
+.edit-profile-form .form-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.btn-primary {
+  background: #9bc07d;
+  color: #072;
+  border: none;
+  padding: 8px 20px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background: #8ab56c;
+}
+
+.btn-secondary {
+  background: #faf9f5;
+  color: #666;
+  border: 1px solid #ccc;
+  padding: 8px 20px;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.btn-secondary:hover {
+  background: #f0efe8;
+}
