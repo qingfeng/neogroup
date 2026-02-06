@@ -636,27 +636,37 @@ topic.post('/:id/comment', async (c) => {
           // 情况2: 帖子没有 Mastodon status → 作为独立 status 发送
           const topicTitle = topicResult[0].title
 
-          // 获取帖子作者的 Mastodon 账号
-          let authorMention = ''
-          const topicAuthorAuth = await db.query.authProviders.findFirst({
-            where: and(
-              eq(authProviders.userId, topicResult[0].userId),
-              eq(authProviders.providerType, 'mastodon')
-            ),
-          })
-          if (topicAuthorAuth?.metadata) {
-            try {
-              const meta = JSON.parse(topicAuthorAuth.metadata) as { username?: string }
-              const authorDomain = topicAuthorAuth.providerId.split('@')[1]
-              if (meta.username && authorDomain) {
-                authorMention = `@${meta.username}@${authorDomain} `
-              }
-            } catch { /* ignore parse error */ }
+          // 确定要 @的人：如果是回复评论，@评论作者；否则@帖子作者（不@自己）
+          let mentionUserId = topicResult[0].userId
+          if (replyToId) {
+            const replyTarget = await db.select({ userId: comments.userId }).from(comments).where(eq(comments.id, replyToId)).limit(1)
+            if (replyTarget.length > 0) {
+              mentionUserId = replyTarget[0].userId
+            }
+          }
+
+          let mention = ''
+          if (mentionUserId !== user.id) {
+            const mentionAuth = await db.query.authProviders.findFirst({
+              where: and(
+                eq(authProviders.userId, mentionUserId),
+                eq(authProviders.providerType, 'mastodon')
+              ),
+            })
+            if (mentionAuth?.metadata) {
+              try {
+                const meta = JSON.parse(mentionAuth.metadata) as { username?: string }
+                const mentionDomain = mentionAuth.providerId.split('@')[1]
+                if (meta.username && mentionDomain) {
+                  mention = `@${meta.username}@${mentionDomain} `
+                }
+              } catch { /* ignore parse error */ }
+            }
           }
 
           const tootContent = plainText.length > 380
-            ? `${authorMention}${plainText.slice(0, 380)}...\n\n📝 ${topicTitle}\n${link}`
-            : `${authorMention}${plainText}\n\n📝 ${topicTitle}\n${link}`
+            ? `${mention}${plainText.slice(0, 380)}...\n\n📝 ${topicTitle}\n${link}`
+            : `${mention}${plainText}\n\n📝 ${topicTitle}\n${link}`
           toot = await postStatus(userDomain, authProvider.accessToken, tootContent, 'unlisted')
         }
 

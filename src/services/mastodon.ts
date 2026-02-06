@@ -176,6 +176,22 @@ export async function postStatus(
   return response.json() as Promise<{ id: string; url: string }>
 }
 
+// 解析跨实例账号，确保本实例知道该用户（让 @ 变成真正的 mention）
+export async function resolveAccount(
+  userDomain: string,
+  userToken: string,
+  acct: string  // 格式: username@domain
+): Promise<void> {
+  try {
+    await fetch(
+      `https://${userDomain}/api/v2/search?q=${encodeURIComponent(acct)}&type=accounts&resolve=true&limit=1`,
+      { headers: { Authorization: `Bearer ${userToken}` } }
+    )
+  } catch {
+    // ignore errors
+  }
+}
+
 // 解析跨实例 status ID（用于回复其他实例的 toot）
 export async function resolveStatusId(
   userDomain: string,
