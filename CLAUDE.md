@@ -1,32 +1,41 @@
-# NeoGroup - Hono + Cloudflare Workers
+# NeoGroup - 项目文档
 
-这是一个基于 Hono 框架的小组讨论社区，部署在 Cloudflare Workers 上。
+基于 Hono 框架的小组讨论社区，部署在 Cloudflare Workers 上。
+
+> **开发环境搭建请参考 [skill.md](./skill.md)**
 
 ## 技术栈
 
-- **框架**: Hono (轻量级 Web 框架)
-- **运行时**: Cloudflare Workers
-- **数据库**: Cloudflare D1 (SQLite)
-- **ORM**: Drizzle ORM
-- **会话存储**: Cloudflare KV
-- **认证**: Mastodon OAuth2
-- **模板**: Hono JSX (SSR)
+| 组件 | 技术 |
+|-----|------|
+| Web 框架 | [Hono](https://hono.dev) |
+| 运行时 | Cloudflare Workers |
+| 数据库 | Cloudflare D1 (SQLite) |
+| ORM | [Drizzle](https://orm.drizzle.team) |
+| 会话存储 | Cloudflare KV |
+| 文件存储 | Cloudflare R2 |
+| AI | Cloudflare Workers AI |
+| 认证 | Mastodon OAuth2 |
+| 模板引擎 | Hono JSX (SSR) |
 
 ## 项目结构
 
 ```
 src/
-├── index.ts              # 入口文件
+├── index.ts              # 入口文件，API 路由，Cron handler
 ├── types.ts              # TypeScript 类型定义
 ├── db/
 │   ├── index.ts          # 数据库连接
 │   └── schema.ts         # Drizzle 表结构定义
 ├── lib/
-│   └── utils.ts          # 工具函数
+│   ├── utils.ts          # 工具函数
+│   └── notifications.ts  # 站内通知
 ├── middleware/
 │   └── auth.ts           # 认证中间件
 ├── services/
 │   ├── mastodon.ts       # Mastodon OAuth 服务
+│   ├── mastodon-bot.ts   # Mastodon Bot（@机器人自动发帖）
+│   ├── mastodon-sync.ts  # Mastodon 回复同步
 │   └── session.ts        # 会话管理
 ├── routes/
 │   ├── auth.ts           # 认证路由 (/auth/*)
@@ -34,91 +43,7 @@ src/
 │   ├── topic.tsx         # 话题路由 (/topic/*)
 │   ├── group.tsx         # 小组路由 (/group/*)
 │   └── user.tsx          # 用户路由 (/user/*)
-├── components/
-│   ├── Layout.tsx        # 页面布局
-│   ├── Navbar.tsx        # 导航栏
-│   ├── HomePage.tsx      # 首页组件
-│   ├── TopicCard.tsx     # 话题卡片
-│   └── Sidebar.tsx       # 侧边栏
-public/
-└── static/
-    ├── css/style.css     # 样式文件
-    └── img/              # 静态图片
-scripts/
-└── migrate-data.js       # 数据迁移脚本
-```
-
-## 开发环境设置
-
-### 1. 安装依赖
-
-```bash
-npm install
-```
-
-### 2. 创建 Cloudflare 资源
-
-需要 Node.js v20+ 和 Wrangler CLI。
-
-```bash
-# 登录 Cloudflare
-npx wrangler login
-
-# 创建 D1 数据库
-npx wrangler d1 create neogroup
-
-# 创建 KV 命名空间
-npx wrangler kv namespace create KV
-```
-
-### 3. 创建本地配置
-
-复制模板文件并填入你的 ID：
-
-```bash
-cp wrangler.toml.example wrangler.toml
-```
-
-编辑 `wrangler.toml`，替换占位符：
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "neogroup"
-database_id = "你的数据库ID"
-
-[[kv_namespaces]]
-binding = "KV"
-id = "你的KV命名空间ID"
-```
-
-### 4. 初始化数据库
-
-```bash
-# 生成迁移文件
-npx drizzle-kit generate
-
-# 应用到本地开发数据库
-npx wrangler d1 execute neogroup --local --file=drizzle/0000_*.sql
-
-# 应用到远程生产数据库
-npx wrangler d1 execute neogroup --remote --file=drizzle/0000_*.sql
-```
-
-### 5. 本地开发
-
-```bash
-npm run dev
-```
-
-访问 http://localhost:8787
-
-### 6. 部署
-
-```bash
-npm run deploy
-# 或
-npx wrangler deploy
+└── components/           # JSX 页面组件
 ```
 
 ## 数据库表结构
@@ -126,33 +51,42 @@ npx wrangler deploy
 | 表名 | 说明 |
 |-----|------|
 | user | 用户基本信息 |
-| auth_provider | 认证方式（支持多种登录） |
+| auth_provider | 认证方式（Mastodon OAuth） |
 | group | 小组 |
 | group_member | 小组成员 |
 | topic | 话题/帖子 |
 | comment | 评论 |
 | comment_like | 评论点赞 |
+| topic_like | 话题喜欢 |
+| notification | 站内通知 |
 | report | 举报 |
-| mastodon_app | Mastodon 应用配置 |
+| mastodon_app | Mastodon 应用配置（按实例缓存） |
 
-## 自定义域名
+## Mastodon 同步机制
 
-在 `wrangler.toml` 中添加:
+### 话题同步
 
-```toml
-[[routes]]
-pattern = "你的域名.com"
-custom_domain = true
-```
+话题可以通过 Mastodon Bot 创建（@机器人 发帖），此时话题会关联一个 `mastodon_status_id`。
 
-需要先将域名添加到 Cloudflare 并删除已有的 A/CNAME 记录。
+当用户访问话题页面时，系统会调用 `syncMastodonReplies()` 同步 Mastodon 上对该帖子的所有回复为评论。
 
-## 环境变量
+### 评论同步
 
-| 变量 | 说明 |
-|-----|------|
-| APP_NAME | 应用名称，显示在页面标题 |
-| APP_URL | 应用 URL（可选，会自动检测） |
+发表评论时可以勾选"同步到 Mastodon"：
+
+1. **话题有 `mastodon_status_id`**: 评论作为回复发送到 Mastodon（回复原帖）
+2. **话题没有 `mastodon_status_id`**: 评论作为独立 status 发送，内容包含：
+   - `@帖子作者@实例` mention（通知帖子作者）
+   - 帖子标题和链接
+
+评论发送到 Mastodon 后，会保存 `mastodon_status_id` 和 `mastodon_domain`。
+
+当用户再次访问话题页面时，系统会调用 `syncCommentReplies()` 同步 Mastodon 上对这些评论的回复。
+
+### 相关代码
+
+- `src/services/mastodon-sync.ts` — `syncMastodonReplies()`, `syncCommentReplies()`
+- `src/routes/topic.tsx` — 评论发布逻辑、同步调用
 
 ## 常用命令
 
@@ -165,6 +99,9 @@ npm run deploy
 
 # 生成数据库迁移
 npx drizzle-kit generate
+
+# 执行迁移（远程）
+npx wrangler d1 execute neogroup --remote --file=drizzle/0006_xxx.sql
 
 # 查看远程数据库
 npx wrangler d1 execute neogroup --remote --command="SELECT * FROM user LIMIT 10;"
