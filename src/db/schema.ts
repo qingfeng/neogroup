@@ -69,6 +69,8 @@ export const comments = sqliteTable('comment', {
   content: text('content').notNull(),
   replyToId: text('reply_to_id'),
   mastodonStatusId: text('mastodon_status_id'),
+  mastodonDomain: text('mastodon_domain'),
+  mastodonSyncedAt: integer('mastodon_synced_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })

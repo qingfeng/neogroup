@@ -206,3 +206,112 @@ export async function getOrCreateMastodonUser(
 
   return userId
 }
+
+/**
+ * Sync replies to a comment that was posted as an independent Mastodon status.
+ * Similar to syncMastodonReplies but for comment-level sync.
+ */
+export async function syncCommentReplies(
+  db: Database,
+  topicId: string,
+  parentCommentId: string,
+  mastodonDomain: string,
+  mastodonStatusId: string,
+): Promise<void> {
+  // 1. Check cooldown
+  const commentRow = await db
+    .select({ mastodonSyncedAt: comments.mastodonSyncedAt })
+    .from(comments)
+    .where(eq(comments.id, parentCommentId))
+    .limit(1)
+
+  if (commentRow.length === 0) return
+
+  const lastSynced = commentRow[0].mastodonSyncedAt
+  if (lastSynced && (Date.now() - lastSynced.getTime()) < SYNC_COOLDOWN_MS) {
+    return
+  }
+
+  // 2. Fetch replies from Mastodon
+  const descendants = await fetchMastodonReplies(mastodonDomain, mastodonStatusId)
+
+  if (descendants.length === 0) {
+    await db.update(comments)
+      .set({ mastodonSyncedAt: new Date() })
+      .where(eq(comments.id, parentCommentId))
+    return
+  }
+
+  // 3. Get already-synced Mastodon status IDs for this topic
+  const existingComments = await db
+    .select({ id: comments.id, mastodonStatusId: comments.mastodonStatusId })
+    .from(comments)
+    .where(eq(comments.topicId, topicId))
+
+  const existingStatusIds = new Set(
+    existingComments
+      .map(c => c.mastodonStatusId)
+      .filter((id): id is string => id !== null)
+  )
+
+  // 4. Filter to only new replies
+  const newReplies = descendants.filter(d => !existingStatusIds.has(d.id))
+
+  if (newReplies.length === 0) {
+    await db.update(comments)
+      .set({ mastodonSyncedAt: new Date() })
+      .where(eq(comments.id, parentCommentId))
+    return
+  }
+
+  // 5. Build a map from mastodon status ID -> comment ID (for replyToId resolution)
+  const statusToCommentId = new Map<string, string>()
+  for (const c of existingComments) {
+    if (c.mastodonStatusId) {
+      statusToCommentId.set(c.mastodonStatusId, c.id)
+    }
+  }
+  // Map the parent comment's status ID to its comment ID
+  statusToCommentId.set(mastodonStatusId, parentCommentId)
+
+  // Pre-generate IDs for new replies so we can resolve in_reply_to references among the batch
+  const replyIdMap = new Map<string, string>()
+  for (const reply of newReplies) {
+    replyIdMap.set(reply.id, generateId())
+  }
+
+  // 6. Process each new reply
+  const now = new Date()
+  for (const reply of newReplies) {
+    const userId = await getOrCreateMastodonUser(db, reply.account, mastodonDomain)
+    const commentId = replyIdMap.get(reply.id)!
+
+    // Resolve replyToId - default to parent comment if direct reply
+    let replyToId: string | null = parentCommentId
+    if (reply.in_reply_to_id && reply.in_reply_to_id !== mastodonStatusId) {
+      replyToId = statusToCommentId.get(reply.in_reply_to_id)
+        ?? replyIdMap.get(reply.in_reply_to_id)
+        ?? parentCommentId
+    }
+
+    const createdAt = new Date(reply.created_at)
+
+    await db.insert(comments).values({
+      id: commentId,
+      topicId,
+      userId,
+      content: reply.content,
+      replyToId,
+      mastodonStatusId: reply.id,
+      createdAt,
+      updatedAt: createdAt,
+    })
+
+    statusToCommentId.set(reply.id, commentId)
+  }
+
+  // 7. Update comment sync timestamp
+  await db.update(comments)
+    .set({ mastodonSyncedAt: now })
+    .where(eq(comments.id, parentCommentId))
+}
