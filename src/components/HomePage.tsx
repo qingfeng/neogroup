@@ -21,6 +21,7 @@ interface HomePageProps {
   feedItems: FeedItem[]
   topics: (Topic & { user: User; group: Group; likeCount: number })[]
   hotGroups: (Group & { memberCount: number })[]
+  topTags: string[]
   randomGroups: Group[]
   newUsers: User[]
   userGroups: Group[]
@@ -28,7 +29,7 @@ interface HomePageProps {
   unreadCount?: number
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, randomGroups, newUsers, userGroups, baseUrl, unreadCount }) => {
+export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, baseUrl, unreadCount }) => {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
@@ -93,7 +94,7 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
             </div>
           )}
         </div>
-        <Sidebar hotGroups={hotGroups} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} />
+        <Sidebar hotGroups={hotGroups} topTags={topTags} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} />
       </div>
     </Layout>
   )

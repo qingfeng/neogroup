@@ -997,6 +997,61 @@ a:hover {
   color: #527a42;
   background: #f0f5ec;
   border-radius: 3px;
+  text-decoration: none;
+}
+
+a.group-tag:hover {
+  background: #e0edda;
+  text-decoration: none;
+}
+
+.sidebar-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 15px;
+}
+
+.tag-group-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.tag-group-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dotted #e8e8e8;
+}
+
+.tag-group-item:last-child {
+  border-bottom: none;
+}
+
+.tag-group-icon {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+}
+
+.tag-group-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tag-group-name {
+  display: block;
+  font-size: 14px;
+  color: #37a;
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.tag-group-desc {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+  line-height: 1.5;
 }
 
 .group-actions {

@@ -3,12 +3,13 @@ import type { Group, User } from '../db/schema'
 
 interface SidebarProps {
   hotGroups: (Group & { memberCount: number })[]
+  topTags?: string[]
   randomGroups?: Group[]
   newUsers: User[]
   userGroups?: Group[]
 }
 
-export const Sidebar: FC<SidebarProps> = ({ hotGroups, randomGroups, newUsers, userGroups }) => {
+export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, newUsers, userGroups }) => {
   return (
     <aside>
       {userGroups && userGroups.length > 0 && (
@@ -21,6 +22,17 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, randomGroups, newUsers, u
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {topTags && topTags.length > 0 && (
+        <div class="sidebar" style="margin-top: 1rem;">
+          <h3 class="sidebar-title">小组标签</h3>
+          <div class="sidebar-tags">
+            {topTags.map((tag) => (
+              <a href={`/group/tag/${encodeURIComponent(tag)}`} class="group-tag">{tag}</a>
+            ))}
+          </div>
         </div>
       )}
 

@@ -8,6 +8,60 @@ import { postStatus } from '../services/mastodon'
 
 const group = new Hono<AppContext>()
 
+// 按标签筛选小组
+group.get('/tag/:tag', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const tag = decodeURIComponent(c.req.param('tag'))
+
+  const allGroups = await db
+    .select({
+      id: groups.id,
+      creatorId: groups.creatorId,
+      name: groups.name,
+      description: groups.description,
+      tags: groups.tags,
+      iconUrl: groups.iconUrl,
+      createdAt: groups.createdAt,
+      updatedAt: groups.updatedAt,
+      memberCount: sql<number>`(SELECT COUNT(*) FROM group_member WHERE group_member.group_id = ${groups.id})`.as('member_count'),
+    })
+    .from(groups)
+    .where(sql`${groups.tags} IS NOT NULL AND ${groups.tags} != ''`)
+
+  const matchedGroups = allGroups.filter(g =>
+    g.tags!.split(/\s+/).some(t => t === tag)
+  )
+
+  return c.html(
+    <Layout user={user} title={`标签: ${tag}`} unreadCount={c.get('unreadNotificationCount')}>
+      <div class="group-detail">
+        <div class="group-content">
+          <div class="section-header">
+            <h2>标签「{tag}」的小组</h2>
+          </div>
+          {matchedGroups.length === 0 ? (
+            <p class="no-content">暂无小组</p>
+          ) : (
+            <div class="tag-group-list">
+              {matchedGroups.map((g) => (
+                <div class="tag-group-item">
+                  <img src={g.iconUrl || '/static/img/default-group.svg'} alt="" class="tag-group-icon" />
+                  <div class="tag-group-info">
+                    <a href={`/group/${g.id}`} class="tag-group-name">{g.name}</a>
+                    {g.description && <p class="tag-group-desc">{truncate(g.description, 80)}</p>}
+                    <span class="card-meta">{g.memberCount} 成员</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Layout>
+  )
+})
+
 // 创建小组页面
 group.get('/create', async (c) => {
   const user = c.get('user')

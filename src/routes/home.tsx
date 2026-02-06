@@ -106,6 +106,25 @@ home.get('/', async (c) => {
     ...randomComments.map(c => ({ type: 'comment' as const, ...c })),
   ].sort(() => Math.random() - 0.5)
 
+  // 小组标签（聚合所有小组的 tags，取出现次数最多的10个）
+  const allGroupTags = await db
+    .select({ tags: groups.tags })
+    .from(groups)
+    .where(sql`${groups.tags} IS NOT NULL AND ${groups.tags} != ''`)
+
+  const tagCounts = new Map<string, number>()
+  for (const row of allGroupTags) {
+    if (row.tags) {
+      for (const tag of row.tags.split(/\s+/).filter(Boolean)) {
+        tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1)
+      }
+    }
+  }
+  const topTags = [...tagCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([tag]) => tag)
+
   // 热门小组（10条，按成员数排序）
   const hotGroups = await db
     .select({
@@ -166,6 +185,7 @@ home.get('/', async (c) => {
       feedItems={feedItems as any}
       topics={latestTopics as any}
       hotGroups={hotGroups as any}
+      topTags={topTags}
       randomGroups={randomGroups as any}
       newUsers={newUsers}
       userGroups={userGroups}
