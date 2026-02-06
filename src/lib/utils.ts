@@ -34,6 +34,67 @@ export function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * Sanitize HTML to prevent XSS attacks.
+ * Only allows safe tags: p, br, a, span
+ * Only allows safe attributes: href (for a), class, rel
+ * Removes all dangerous elements: script, style, form, input, etc.
+ */
+export function sanitizeHtml(html: string): string {
+  if (!html) return ''
+
+  // Remove dangerous tags completely (including content)
+  let sanitized = html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
+    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
+    .replace(/<embed\b[^>]*>/gi, '')
+
+  // Remove dangerous self-closing/void tags
+  sanitized = sanitized
+    .replace(/<(input|form|button|select|textarea|label|fieldset|meta|link|base)[^>]*\/?>/gi, '')
+    .replace(/<\/(input|form|button|select|textarea|label|fieldset)>/gi, '')
+
+  // Remove event handlers (onclick, onerror, etc.)
+  sanitized = sanitized.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
+  sanitized = sanitized.replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '')
+
+  // Remove javascript: and data: URLs
+  sanitized = sanitized.replace(/href\s*=\s*["']javascript:[^"']*["']/gi, '')
+  sanitized = sanitized.replace(/href\s*=\s*["']data:[^"']*["']/gi, '')
+  sanitized = sanitized.replace(/src\s*=\s*["']javascript:[^"']*["']/gi, '')
+  sanitized = sanitized.replace(/src\s*=\s*["']data:[^"']*["']/gi, '')
+
+  // Remove dangerous attributes (except href on a tags, class, rel, target)
+  sanitized = sanitized.replace(/<a\b([^>]*)>/gi, (match, attrs) => {
+    // Keep only safe attributes for <a> tags
+    const safeAttrs: string[] = []
+    const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i)
+    const relMatch = attrs.match(/rel\s*=\s*["']([^"']+)["']/i)
+    const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
+
+    if (hrefMatch && !hrefMatch[1].match(/^(javascript|data):/i)) {
+      safeAttrs.push(`href="${hrefMatch[1]}"`)
+      safeAttrs.push('target="_blank"')
+      safeAttrs.push('rel="noopener nofollow"')
+    }
+    if (classMatch) {
+      safeAttrs.push(`class="${classMatch[1]}"`)
+    }
+
+    return `<a ${safeAttrs.join(' ')}>`
+  })
+
+  // For span tags, only keep class attribute
+  sanitized = sanitized.replace(/<span\b([^>]*)>/gi, (match, attrs) => {
+    const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
+    return classMatch ? `<span class="${classMatch[1]}">` : '<span>'
+  })
+
+  return sanitized
+}
+
 export function truncate(str: string, maxLength: number): string {
   if (str.length <= maxLength) return str
   return str.slice(0, maxLength).trim() + '...'

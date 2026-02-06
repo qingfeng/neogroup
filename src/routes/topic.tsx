@@ -4,6 +4,7 @@ import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
+import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId } from '../services/mastodon'
@@ -296,7 +297,7 @@ topic.get('/:id', async (c) => {
           </div>
 
           {topicData.content && (
-            <div class="topic-content" dangerouslySetInnerHTML={{ __html: processContentImages(topicData.content) }} />
+            <SafeHtml html={processContentImages(topicData.content)} className="topic-content" />
           )}
 
           <div class="topic-like-section">
@@ -412,7 +413,7 @@ topic.get('/:id', async (c) => {
                             </a>
                           </div>
                         )}
-                        <div class="comment-content" dangerouslySetInnerHTML={{ __html: comment.content }} />
+                        <SafeHtml html={comment.content} className="comment-content" />
                         <div class="comment-actions">
                           {user ? (
                             <form action={`/topic/${topicId}/comment/${comment.id}/like`} method="POST" style="display: inline;">
