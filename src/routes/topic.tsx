@@ -126,6 +126,24 @@ topic.get('/:id', async (c) => {
     .orderBy(desc(topics.updatedAt))
     .limit(5)
 
+  // 分页参数
+  const PAGE_SIZE = 50
+  const page = Math.max(1, parseInt(c.req.query('page') || '1') || 1)
+  const authorOnly = c.req.query('author_only') === '1'
+
+  // 评论查询条件
+  const commentCondition = authorOnly
+    ? and(eq(comments.topicId, topicId), eq(comments.userId, topicData.userId))
+    : eq(comments.topicId, topicId)
+
+  // 获取评论总数
+  const totalResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(comments)
+    .where(commentCondition)
+  const totalComments = totalResult[0]?.count || 0
+  const totalPages = Math.ceil(totalComments / PAGE_SIZE)
+
   // 获取评论列表（包含点赞数）
   const commentList = await db
     .select({
@@ -143,8 +161,10 @@ topic.get('/:id', async (c) => {
     })
     .from(comments)
     .innerJoin(users, eq(comments.userId, users.id))
-    .where(eq(comments.topicId, topicId))
+    .where(commentCondition)
     .orderBy(comments.createdAt)
+    .limit(PAGE_SIZE)
+    .offset((page - 1) * PAGE_SIZE)
 
   // 获取当前用户点赞的评论ID列表
   let userLikedCommentIds: Set<string> = new Set()
@@ -280,9 +300,11 @@ topic.get('/:id', async (c) => {
 
         <div class="comments-section">
           <div class="comments-header">
-            <h2>评论 ({commentList.length})</h2>
-            {commentList.some(c => c.user.id === topicData.userId) && (
-              <button type="button" class="btn-text" id="toggle-author-only" onclick="toggleAuthorOnly()">只看楼主</button>
+            <h2>评论 ({totalComments})</h2>
+            {authorOnly ? (
+              <a href={`/topic/${topicId}`} class="btn-text">查看全部</a>
+            ) : (
+              <a href={`/topic/${topicId}?author_only=1`} class="btn-text">只看楼主</a>
             )}
           </div>
 
@@ -336,20 +358,6 @@ topic.get('/:id', async (c) => {
             function hideEditForm(commentId) {
               document.getElementById('edit-form-' + commentId).style.display = 'none';
             }
-            var authorOnlyMode = false;
-            function toggleAuthorOnly() {
-              authorOnlyMode = !authorOnlyMode;
-              var btn = document.getElementById('toggle-author-only');
-              btn.textContent = authorOnlyMode ? '查看全部' : '只看楼主';
-              var items = document.querySelectorAll('.comment-item');
-              items.forEach(function(item) {
-                if (authorOnlyMode && item.dataset.isAuthor !== 'true') {
-                  item.style.display = 'none';
-                } else {
-                  item.style.display = '';
-                }
-              });
-            }
           ` }} />
 
           <div class="comment-list">
@@ -361,7 +369,7 @@ topic.get('/:id', async (c) => {
                 const isLiked = userLikedCommentIds.has(comment.id)
                 const replyTo = comment.replyToId ? commentMap.get(comment.replyToId) : null
                 return (
-                  <div class={`comment-item ${isAuthor ? 'is-author' : ''}`} key={comment.id} id={`comment-${comment.id}`} data-is-author={isAuthor ? 'true' : 'false'}>
+                  <div class="comment-item" key={comment.id} id={`comment-${comment.id}`}>
                     <div class="comment-avatar">
                       <a href={`/user/${comment.user.id}`}>
                         <img
@@ -441,6 +449,18 @@ topic.get('/:id', async (c) => {
               })
             )}
           </div>
+
+          {totalPages > 1 && (
+            <div class="pagination">
+              {page > 1 && (
+                <a href={`/topic/${topicId}?page=${page - 1}${authorOnly ? '&author_only=1' : ''}`} class="pagination-link">上一页</a>
+              )}
+              <span class="pagination-info">第 {page} / {totalPages} 页</span>
+              {page < totalPages && (
+                <a href={`/topic/${topicId}?page=${page + 1}${authorOnly ? '&author_only=1' : ''}`} class="pagination-link">下一页</a>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

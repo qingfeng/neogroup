@@ -1568,3 +1568,28 @@ button.ql-neodb:hover::after {
 .btn-text:hover {
   text-decoration: underline;
 }
+
+/* 分页 */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #eee;
+}
+
+.pagination-link {
+  color: #007722;
+  text-decoration: none;
+}
+
+.pagination-link:hover {
+  text-decoration: underline;
+}
+
+.pagination-info {
+  color: #666;
+  font-size: 14px;
+}
