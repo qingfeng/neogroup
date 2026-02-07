@@ -1,13 +1,13 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, topicLikes, groupMembers, authProviders } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, topicLikes, topicReposts, groupMembers, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
-import { postStatus, resolveStatusId } from '../services/mastodon'
+import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl } from '../services/mastodon'
 
 const topic = new Hono<AppContext>()
 
@@ -115,6 +115,37 @@ topic.get('/:id', async (c) => {
       .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
       .limit(1)
     isTopicLiked = existingLike.length > 0
+  }
+
+  // 获取转发数
+  const repostCountResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(topicReposts)
+    .where(eq(topicReposts.topicId, topicId))
+  const repostCount = repostCountResult[0]?.count || 0
+
+  // 获取转发者列表
+  const reposters = await db
+    .select({
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      avatarUrl: users.avatarUrl,
+    })
+    .from(topicReposts)
+    .innerJoin(users, eq(topicReposts.userId, users.id))
+    .where(eq(topicReposts.topicId, topicId))
+    .orderBy(desc(topicReposts.createdAt))
+
+  // 检查当前用户是否已转发
+  let isReposted = false
+  if (user) {
+    const existingRepost = await db
+      .select()
+      .from(topicReposts)
+      .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
+      .limit(1)
+    isReposted = existingRepost.length > 0
   }
 
   // 检查用户是否有 Mastodon 账号（用于评论同步）
@@ -313,7 +344,48 @@ topic.get('/:id', async (c) => {
                 喜欢{topicLikeCount > 0 ? ` (${topicLikeCount})` : ''}
               </span>
             )}
+            {hasMastodonAuth && !isReposted && (
+              <form action={`/topic/${topicId}/repost`} method="POST" style="display: inline;">
+                <button type="submit" class={`topic-like-btn`} onclick="this.disabled=true;this.form.submit();">
+                  转发{repostCount > 0 ? ` (${repostCount})` : ''}
+                </button>
+              </form>
+            )}
+            {hasMastodonAuth && isReposted && (
+              <span class="topic-like-btn reposted">
+                已转发{repostCount > 0 ? ` (${repostCount})` : ''}
+              </span>
+            )}
+            {!hasMastodonAuth && repostCount > 0 && (
+              <span class="topic-like-btn disabled">
+                转发 ({repostCount})
+              </span>
+            )}
+            {repostCount > 0 && (
+              <button type="button" class="repost-count-link" onclick="document.getElementById('reposters-modal').style.display='flex'">
+                {repostCount} 人转发
+              </button>
+            )}
           </div>
+
+          {repostCount > 0 && (
+            <div id="reposters-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+              <div class="modal-content">
+                <div class="modal-header">
+                  <span class="modal-title">转发者</span>
+                  <button type="button" class="modal-close" onclick="document.getElementById('reposters-modal').style.display='none'">&times;</button>
+                </div>
+                <div class="modal-body">
+                  {reposters.map((r) => (
+                    <a href={`/user/${r.id}`} class="reposter-item" key={r.id}>
+                      <img src={resizeImage(r.avatarUrl, 64) || '/static/img/default-avatar.svg'} alt="" class="avatar-sm" />
+                      <span>{r.displayName || r.username}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div class="comments-section">
             <div class="comments-header">
@@ -684,6 +756,57 @@ topic.post('/:id/comment', async (c) => {
   return c.redirect(`/topic/${topicId}`)
 })
 
+// 转发话题到 Mastodon
+topic.post('/:id/repost', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const authProvider = await db.query.authProviders.findFirst({
+    where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+  })
+
+  if (!authProvider?.accessToken) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const userDomain = authProvider.providerId.split('@')[1]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const noteUrl = `${baseUrl}/ap/notes/${topicId}`
+
+  try {
+    const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
+    if (!localStatusId) {
+      console.error('Failed to resolve AP Note for repost:', noteUrl)
+      return c.redirect(`/topic/${topicId}`)
+    }
+    await reblogStatus(userDomain, authProvider.accessToken, localStatusId)
+
+    // 记录转发（避免重复）
+    const existingRepost = await db
+      .select()
+      .from(topicReposts)
+      .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
+      .limit(1)
+    if (existingRepost.length === 0) {
+      await db.insert(topicReposts).values({
+        id: generateId(),
+        topicId,
+        userId: user.id,
+        createdAt: new Date(),
+      })
+    }
+  } catch (e) {
+    console.error('Failed to repost topic to Mastodon:', e)
+  }
+
+  return c.redirect(`/topic/${topicId}`)
+})
+
 // 喜欢话题
 topic.post('/:id/like', async (c) => {
   const db = c.get('db')
@@ -876,6 +999,7 @@ topic.post('/:id/delete', async (c) => {
   }
   await db.delete(comments).where(eq(comments.topicId, topicId))
   await db.delete(topicLikes).where(eq(topicLikes.topicId, topicId))
+  await db.delete(topicReposts).where(eq(topicReposts.topicId, topicId))
   await db.delete(topics).where(eq(topics.id, topicId))
 
   return c.redirect(`/group/${groupId}`)

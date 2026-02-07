@@ -93,6 +93,14 @@ export const topicLikes = sqliteTable('topic_like', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 话题转发表
+export const topicReposts = sqliteTable('topic_repost', {
+  id: text('id').primaryKey(),
+  topicId: text('topic_id').notNull().references(() => topics.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 举报表
 export const reports = sqliteTable('report', {
   id: text('id').primaryKey(),
@@ -149,4 +157,5 @@ export type TopicLike = typeof topicLikes.$inferSelect
 export type Report = typeof reports.$inferSelect
 export type Notification = typeof notifications.$inferSelect
 export type MastodonApp = typeof mastodonApps.$inferSelect
+export type TopicRepost = typeof topicReposts.$inferSelect
 export type ApFollower = typeof apFollowers.$inferSelect
