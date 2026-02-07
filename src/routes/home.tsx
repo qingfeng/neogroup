@@ -122,7 +122,7 @@ home.get('/', async (c) => {
   }
   const topTags = [...tagCounts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
+    .slice(0, 15)
     .map(([tag]) => tag)
 
   // 热门小组（10条，按成员数排序）
