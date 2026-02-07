@@ -247,6 +247,120 @@ app.get('/api/neodb', async (c) => {
   }
 })
 
+// Mastodon toot 预览 API
+app.get('/api/toot-preview', async (c) => {
+  const url = c.req.query('url')
+  if (!url) {
+    return c.json({ error: 'Missing url' }, 400)
+  }
+
+  // 支持的 Mastodon URL 格式:
+  // https://mastodon.social/@username/123456789
+  // https://instance.tld/@username/status_id
+  // https://instance.tld/users/username/statuses/status_id
+  const match1 = url.match(/^https?:\/\/([^\/]+)\/@([^\/]+)\/(\d+)\/?$/)
+  const match2 = url.match(/^https?:\/\/([^\/]+)\/users\/([^\/]+)\/statuses\/(\d+)\/?$/)
+  const match = match1 || match2
+
+  if (!match) {
+    return c.json({ error: 'Invalid Mastodon URL' }, 400)
+  }
+
+  const [, domain, username, statusId] = match
+  const cacheKey = `toot:${domain}:${statusId}`
+
+  // Check KV cache
+  const kv = c.env.KV
+  if (kv) {
+    const cached = await kv.get(cacheKey)
+    if (cached) {
+      return c.json(JSON.parse(cached))
+    }
+  }
+
+  try {
+    // 使用 ActivityPub 获取 toot 数据
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+        'User-Agent': 'NeoGroup/1.0',
+      },
+    })
+
+    if (!response.ok) {
+      return c.json({ error: 'Failed to fetch toot' }, 502)
+    }
+
+    const data = await response.json() as Record<string, any>
+
+    // 解析 ActivityPub Note 对象
+    const attributedTo = data.attributedTo
+    let authorName = username
+    let authorHandle = `@${username}@${domain}`
+    let authorAvatar: string | null = null
+    let authorUrl: string | null = null
+
+    // 尝试获取作者信息
+    if (typeof attributedTo === 'string') {
+      try {
+        const actorRes = await fetch(attributedTo, {
+          headers: {
+            'Accept': 'application/activity+json',
+            'User-Agent': 'NeoGroup/1.0',
+          },
+        })
+        if (actorRes.ok) {
+          const actor = await actorRes.json() as Record<string, any>
+          authorName = actor.name || actor.preferredUsername || username
+          authorHandle = `@${actor.preferredUsername || username}@${domain}`
+          authorAvatar = actor.icon?.url || null
+          authorUrl = actor.url || attributedTo
+        }
+      } catch (e) {
+        // 忽略作者获取失败
+      }
+    }
+
+    // 提取内容（去除 HTML 标签的摘要）
+    const content = data.content || ''
+    const contentText = content.replace(/<[^>]*>/g, '').slice(0, 300)
+
+    // 提取附件（图片）
+    const attachments = (data.attachment || [])
+      .filter((a: any) => a.mediaType?.startsWith('image/'))
+      .slice(0, 4)
+      .map((a: any) => ({
+        url: a.url,
+        type: a.mediaType,
+        description: a.name || '',
+      }))
+
+    const result = {
+      id: statusId,
+      url: data.url || url,
+      content: contentText,
+      contentHtml: content,
+      authorName,
+      authorHandle,
+      authorAvatar,
+      authorUrl,
+      attachments,
+      published: data.published,
+      domain,
+    }
+
+    // Cache in KV for 1 hour (toots can be edited/deleted)
+    if (kv) {
+      await kv.put(cacheKey, JSON.stringify(result), { expirationTtl: 3600 })
+    }
+
+    return c.json(result)
+  } catch (error) {
+    console.error('Toot fetch error:', error)
+    return c.json({ error: 'Failed to fetch toot' }, 502)
+  }
+})
+
 // 路由
 app.route('/', activitypubRoutes)
 app.route('/auth', authRoutes)

@@ -65,20 +65,23 @@ a:hover {
   gap: 20px;
 }
 
-.grid-3 > :first-child {
+.grid-3> :first-child {
   flex: 1;
 }
 
-.grid-3 > :last-child {
+.grid-3> :last-child {
   width: 270px;
   flex-shrink: 0;
 }
 
 @media (max-width: 768px) {
-  .grid, .grid-3 {
+
+  .grid,
+  .grid-3 {
     flex-direction: column;
   }
-  .grid-3 > :last-child {
+
+  .grid-3> :last-child {
     width: 100%;
   }
 }
@@ -218,7 +221,10 @@ a:hover {
 }
 
 /* Avatar */
-.avatar, .avatar-sm, .avatar-xs, .avatar-lg {
+.avatar,
+.avatar-sm,
+.avatar-xs,
+.avatar-lg {
   border-radius: 0;
   object-fit: cover;
 }
@@ -271,6 +277,7 @@ a:hover {
   .topic-page-layout {
     flex-direction: column;
   }
+
   .topic-sidebar {
     width: 100%;
   }
@@ -630,7 +637,7 @@ a:hover {
 }
 
 .topic-content p:empty,
-.topic-content p > br:only-child {
+.topic-content p>br:only-child {
   margin: 0;
   line-height: 1;
 }
@@ -658,7 +665,8 @@ a:hover {
   margin: 10px 0;
 }
 
-.topic-content ul, .topic-content ol {
+.topic-content ul,
+.topic-content ol {
   padding-left: 24px;
   margin-bottom: 10px;
 }
@@ -1551,7 +1559,127 @@ button.ql-neodb:hover::after {
   color: #072;
 }
 
-/* Topic Table - 豆瓣风格 */
+/* Toot Card - Mastodon toot preview */
+.toot-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: #faf9f5;
+}
+
+.toot-card a,
+.toot-card-link {
+  display: block;
+  padding: 12px;
+  text-decoration: none !important;
+  color: inherit;
+}
+
+.toot-card a:hover,
+.toot-card-link:hover {
+  background: #f0efe8;
+  text-decoration: none !important;
+}
+
+.toot-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.toot-card-avatar {
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 44px;
+  max-width: 44px !important;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  margin: 0 !important;
+}
+
+.toot-card-avatar-placeholder {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #e8e8e8;
+  flex-shrink: 0;
+}
+
+.toot-card-author {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toot-card-name {
+  font-size: 14px;
+  font-weight: bold;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toot-card-handle {
+  font-size: 12px;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toot-card-content {
+  font-size: 14px;
+  color: #333;
+  line-height: 1.6;
+  margin-bottom: 10px;
+  word-wrap: break-word;
+}
+
+.toot-card-images {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.toot-card-images img {
+  max-width: 50%;
+  max-height: 150px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.toot-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toot-card-domain {
+  font-size: 12px;
+  color: #999;
+}
+
+/* Quill editor Toot card */
+.ql-editor .toot-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: #faf9f5;
+}
+
+.ql-editor .toot-card a {
+  display: block;
+  padding: 12px;
+  text-decoration: none;
+  color: inherit;
+}
+
 .topic-table {
   width: 100%;
   border-collapse: collapse;
@@ -1614,6 +1742,7 @@ button.ql-neodb:hover::after {
 }
 
 @media (max-width: 768px) {
+
   .topic-table-author,
   .topic-table-count {
     display: none;

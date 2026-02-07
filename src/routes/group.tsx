@@ -463,6 +463,33 @@ group.get('/:id/topic/new', async (c) => {
             + '</span></a>';
         }
 
+        // Toot 卡片内部 HTML
+        function buildTootCardInner(data) {
+          var avatar = data.authorAvatar ? '<img src="' + data.authorAvatar + '" alt="" class="toot-card-avatar" />' : '<div class="toot-card-avatar-placeholder"></div>';
+          var images = '';
+          if (data.attachments && data.attachments.length > 0) {
+            images = '<div class="toot-card-images">' + data.attachments.slice(0, 2).map(function(a) {
+              return '<img src="' + a.url + '" alt="' + (a.description || '') + '" />';
+            }).join('') + '</div>';
+          }
+          var content = data.content || '';
+          if (content.length > 200) content = content.slice(0, 200) + '...';
+          return '<a href="' + data.url + '" target="_blank" rel="noopener" class="toot-card-link">'
+            + '<div class="toot-card-header">'
+            + avatar
+            + '<div class="toot-card-author">'
+            + '<span class="toot-card-name">' + (data.authorName || '') + '</span>'
+            + '<span class="toot-card-handle">' + (data.authorHandle || '') + '</span>'
+            + '</div>'
+            + '</div>'
+            + '<div class="toot-card-content">' + content + '</div>'
+            + images
+            + '<div class="toot-card-footer">'
+            + '<span class="toot-card-domain">' + (data.domain || '') + '</span>'
+            + '</div>'
+            + '</a>';
+        }
+
         // 注册自定义 NeoDB 卡片 Blot
         var BlockEmbed = Quill.import('blots/block/embed');
         class NeoDBCardBlot extends BlockEmbed {
@@ -481,6 +508,24 @@ group.get('/:id/topic/new', async (c) => {
         NeoDBCardBlot.tagName = 'DIV';
         NeoDBCardBlot.className = 'neodb-card';
         Quill.register(NeoDBCardBlot);
+
+        // 注册自定义 Toot 卡片 Blot
+        class TootCardBlot extends BlockEmbed {
+          static create(data) {
+            var node = super.create();
+            node.setAttribute('contenteditable', 'false');
+            node.dataset.toot = JSON.stringify(data);
+            node.innerHTML = buildTootCardInner(data);
+            return node;
+          }
+          static value(node) {
+            try { return JSON.parse(node.dataset.toot); } catch(e) { return {}; }
+          }
+        }
+        TootCardBlot.blotName = 'toot-card';
+        TootCardBlot.tagName = 'DIV';
+        TootCardBlot.className = 'toot-card';
+        Quill.register(TootCardBlot);
 
         const quill = new Quill('#editor', {
           theme: 'snow',
@@ -553,16 +598,53 @@ group.get('/:id/topic/new', async (c) => {
           }
         }
 
-        // 粘贴处理（NeoDB 链接 + 图片）- capture 阶段拦截，在 Quill 之前处理
+        // 检测是否是 Mastodon toot URL
+        function isMastodonTootUrl(url) {
+          return /^https?:\\/\\/[^\\/]+\\/@[^\\/]+\\/\\d+\\/?$/.test(url) ||
+                 /^https?:\\/\\/[^\\/]+\\/users\\/[^\\/]+\\/statuses\\/\\d+\\/?$/.test(url);
+        }
+
+        async function insertTootLink(url) {
+          var range = quill.getSelection(true);
+          var loadingText = '加载嘟文...';
+          quill.insertText(range.index, loadingText, { color: '#999' });
+          try {
+            var res = await fetch('/api/toot-preview?url=' + encodeURIComponent(url));
+            var data = await res.json();
+            quill.deleteText(range.index, loadingText.length);
+            if (data.authorHandle) {
+              quill.insertEmbed(range.index, 'toot-card', data, Quill.sources.USER);
+              quill.setSelection(range.index + 1);
+            } else {
+              quill.insertText(range.index, url, { link: url });
+            }
+          } catch (err) {
+            quill.deleteText(range.index, loadingText.length);
+            quill.insertText(range.index, url, { link: url });
+          }
+        }
+
+        // 粘贴处理（NeoDB 链接 + Toot 链接 + 图片）- capture 阶段拦截，在 Quill 之前处理
         document.querySelector('#editor').addEventListener('paste', async function(e) {
-          // 检查 NeoDB 链接
           var text = e.clipboardData?.getData('text/plain') || '';
-          if (text && /neodb\\.social\\/(movie|book|tv|music|game|podcast|album)\\//.test(text.trim())) {
+          text = text.trim();
+          
+          // 检查 NeoDB 链接
+          if (text && /neodb\\.social\\/(movie|book|tv|music|game|podcast|album)\\//.test(text)) {
             e.preventDefault();
             e.stopPropagation();
-            insertNeoDBLink(text.trim());
+            insertNeoDBLink(text);
             return;
           }
+          
+          // 检查 Mastodon toot 链接
+          if (text && isMastodonTootUrl(text)) {
+            e.preventDefault();
+            e.stopPropagation();
+            insertTootLink(text);
+            return;
+          }
+          
           // 检查粘贴图片
           var items = e.clipboardData?.items;
           if (!items) return;

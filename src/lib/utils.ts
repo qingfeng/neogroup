@@ -124,13 +124,17 @@ export function sanitizeHtml(html: string): string {
         safeAttrs = ` href="${escapeAttr(hrefMatch[1])}" target="_blank" rel="noopener nofollow"`
       }
     } else if (tag === 'img') {
-      // For <img> tags, only allow safe src and alt
+      // For <img> tags, allow safe src, alt, and class
       const srcMatch = attrs.match(/src\s*=\s*["']([^"']+)["']/i)
       const altMatch = attrs.match(/alt\s*=\s*["']([^"']*?)["']/i)
+      const classMatch = attrs.match(/class\s*=\s*["']([^"']+)["']/i)
       if (srcMatch && !srcMatch[1].match(/^(javascript|data|vbscript):/i)) {
         safeAttrs = ` src="${escapeAttr(srcMatch[1])}"`
         if (altMatch) {
           safeAttrs += ` alt="${escapeAttr(altMatch[1])}"`
+        }
+        if (classMatch) {
+          safeAttrs += ` class="${escapeAttr(classMatch[1])}"`
         }
       } else {
         // Invalid img, escape it
