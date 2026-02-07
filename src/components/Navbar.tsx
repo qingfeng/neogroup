@@ -25,7 +25,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0 }) => {
             <a href="/auth/logout">登出</a>
           </>
         ) : (
-          <a href="/auth/login">登录</a>
+          <a href="/auth/login">用 Mastodon 登录</a>
         )}
       </div>
     </nav>
