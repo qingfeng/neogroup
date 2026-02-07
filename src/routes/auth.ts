@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
-import { generateId, now, uploadAvatarToR2, mastodonUsername } from '../lib/utils'
+import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername } from '../lib/utils'
 import {
   getOrCreateApp,
   getAuthorizationUrl,
@@ -184,7 +184,8 @@ auth.get('/callback', async (c) => {
         })
         .where(eq(users.id, userId))
     } else {
-      const username = mastodonUsername(account.username, domain)
+      const baseUsername = mastodonUsername(account.username, domain)
+      const username = await ensureUniqueUsername(db, baseUsername)
 
       // 检查是否已有同名用户（从 Mastodon 同步创建的）
       const existingByUsername = await db.query.users.findFirst({

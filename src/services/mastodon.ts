@@ -61,7 +61,13 @@ export async function getOrCreateApp(
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to create Mastodon app: ${response.statusText}`)
+    let body = ''
+    try {
+      body = await response.text()
+    } catch {
+      body = ''
+    }
+    throw new Error(`Failed to create Mastodon app: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`)
   }
 
   const data = await response.json() as {

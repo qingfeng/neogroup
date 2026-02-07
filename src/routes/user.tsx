@@ -135,11 +135,9 @@ user.get('/:id', async (c) => {
             ) : (
               <div class="profile-username">@{profileUser.username}</div>
             )}
-            {apUsername && (
-              <div class="profile-username ap-handle">
-                @{apUsername}@{new URL(baseUrl).host}
-              </div>
-            )}
+            <div class="profile-username ap-handle">
+              @{profileUser.username}@{new URL(baseUrl).host}
+            </div>
             {profileUser.bio && (
               <SafeHtml html={profileUser.bio} className="profile-bio" />
             )}

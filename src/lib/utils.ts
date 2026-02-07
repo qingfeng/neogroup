@@ -1,4 +1,7 @@
 import { nanoid } from 'nanoid'
+import { eq } from 'drizzle-orm'
+import type { Database } from '../db'
+import { users } from '../db/schema'
 
 export function generateId(): string {
   return nanoid(12)
@@ -8,9 +11,33 @@ export function isSuperAdmin(user: { role?: string | null } | null): boolean {
   return user?.role === 'admin'
 }
 
-// 统一的 Mastodon 用户名生成：qingfeng@douban.city → qingfeng_douban_city
+// 统一的 Mastodon 用户名生成：返回原始用户名（冲突由后缀处理）
 export function mastodonUsername(username: string, domain: string): string {
-  return `${username}_${domain.replace(/\./g, '_')}`
+  void domain
+  return username
+}
+
+const MAX_USERNAME_ATTEMPTS = 20
+
+function random4Digits(): string {
+  const n = Math.floor(Math.random() * 10000)
+  return n.toString().padStart(4, '0')
+}
+
+export async function ensureUniqueUsername(db: Database, base: string): Promise<string> {
+  let candidate = base
+  for (let i = 0; i < MAX_USERNAME_ATTEMPTS; i++) {
+    const existing = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.username, candidate))
+      .limit(1)
+
+    if (existing.length === 0) return candidate
+    candidate = `${base}${random4Digits()}`
+  }
+
+  throw new Error(`Failed to generate unique username for ${base}`)
 }
 
 export function now(): Date {

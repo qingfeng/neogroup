@@ -1,7 +1,7 @@
 import type { Database } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { topics, comments, users, authProviders } from '../db/schema'
-import { generateId, mastodonUsername } from '../lib/utils'
+import { generateId, mastodonUsername, ensureUniqueUsername } from '../lib/utils'
 
 const SYNC_COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -171,7 +171,8 @@ export async function getOrCreateMastodonUser(
   const acctParts = isLocalAccount
     ? { username: account.username, domain: queriedDomain }
     : { username: account.acct.split('@')[0], domain: account.acct.split('@')[1] }
-  const username = mastodonUsername(acctParts.username, acctParts.domain)
+  const baseUsername = mastodonUsername(acctParts.username, acctParts.domain)
+  const username = await ensureUniqueUsername(db, baseUsername)
 
   // 3. Check if user already exists (OAuth or previously synced)
   const existingUser = await db.query.users.findFirst({

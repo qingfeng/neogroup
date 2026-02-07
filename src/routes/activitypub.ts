@@ -19,33 +19,15 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/**
- * Resolve a Mastodon username to the earliest-registered user.
- * Username is stored in authProviders.metadata JSON as "username" field.
- * If multiple users share the same Mastodon username, the earliest registered wins.
- */
+// Resolve AP username to local user by users.username (unique)
 async function findUserByApUsername(db: ReturnType<typeof import('../db').createDb>, username: string) {
-  // Use SQLite json_extract to match username in metadata JSON
-  const providers = await db
-    .select({
-      userId: authProviders.userId,
-      createdAt: authProviders.createdAt,
-    })
-    .from(authProviders)
-    .where(sql`json_extract(${authProviders.metadata}, '$.username') = ${username} COLLATE NOCASE`)
-    .orderBy(authProviders.createdAt)
-    .limit(1)
-
-  if (providers.length === 0) return null
-
   const userResult = await db
     .select()
     .from(users)
-    .where(eq(users.id, providers[0].userId))
+    .where(eq(users.username, username))
     .limit(1)
 
   if (userResult.length === 0) return null
-
   return userResult[0]
 }
 
