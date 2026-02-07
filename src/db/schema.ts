@@ -8,6 +8,8 @@ export const users = sqliteTable('user', {
   avatarUrl: text('avatar_url'),
   bio: text('bio'),
   role: text('role'), // 'admin' = 超级管理员
+  apPublicKey: text('ap_public_key'),
+  apPrivateKey: text('ap_private_key'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -114,6 +116,16 @@ export const notifications = sqliteTable('notification', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// ActivityPub Followers 表
+export const apFollowers = sqliteTable('ap_follower', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  actorUri: text('actor_uri').notNull(),
+  inboxUrl: text('inbox_url').notNull(),
+  sharedInboxUrl: text('shared_inbox_url'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // Mastodon 应用配置表
 export const mastodonApps = sqliteTable('mastodon_app', {
   id: text('id').primaryKey(),
@@ -137,3 +149,4 @@ export type TopicLike = typeof topicLikes.$inferSelect
 export type Report = typeof reports.$inferSelect
 export type Notification = typeof notifications.$inferSelect
 export type MastodonApp = typeof mastodonApps.$inferSelect
+export type ApFollower = typeof apFollowers.$inferSelect

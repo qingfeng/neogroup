@@ -10,6 +10,7 @@ import topicRoutes from './routes/topic'
 import groupRoutes from './routes/group'
 import userRoutes from './routes/user'
 import notificationRoutes from './routes/notification'
+import activitypubRoutes from './routes/activitypub'
 import type { AppContext, Bindings } from './types'
 import { pollMentions } from './services/mastodon-bot'
 
@@ -247,6 +248,7 @@ app.get('/api/neodb', async (c) => {
 })
 
 // 路由
+app.route('/', activitypubRoutes)
 app.route('/auth', authRoutes)
 app.route('/topic', topicRoutes)
 app.route('/group', groupRoutes)

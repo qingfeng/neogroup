@@ -5,6 +5,7 @@ import { groups, groupMembers, topics, users, comments, authProviders } from '..
 import { Layout } from '../components/Layout'
 import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
+import { deliverTopicToFollowers } from '../services/activitypub'
 
 const group = new Hono<AppContext>()
 
@@ -670,6 +671,12 @@ group.post('/:id/topic/new', async (c) => {
       console.error('Failed to sync toot:', e)
     }
   }
+
+  // AP: deliver Create(Note) to followers
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  c.executionCtx.waitUntil(
+    deliverTopicToFollowers(db, baseUrl, user.id, topicId, title.trim(), content?.trim() || null)
+  )
 
   return c.redirect(`/topic/${topicId}`)
 })
