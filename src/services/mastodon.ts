@@ -196,6 +196,26 @@ export async function reblogStatus(
   return response.json() as Promise<{ id: string }>
 }
 
+// 取消转发（unreblog/unboost）一条 status
+export async function unreblogStatus(
+  domain: string,
+  accessToken: string,
+  statusId: string
+): Promise<{ id: string }> {
+  const response = await fetch(`https://${domain}/api/v1/statuses/${statusId}/unreblog`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to unreblog status: ${response.statusText}`)
+  }
+
+  return response.json() as Promise<{ id: string }>
+}
+
 // 通过 URL 搜索并 resolve 一条 status，返回本实例的 status ID
 export async function resolveStatusByUrl(
   domain: string,

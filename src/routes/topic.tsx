@@ -7,7 +7,7 @@ import { generateId, stripHtml, truncate, parseJson, resizeImage, processContent
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
-import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl } from '../services/mastodon'
+import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus } from '../services/mastodon'
 import { deliverCommentToFollowers } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
@@ -366,9 +366,11 @@ topic.get('/:id', async (c) => {
               </form>
             )}
             {hasMastodonAuth && isReposted && (
-              <span class="topic-like-btn reposted">
-                已转发{repostCount > 0 ? ` (${repostCount})` : ''}
-              </span>
+              <form action={`/topic/${topicId}/unrepost`} method="POST" style="display: inline;">
+                <button type="submit" class="topic-like-btn reposted" onclick="this.disabled=true;this.form.submit();">
+                  已转发（撤销）{repostCount > 0 ? ` (${repostCount})` : ''}
+                </button>
+              </form>
             )}
             {!hasMastodonAuth && repostCount > 0 && (
               <span class="topic-like-btn disabled">
@@ -530,9 +532,11 @@ topic.get('/:id', async (c) => {
                             </form>
                           )}
                           {hasMastodonAuth && isCommentReposted && (
-                            <span class="comment-action-btn reposted">
-                              已转发{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
-                            </span>
+                            <form action={`/topic/${topicId}/comment/${comment.id}/unrepost`} method="POST" style="display: inline;">
+                              <button type="submit" class="comment-action-btn reposted" onclick="this.disabled=true;this.form.submit();">
+                                已转发（撤销）{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
+                              </button>
+                            </form>
                           )}
                           {user && user.id === comment.user.id && (
                             <button
@@ -834,9 +838,65 @@ topic.post('/:id/repost', async (c) => {
         userId: user.id,
         createdAt: new Date(),
       })
+
+      // 提醒话题作者
+      const topicData = await db
+        .select({ userId: topics.userId })
+        .from(topics)
+        .where(eq(topics.id, topicId))
+        .limit(1)
+      if (topicData.length > 0) {
+        await createNotification(db, {
+          userId: topicData[0].userId,
+          actorId: user.id,
+          type: 'topic_repost',
+          topicId,
+        })
+      }
     }
   } catch (e) {
     console.error('Failed to repost topic to Mastodon:', e)
+  }
+
+  return c.redirect(`/topic/${topicId}`)
+})
+
+// 取消转发话题
+topic.post('/:id/unrepost', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const authProvider = await db.query.authProviders.findFirst({
+    where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+  })
+
+  if (!authProvider?.accessToken) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const userDomain = authProvider.providerId.split('@')[1]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const noteUrl = `${baseUrl}/ap/notes/${topicId}`
+
+  try {
+    const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
+    if (!localStatusId) {
+      console.error('Failed to resolve AP Note for unrepost:', noteUrl)
+      return c.redirect(`/topic/${topicId}`)
+    }
+
+    await unreblogStatus(userDomain, authProvider.accessToken, localStatusId)
+
+    await db
+      .delete(topicReposts)
+      .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
+  } catch (e) {
+    console.error('Failed to unrepost topic to Mastodon:', e)
   }
 
   return c.redirect(`/topic/${topicId}`)
@@ -954,9 +1014,89 @@ topic.post('/:id/comment/:commentId/repost', async (c) => {
         userId: user.id,
         createdAt: new Date(),
       })
+
+      // 提醒评论作者
+      const commentData = await db
+        .select({ userId: comments.userId })
+        .from(comments)
+        .where(eq(comments.id, commentId))
+        .limit(1)
+      if (commentData.length > 0) {
+        await createNotification(db, {
+          userId: commentData[0].userId,
+          actorId: user.id,
+          type: 'comment_repost',
+          topicId,
+          commentId,
+        })
+      }
     }
   } catch (e) {
     console.error('Failed to repost comment to Mastodon:', e)
+  }
+
+  return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+})
+
+// 取消转发评论到 Mastodon
+topic.post('/:id/comment/:commentId/unrepost', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+  const commentId = c.req.param('commentId')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const commentResult = await db
+    .select({ mastodonStatusId: comments.mastodonStatusId, mastodonDomain: comments.mastodonDomain })
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .limit(1)
+
+  if (commentResult.length === 0) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const authProvider = await db.query.authProviders.findFirst({
+    where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+  })
+
+  if (!authProvider?.accessToken) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const userDomain = authProvider.providerId.split('@')[1]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  try {
+    let localStatusId: string | null = null
+
+    if (commentResult[0].mastodonStatusId && commentResult[0].mastodonDomain) {
+      localStatusId = await resolveStatusId(
+        userDomain, authProvider.accessToken,
+        commentResult[0].mastodonDomain, commentResult[0].mastodonStatusId
+      )
+    }
+
+    if (!localStatusId) {
+      const apUrl = `${baseUrl}/ap/comments/${commentId}`
+      localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, apUrl)
+    }
+
+    if (!localStatusId) {
+      console.error('Failed to resolve comment for unrepost')
+      return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+    }
+
+    await unreblogStatus(userDomain, authProvider.accessToken, localStatusId)
+
+    await db
+      .delete(commentReposts)
+      .where(and(eq(commentReposts.commentId, commentId), eq(commentReposts.userId, user.id)))
+  } catch (e) {
+    console.error('Failed to unrepost comment to Mastodon:', e)
   }
 
   return c.redirect(`/topic/${topicId}#comment-${commentId}`)

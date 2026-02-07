@@ -79,6 +79,8 @@ notification.get('/', async (c) => {
       case 'comment_reply': return `回复了你在「${topicTitle}」的评论`
       case 'topic_like': return `喜欢了你的话题「${topicTitle}」`
       case 'comment_like': return `赞了你在「${topicTitle}」的评论`
+      case 'topic_repost': return `转发了你的话题「${topicTitle}」`
+      case 'comment_repost': return `转发了你在「${topicTitle}」的评论`
       case 'mention': {
         let meta: { content?: string } = {}
         try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
@@ -100,7 +102,7 @@ notification.get('/', async (c) => {
       return n.actorUrl || '#'
     }
     if (!n.topicId) return '#'
-    if (n.commentId && (n.type === 'comment_reply' || n.type === 'comment_like')) {
+    if (n.commentId && (n.type === 'comment_reply' || n.type === 'comment_like' || n.type === 'comment_repost')) {
       return `/topic/${n.topicId}#comment-${n.commentId}`
     }
     return `/topic/${n.topicId}`
