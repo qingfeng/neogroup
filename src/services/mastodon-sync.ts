@@ -129,6 +129,7 @@ export async function syncMastodonReplies(
       content: reply.content,
       replyToId,
       mastodonStatusId: reply.id,
+      mastodonDomain,
       createdAt,
       updatedAt: createdAt,
     })
@@ -303,6 +304,7 @@ export async function syncCommentReplies(
       content: reply.content,
       replyToId,
       mastodonStatusId: reply.id,
+      mastodonDomain,
       createdAt,
       updatedAt: createdAt,
     })

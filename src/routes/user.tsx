@@ -30,6 +30,7 @@ user.get('/:id', async (c) => {
   // 获取 Mastodon 账号信息
   let mastodonHandle: string | null = null
   let mastodonUrl: string | null = null
+  let apUsername: string | null = null
   const authProvider = await db.query.authProviders.findFirst({
     where: eq(authProviders.userId, userId),
   })
@@ -40,6 +41,7 @@ user.get('/:id', async (c) => {
       if (meta.username && domain) {
         mastodonHandle = `@${meta.username}@${domain}`
         mastodonUrl = meta.url || `https://${domain}/@${meta.username}`
+        apUsername = meta.username
       }
     } catch { }
   }
@@ -132,6 +134,11 @@ user.get('/:id', async (c) => {
               </div>
             ) : (
               <div class="profile-username">@{profileUser.username}</div>
+            )}
+            {apUsername && (
+              <div class="profile-username ap-handle">
+                @{apUsername}@{new URL(baseUrl).host}
+              </div>
             )}
             {profileUser.bio && (
               <SafeHtml html={profileUser.bio} className="profile-bio" />

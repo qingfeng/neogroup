@@ -85,6 +85,14 @@ export const commentLikes = sqliteTable('comment_like', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 评论转发表
+export const commentReposts = sqliteTable('comment_repost', {
+  id: text('id').primaryKey(),
+  commentId: text('comment_id').notNull().references(() => comments.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 话题喜欢表
 export const topicLikes = sqliteTable('topic_like', {
   id: text('id').primaryKey(),
@@ -116,12 +124,17 @@ export const reports = sqliteTable('report', {
 export const notifications = sqliteTable('notification', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id),
-  actorId: text('actor_id').notNull().references(() => users.id),
-  type: text('type').notNull(), // reply | comment_reply | topic_like | comment_like
+  actorId: text('actor_id').notNull(),
+  type: text('type').notNull(), // reply | comment_reply | topic_like | comment_like | mention
   topicId: text('topic_id'),
   commentId: text('comment_id'),
   isRead: integer('is_read').default(0).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  // 远程 actor 信息（用于 AP mention 等场景，actorId 不在 users 表中）
+  actorName: text('actor_name'),
+  actorUrl: text('actor_url'),
+  actorAvatarUrl: text('actor_avatar_url'),
+  metadata: text('metadata'), // JSON: { content, noteUrl }
 })
 
 // ActivityPub Followers 表
@@ -153,6 +166,7 @@ export type GroupMember = typeof groupMembers.$inferSelect
 export type Topic = typeof topics.$inferSelect
 export type Comment = typeof comments.$inferSelect
 export type CommentLike = typeof commentLikes.$inferSelect
+export type CommentRepost = typeof commentReposts.$inferSelect
 export type TopicLike = typeof topicLikes.$inferSelect
 export type Report = typeof reports.$inferSelect
 export type Notification = typeof notifications.$inferSelect

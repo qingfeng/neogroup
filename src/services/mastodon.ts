@@ -3,7 +3,7 @@ import { mastodonApps } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { generateId } from '../lib/utils'
 
-const SCOPES = 'read:accounts write:statuses write:media'
+const SCOPES = 'read:accounts read:search write:statuses write:media'
 
 export interface MastodonAccount {
   id: string
@@ -174,6 +174,45 @@ export async function postStatus(
   }
 
   return response.json() as Promise<{ id: string; url: string }>
+}
+
+// 转发（reblog/boost）一条 status
+export async function reblogStatus(
+  domain: string,
+  accessToken: string,
+  statusId: string
+): Promise<{ id: string }> {
+  const response = await fetch(`https://${domain}/api/v1/statuses/${statusId}/reblog`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to reblog status: ${response.statusText}`)
+  }
+
+  return response.json() as Promise<{ id: string }>
+}
+
+// 通过 URL 搜索并 resolve 一条 status，返回本实例的 status ID
+export async function resolveStatusByUrl(
+  domain: string,
+  accessToken: string,
+  url: string
+): Promise<string | null> {
+  try {
+    const searchRes = await fetch(
+      `https://${domain}/api/v2/search?q=${encodeURIComponent(url)}&type=statuses&resolve=true`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+    if (!searchRes.ok) return null
+    const data = await searchRes.json() as { statuses?: { id: string }[] }
+    return data.statuses?.[0]?.id || null
+  } catch {
+    return null
+  }
 }
 
 // 解析跨实例账号，确保本实例知道该用户（让 @ 变成真正的 mention）

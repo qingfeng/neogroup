@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm'
-import { users, authProviders, apFollowers, topics } from '../db/schema'
+import { users, authProviders, apFollowers, topics, comments } from '../db/schema'
 import type { Database } from '../db'
 
 // --- Key Pair Generation (Web Crypto API) ---
@@ -372,6 +372,138 @@ export async function getNoteJson(
     published: topic.createdAt.toISOString(),
     to: ['https://www.w3.org/ns/activitystreams#Public'],
     cc: [`${actorUrl}/followers`],
+  }
+}
+
+// --- Comment Note JSON-LD ---
+
+export async function getCommentNoteJson(
+  db: Database,
+  baseUrl: string,
+  commentId: string
+): Promise<Record<string, unknown> | null> {
+  const commentResult = await db
+    .select({
+      id: comments.id,
+      topicId: comments.topicId,
+      userId: comments.userId,
+      content: comments.content,
+      replyToId: comments.replyToId,
+      createdAt: comments.createdAt,
+    })
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .limit(1)
+
+  if (commentResult.length === 0) return null
+
+  const comment = commentResult[0]
+  const apUsername = await getApUsername(db, comment.userId)
+  if (!apUsername) return null
+
+  const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+  const noteId = `${baseUrl}/ap/comments/${commentId}`
+  const commentUrl = `${baseUrl}/topic/${comment.topicId}#comment-${commentId}`
+
+  // inReplyTo: reply to parent comment or parent topic
+  let inReplyTo: string
+  if (comment.replyToId) {
+    inReplyTo = `${baseUrl}/ap/comments/${comment.replyToId}`
+  } else {
+    inReplyTo = `${baseUrl}/ap/notes/${comment.topicId}`
+  }
+
+  return {
+    '@context': 'https://www.w3.org/ns/activitystreams',
+    id: noteId,
+    type: 'Note',
+    attributedTo: actorUrl,
+    inReplyTo,
+    content: comment.content,
+    url: commentUrl,
+    published: comment.createdAt.toISOString(),
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${actorUrl}/followers`],
+  }
+}
+
+// --- Comment delivery to AP followers ---
+
+export async function deliverCommentToFollowers(
+  db: Database,
+  baseUrl: string,
+  userId: string,
+  commentId: string,
+  topicId: string,
+  content: string,
+  replyToId: string | null
+) {
+  try {
+    const apUsername = await getApUsername(db, userId)
+    if (!apUsername) return
+
+    const { privateKeyPem } = await ensureKeyPair(db, userId)
+
+    const followers = await db
+      .select()
+      .from(apFollowers)
+      .where(eq(apFollowers.userId, userId))
+
+    if (followers.length === 0) return
+
+    const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+    const noteId = `${baseUrl}/ap/comments/${commentId}`
+    const commentUrl = `${baseUrl}/topic/${topicId}#comment-${commentId}`
+    const published = new Date().toISOString()
+
+    let inReplyTo: string
+    if (replyToId) {
+      inReplyTo = `${baseUrl}/ap/comments/${replyToId}`
+    } else {
+      inReplyTo = `${baseUrl}/ap/notes/${topicId}`
+    }
+
+    const note = {
+      id: noteId,
+      type: 'Note',
+      attributedTo: actorUrl,
+      inReplyTo,
+      content,
+      url: commentUrl,
+      published,
+      to: ['https://www.w3.org/ns/activitystreams#Public'],
+      cc: [`${actorUrl}/followers`],
+    }
+
+    const activity = {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${noteId}/activity`,
+      type: 'Create',
+      actor: actorUrl,
+      published,
+      to: ['https://www.w3.org/ns/activitystreams#Public'],
+      cc: [`${actorUrl}/followers`],
+      object: note,
+    }
+
+    // Deduplicate by sharedInbox
+    const inboxes = new Map<string, string>()
+    for (const f of followers) {
+      const inbox = f.sharedInboxUrl || f.inboxUrl
+      if (!inboxes.has(inbox)) {
+        inboxes.set(inbox, inbox)
+      }
+    }
+
+    for (const inbox of inboxes.values()) {
+      try {
+        await signAndDeliver(actorUrl, privateKeyPem, inbox, activity)
+      } catch (e) {
+        console.error(`AP comment deliver to ${inbox} failed:`, e)
+      }
+    }
+  } catch (e) {
+    console.error('deliverCommentToFollowers error:', e)
   }
 }
 

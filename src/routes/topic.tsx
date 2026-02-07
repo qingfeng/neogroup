@@ -1,13 +1,14 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, topicLikes, topicReposts, groupMembers, authProviders } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl } from '../services/mastodon'
+import { deliverCommentToFollowers } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
 
@@ -206,6 +207,9 @@ topic.get('/:id', async (c) => {
         avatarUrl: users.avatarUrl,
       },
       likeCount: sql<number>`(SELECT COUNT(*) FROM comment_like WHERE comment_like.comment_id = ${comments.id})`.as('like_count'),
+      repostCount: sql<number>`(SELECT COUNT(*) FROM comment_repost WHERE comment_repost.comment_id = ${comments.id})`.as('repost_count'),
+      mastodonStatusId: comments.mastodonStatusId,
+      mastodonDomain: comments.mastodonDomain,
     })
     .from(comments)
     .innerJoin(users, eq(comments.userId, users.id))
@@ -222,6 +226,16 @@ topic.get('/:id', async (c) => {
       .from(commentLikes)
       .where(eq(commentLikes.userId, user.id))
     userLikedCommentIds = new Set(userLikes.map(l => l.commentId))
+  }
+
+  // 获取当前用户转发的评论ID列表
+  let userRepostedCommentIds: Set<string> = new Set()
+  if (user) {
+    const userReposts = await db
+      .select({ commentId: commentReposts.commentId })
+      .from(commentReposts)
+      .where(eq(commentReposts.userId, user.id))
+    userRepostedCommentIds = new Set(userReposts.map(r => r.commentId))
   }
 
   // 构建评论ID到评论的映射（用于引用回复显示）
@@ -457,6 +471,7 @@ topic.get('/:id', async (c) => {
                 commentList.map((comment, index) => {
                   const isAuthor = comment.user.id === topicData.userId
                   const isLiked = userLikedCommentIds.has(comment.id)
+                  const isCommentReposted = userRepostedCommentIds.has(comment.id)
                   const replyTo = comment.replyToId ? commentMap.get(comment.replyToId) : null
                   return (
                     <div class="comment-item" key={comment.id} id={`comment-${comment.id}`}>
@@ -506,6 +521,18 @@ topic.get('/:id', async (c) => {
                             >
                               回复
                             </button>
+                          )}
+                          {hasMastodonAuth && !isCommentReposted && (
+                            <form action={`/topic/${topicId}/comment/${comment.id}/repost`} method="POST" style="display: inline;">
+                              <button type="submit" class="comment-action-btn" onclick="this.disabled=true;this.form.submit();">
+                                转发{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
+                              </button>
+                            </form>
+                          )}
+                          {hasMastodonAuth && isCommentReposted && (
+                            <span class="comment-action-btn reposted">
+                              已转发{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
+                            </span>
                           )}
                           {user && user.id === comment.user.id && (
                             <button
@@ -640,11 +667,13 @@ topic.post('/:id/comment', async (c) => {
   const now = new Date()
   const commentId = generateId()
 
+  const htmlContent = `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>`
+
   await db.insert(comments).values({
     id: commentId,
     topicId,
     userId: user.id,
-    content: `<p>${content.trim().replace(/\n/g, '</p><p>')}</p>`,
+    content: htmlContent,
     replyToId: replyToId || null,
     createdAt: now,
     updatedAt: now,
@@ -677,6 +706,12 @@ topic.post('/:id/comment', async (c) => {
       })
     }
   }
+
+  // AP: deliver Create(Note) to followers
+  const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
+  c.executionCtx.waitUntil(
+    deliverCommentToFollowers(db, baseUrlForAp, user.id, commentId, topicId, htmlContent, replyToId || null)
+  )
 
   // 同步评论到 Mastodon
   if (syncMastodon === '1') {
@@ -851,6 +886,82 @@ topic.post('/:id/like', async (c) => {
   return c.redirect(`/topic/${topicId}`)
 })
 
+// 转发评论到 Mastodon
+topic.post('/:id/comment/:commentId/repost', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const topicId = c.req.param('id')
+  const commentId = c.req.param('commentId')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const commentResult = await db
+    .select({ mastodonStatusId: comments.mastodonStatusId, mastodonDomain: comments.mastodonDomain })
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .limit(1)
+
+  if (commentResult.length === 0) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const authProvider = await db.query.authProviders.findFirst({
+    where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+  })
+
+  if (!authProvider?.accessToken) {
+    return c.redirect(`/topic/${topicId}`)
+  }
+
+  const userDomain = authProvider.providerId.split('@')[1]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  try {
+    let localStatusId: string | null = null
+
+    if (commentResult[0].mastodonStatusId && commentResult[0].mastodonDomain) {
+      // 有 Mastodon status → 跨实例 resolve
+      localStatusId = await resolveStatusId(
+        userDomain, authProvider.accessToken,
+        commentResult[0].mastodonDomain, commentResult[0].mastodonStatusId
+      )
+    }
+
+    if (!localStatusId) {
+      // Fallback: 用 AP URL resolve
+      const apUrl = `${baseUrl}/ap/comments/${commentId}`
+      localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, apUrl)
+    }
+
+    if (!localStatusId) {
+      console.error('Failed to resolve comment for repost')
+      return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+    }
+    await reblogStatus(userDomain, authProvider.accessToken, localStatusId)
+
+    // 记录转发（避免重复）
+    const existingRepost = await db
+      .select()
+      .from(commentReposts)
+      .where(and(eq(commentReposts.commentId, commentId), eq(commentReposts.userId, user.id)))
+      .limit(1)
+    if (existingRepost.length === 0) {
+      await db.insert(commentReposts).values({
+        id: generateId(),
+        commentId,
+        userId: user.id,
+        createdAt: new Date(),
+      })
+    }
+  } catch (e) {
+    console.error('Failed to repost comment to Mastodon:', e)
+  }
+
+  return c.redirect(`/topic/${topicId}#comment-${commentId}`)
+})
+
 // 点赞评论
 topic.post('/:id/comment/:commentId/like', async (c) => {
   const db = c.get('db')
@@ -959,8 +1070,9 @@ topic.post('/:id/comment/:commentId/delete', async (c) => {
     return c.redirect(`/topic/${topicId}`)
   }
 
-  // 删除评论的点赞，再删除评论
+  // 删除评论的点赞、转发记录，再删除评论
   await db.delete(commentLikes).where(eq(commentLikes.commentId, commentId))
+  await db.delete(commentReposts).where(eq(commentReposts.commentId, commentId))
   await db.delete(comments).where(eq(comments.id, commentId))
 
   return c.redirect(`/topic/${topicId}`)
@@ -996,6 +1108,7 @@ topic.post('/:id/delete', async (c) => {
   const topicComments = await db.select({ id: comments.id }).from(comments).where(eq(comments.topicId, topicId))
   for (const comment of topicComments) {
     await db.delete(commentLikes).where(eq(commentLikes.commentId, comment.id))
+    await db.delete(commentReposts).where(eq(commentReposts.commentId, comment.id))
   }
   await db.delete(comments).where(eq(comments.topicId, topicId))
   await db.delete(topicLikes).where(eq(topicLikes.topicId, topicId))

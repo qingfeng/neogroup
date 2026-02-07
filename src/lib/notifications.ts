@@ -10,6 +10,10 @@ export async function createNotification(
     type: string
     topicId?: string
     commentId?: string
+    actorName?: string
+    actorUrl?: string
+    actorAvatarUrl?: string
+    metadata?: string
   }
 ): Promise<void> {
   if (data.userId === data.actorId) return
@@ -20,6 +24,10 @@ export async function createNotification(
     type: data.type,
     topicId: data.topicId || null,
     commentId: data.commentId || null,
+    actorName: data.actorName || null,
+    actorUrl: data.actorUrl || null,
+    actorAvatarUrl: data.actorAvatarUrl || null,
+    metadata: data.metadata || null,
     createdAt: new Date(),
   })
 }

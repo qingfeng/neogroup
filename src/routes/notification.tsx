@@ -15,7 +15,7 @@ notification.get('/', async (c) => {
     return c.redirect('/auth/login')
   }
 
-  // 查询提醒列表
+  // 查询提醒列表（leftJoin 以支持远程 actor）
   const notificationList = await db
     .select({
       id: notifications.id,
@@ -24,6 +24,10 @@ notification.get('/', async (c) => {
       commentId: notifications.commentId,
       isRead: notifications.isRead,
       createdAt: notifications.createdAt,
+      actorName: notifications.actorName,
+      actorUrl: notifications.actorUrl,
+      actorAvatarUrl: notifications.actorAvatarUrl,
+      metadata: notifications.metadata,
       actor: {
         id: users.id,
         username: users.username,
@@ -32,7 +36,7 @@ notification.get('/', async (c) => {
       },
     })
     .from(notifications)
-    .innerJoin(users, eq(notifications.actorId, users.id))
+    .leftJoin(users, eq(notifications.actorId, users.id))
     .where(eq(notifications.userId, user.id))
     .orderBy(desc(notifications.createdAt))
     .limit(50)
@@ -41,10 +45,6 @@ notification.get('/', async (c) => {
   const topicIds = [...new Set(notificationList.map(n => n.topicId).filter(Boolean))] as string[]
   const topicMap = new Map<string, string>()
   if (topicIds.length > 0) {
-    const topicRows = await db
-      .select({ id: topics.id, title: topics.title })
-      .from(topics)
-      .where(eq(topics.id, topicIds[0]))
     // 逐个查（D1 不支持 IN 子句的数组绑定）
     for (const tid of topicIds) {
       const row = await db
@@ -73,17 +73,32 @@ notification.get('/', async (c) => {
     })
   }
 
-  const getTypeText = (type: string, topicTitle: string) => {
-    switch (type) {
+  const getTypeText = (n: typeof notificationList[0], topicTitle: string) => {
+    switch (n.type) {
       case 'reply': return `回复了你的话题「${topicTitle}」`
       case 'comment_reply': return `回复了你在「${topicTitle}」的评论`
       case 'topic_like': return `喜欢了你的话题「${topicTitle}」`
       case 'comment_like': return `赞了你在「${topicTitle}」的评论`
+      case 'mention': {
+        let meta: { content?: string } = {}
+        try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
+        const summary = meta.content ? `：${truncate(meta.content, 80)}` : ''
+        return `提到了你${summary}`
+      }
       default: return '与你互动了'
     }
   }
 
   const getLink = (n: typeof notificationList[0]) => {
+    if (n.type === 'mention') {
+      try {
+        if (n.metadata) {
+          const meta = JSON.parse(n.metadata) as { noteUrl?: string }
+          if (meta.noteUrl) return meta.noteUrl
+        }
+      } catch {}
+      return n.actorUrl || '#'
+    }
     if (!n.topicId) return '#'
     if (n.commentId && (n.type === 'comment_reply' || n.type === 'comment_like')) {
       return `/topic/${n.topicId}#comment-${n.commentId}`
@@ -104,17 +119,30 @@ notification.get('/', async (c) => {
           <div class="notification-list">
             {notificationList.map((n) => {
               const topicTitle = truncate(topicMap.get(n.topicId || '') || '已删除的话题', 20)
+              const displayName = n.actor?.id
+                ? (n.actor.displayName || n.actor.username)
+                : (n.actorName || '远程用户')
+              const avatarUrl = n.actor?.id
+                ? (n.actor.avatarUrl || '/static/img/default-avatar.svg')
+                : (n.actorAvatarUrl || '/static/img/default-avatar.svg')
+              const isExternal = n.type === 'mention' && !n.actor?.id
+
               return (
-                <a href={getLink(n)} class={`notification-item ${n.isRead === 0 ? 'unread' : ''}`} key={n.id}>
+                <a
+                  href={getLink(n)}
+                  class={`notification-item ${n.isRead === 0 ? 'unread' : ''}`}
+                  key={n.id}
+                  {...(isExternal ? { target: '_blank', rel: 'noopener' } : {})}
+                >
                   <img
-                    src={n.actor.avatarUrl || '/static/img/default-avatar.svg'}
+                    src={avatarUrl}
                     alt=""
                     class="avatar-sm"
                   />
                   <div class="notification-body">
                     <span class="notification-text">
-                      <strong>{n.actor.displayName || n.actor.username}</strong>
-                      {' '}{getTypeText(n.type, topicTitle)}
+                      <strong>{displayName}</strong>
+                      {' '}{getTypeText(n, topicTitle)}
                     </span>
                     <span class="notification-time">{formatDate(n.createdAt)}</span>
                   </div>

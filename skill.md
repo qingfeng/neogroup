@@ -100,6 +100,18 @@ npm run dev
 npm run deploy
 ```
 
+### 9. 设置 APP_URL 环境变量
+
+ActivityPub 联邦功能需要知道站点的公开 URL。在 `wrangler.toml` 中添加：
+
+```toml
+[vars]
+APP_URL = "https://your-domain.com"
+APP_NAME = "NeoGroup"
+```
+
+如果不设置 `APP_URL`，系统会从请求的 `Origin` 自动推断，但建议显式配置以确保 AP URL 一致性。
+
 ## 可选：绑定自定义域名
 
 1. 确保域名已添加到 Cloudflare
@@ -113,6 +125,29 @@ custom_domain = true
 ```
 
 4. 重新部署：`npm run deploy`
+
+## 数据库迁移
+
+首次部署后，需要按顺序执行 `drizzle/` 目录下的所有迁移文件。迁移文件以数字编号，必须按顺序执行：
+
+```bash
+# 查看所有迁移文件
+ls drizzle/*.sql
+
+# 逐个执行（远程）
+npx wrangler d1 execute neogroup --remote --file=drizzle/0000_peaceful_white_tiger.sql
+npx wrangler d1 execute neogroup --remote --file=drizzle/0001_xxx.sql
+# ... 依次执行所有 .sql 文件
+```
+
+**重要**：新部署必须执行所有迁移文件，否则会缺少表或字段导致运行时错误。
+
+## ActivityPub 注意事项
+
+- ActivityPub 需要 HTTPS + 自定义域名才能正常工作（`.workers.dev` 域名也可以，但建议用自定义域名）
+- 用户的 AP 身份绑定域名（如 `user@neogrp.club`），**更换域名后 AP 身份会失效**，已有的关注关系会断开
+- 用户首次被 AP 请求访问时会自动生成密钥对，无需额外配置
+- Backfill 端点 (`POST /ap/users/:username/backfill`) 可以将已有话题推送给关注者，需要登录后访问
 
 ## 常见问题
 
@@ -175,8 +210,10 @@ KV_ID=$(echo "$KV_OUTPUT" | grep -o 'id = "[^"]*"' | cut -d'"' -f2)
 sed -i '' "s/your-database-id-here/$D1_ID/" wrangler.toml
 sed -i '' "s/your-kv-namespace-id-here/$KV_ID/" wrangler.toml
 
-# 7. 初始化数据库
-npx wrangler d1 execute neogroup --local --file=drizzle/0000_peaceful_white_tiger.sql
+# 7. 初始化数据库（执行所有迁移文件）
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --local --file="$f"
+done
 
 # 8. 启动开发服务器
 npm run dev

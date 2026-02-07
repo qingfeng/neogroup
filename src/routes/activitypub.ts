@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics } from '../db/schema'
-import { generateId } from '../lib/utils'
+import { authProviders, users, apFollowers, topics, comments } from '../db/schema'
+import { generateId, stripHtml, truncate } from '../lib/utils'
+import { createNotification } from '../lib/notifications'
 import {
   ensureKeyPair, getWebFingerJson, getActorJson, getNodeInfoJson,
-  fetchActor, signAndDeliver, getNoteJson, getApUsername
+  fetchActor, signAndDeliver, getNoteJson, getCommentNoteJson, getApUsername
 } from '../services/activitypub'
 
 const ap = new Hono<AppContext>()
@@ -194,6 +195,50 @@ ap.post('/ap/users/:username/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
+  if (type === 'Create') {
+    const noteObject = typeof activity.object === 'object' ? activity.object : null
+    if (noteObject?.type === 'Note') {
+      const actorUrl = `${baseUrl}/ap/users/${username}`
+      const tags = Array.isArray(noteObject.tag) ? noteObject.tag : []
+      const isMentioned = tags.some(
+        (t: any) => t.type === 'Mention' && t.href === actorUrl
+      )
+
+      if (isMentioned) {
+        // Fetch remote actor info
+        const remoteActorUri = activity.actor
+        let actorName = remoteActorUri
+        let actorAvatarUrl: string | null = null
+        let remoteActorUrl: string | null = remoteActorUri
+
+        if (remoteActorUri) {
+          const remoteActor = await fetchActor(remoteActorUri)
+          if (remoteActor) {
+            actorName = remoteActor.name || remoteActor.preferredUsername || remoteActorUri
+            actorAvatarUrl = remoteActor.icon?.url || null
+            remoteActorUrl = remoteActor.url || remoteActorUri
+          }
+        }
+
+        // Extract content summary
+        const noteContent = noteObject.content || ''
+        const contentSummary = truncate(stripHtml(noteContent), 200)
+        const noteUrl = noteObject.url || noteObject.id || null
+
+        await createNotification(db, {
+          userId: user.id,
+          actorId: 'remote',
+          type: 'mention',
+          actorName,
+          actorAvatarUrl,
+          actorUrl: remoteActorUrl,
+          metadata: JSON.stringify({ content: contentSummary, noteUrl }),
+        })
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
   // Unknown activity type — accept silently
   return c.json({ status: 'accepted' }, 202)
 })
@@ -235,16 +280,21 @@ ap.get('/ap/users/:username/outbox', async (c) => {
     return c.notFound()
   }
 
-  const countResult = await db
+  const topicCount = await db
     .select({ count: sql<number>`count(*)` })
     .from(topics)
     .where(eq(topics.userId, user.id))
+
+  const commentCount = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(comments)
+    .where(eq(comments.userId, user.id))
 
   return c.json({
     '@context': 'https://www.w3.org/ns/activitystreams',
     id: `${baseUrl}/ap/users/${username}/outbox`,
     type: 'OrderedCollection',
-    totalItems: countResult[0]?.count || 0,
+    totalItems: (topicCount[0]?.count || 0) + (commentCount[0]?.count || 0),
   }, 200, {
     'Content-Type': 'application/activity+json',
   })
@@ -257,6 +307,22 @@ ap.get('/ap/notes/:topicId', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
   const note = await getNoteJson(db, baseUrl, topicId)
+  if (!note) {
+    return c.notFound()
+  }
+
+  return c.json(note, 200, {
+    'Content-Type': 'application/activity+json',
+  })
+})
+
+// --- Comment Note object ---
+ap.get('/ap/comments/:commentId', async (c) => {
+  const commentId = c.req.param('commentId')
+  const db = c.get('db')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  const note = await getCommentNoteJson(db, baseUrl, commentId)
   if (!note) {
     return c.notFound()
   }
