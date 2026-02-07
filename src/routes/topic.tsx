@@ -273,7 +273,7 @@ topic.get('/:id', async (c) => {
     author: {
       '@type': 'Person',
       name: topicData.user.displayName || topicData.user.username,
-      url: `${baseUrl}/user/${topicData.user.id}`,
+      url: `${baseUrl}/user/${topicData.user.username}`,
     },
     interactionStatistic: {
       '@type': 'InteractionCounter',
@@ -312,7 +312,7 @@ topic.get('/:id', async (c) => {
           <h1 class="topic-title">{topicData.title}</h1>
 
           <div class="topic-meta">
-            <a href={`/user/${topicData.user.id}`} class="topic-author">
+            <a href={`/user/${topicData.user.username}`} class="topic-author">
               <img
                 src={resizeImage(topicData.user.avatarUrl, 64) || '/static/img/default-avatar.svg'}
                 alt=""
@@ -393,7 +393,7 @@ topic.get('/:id', async (c) => {
                 </div>
                 <div class="modal-body">
                   {reposters.map((r) => (
-                    <a href={`/user/${r.id}`} class="reposter-item" key={r.id}>
+                    <a href={`/user/${r.username}`} class="reposter-item" key={r.id}>
                       <img src={resizeImage(r.avatarUrl, 64) || '/static/img/default-avatar.svg'} alt="" class="avatar-sm" />
                       <span>{r.displayName || r.username}</span>
                     </a>
@@ -478,7 +478,7 @@ topic.get('/:id', async (c) => {
                   return (
                     <div class="comment-item" key={comment.id} id={`comment-${comment.id}`}>
                       <div class="comment-avatar">
-                        <a href={`/user/${comment.user.id}`}>
+                        <a href={`/user/${comment.user.username}`}>
                           <img
                             src={resizeImage(comment.user.avatarUrl, 96) || '/static/img/default-avatar.svg'}
                             alt=""
@@ -488,7 +488,7 @@ topic.get('/:id', async (c) => {
                       </div>
                       <div class="comment-body">
                         <div class="comment-header">
-                          <a href={`/user/${comment.user.id}`} class="comment-author-name">
+                          <a href={`/user/${comment.user.username}`} class="comment-author-name">
                             {comment.user.displayName || comment.user.username}
                           </a>
                           {isAuthor && <span class="author-badge">楼主</span>}
@@ -497,7 +497,7 @@ topic.get('/:id', async (c) => {
                         {replyTo && (
                           <div class="comment-quote">
                             <span class="quote-content" dangerouslySetInnerHTML={{ __html: truncate(stripHtml(replyTo.content), 50) }} />
-                            <a href={`/user/${replyTo.user.id}`} class="quote-author">
+                            <a href={`/user/${replyTo.user.username}`} class="quote-author">
                               {replyTo.user.displayName || replyTo.user.username}
                             </a>
                           </div>

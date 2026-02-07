@@ -66,7 +66,7 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, ne
         <ul class="sidebar-list">
           {newUsers.map((user) => (
             <li>
-              <a href={`/user/${user.id}`}>{user.displayName || user.username}</a>
+              <a href={`/user/${user.username}`}>{user.displayName || user.username}</a>
             </li>
           ))}
         </ul>

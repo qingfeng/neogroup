@@ -74,7 +74,7 @@ export function getWebFingerJson(username: string, userId: string, baseUrl: stri
       {
         rel: 'http://webfinger.net/rel/profile-page',
         type: 'text/html',
-        href: `${baseUrl}/user/${userId}`,
+        href: `${baseUrl}/user/${username}`,
       },
     ],
   }
@@ -97,7 +97,7 @@ export function getActorJson(
     type: 'Person',
     preferredUsername: apUsername,
     name: user.displayName || user.username,
-    url: `${baseUrl}/user/${user.id}`,
+    url: `${baseUrl}/user/${apUsername}`,
     inbox: `${actorUrl}/inbox`,
     outbox: `${actorUrl}/outbox`,
     followers: `${actorUrl}/followers`,

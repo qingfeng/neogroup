@@ -62,13 +62,13 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
               {feedItems.map((item) => (
                 <div class="feed-item">
                   <div class="feed-item-avatar">
-                    <a href={`/user/${item.user.id}`}>
+                    <a href={`/user/${item.user.username}`}>
                       <img src={item.user.avatarUrl || '/static/img/default-avatar.svg'} alt="" />
                     </a>
                   </div>
                   <div class="feed-item-body">
                     <div class="feed-item-header">
-                      <a href={`/user/${item.user.id}`} class="feed-item-user">{item.user.displayName || item.user.username}</a>
+                      <a href={`/user/${item.user.username}`} class="feed-item-user">{item.user.displayName || item.user.username}</a>
                       {item.type === 'topic' ? (
                         <span class="feed-item-action">发布了话题</span>
                       ) : (

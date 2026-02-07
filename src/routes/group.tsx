@@ -314,7 +314,7 @@ group.get('/:id', async (c) => {
                         <a href={`/topic/${topic.id}`}>{topic.title}</a>
                       </td>
                       <td class="topic-table-author">
-                        <a href={`/user/${topic.user.id}`}>
+                        <a href={`/user/${topic.user.username}`}>
                           {topic.user.displayName || topic.user.username}
                         </a>
                       </td>
@@ -444,7 +444,8 @@ group.get('/:id/topic/new', async (c) => {
       </div>
 
       <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
-      <script dangerouslySetInnerHTML={{ __html: `
+      <script dangerouslySetInnerHTML={{
+        __html: `
         // NeoDB 卡片内部 HTML
         function buildNeoDBCardInner(data) {
           var img = data.coverUrl ? '<img src="' + data.coverUrl + '" alt="" />' : '';

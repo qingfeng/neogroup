@@ -11,20 +11,54 @@ const user = new Hono<AppContext>()
 user.get('/:id', async (c) => {
   const db = c.get('db')
   const currentUser = c.get('user')
-  const userId = c.req.param('id')
+  const rawId = c.req.param('id')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
 
-  // 获取用户信息
-  const userResult = await db
+  // Support multiple lookup formats:
+  // 1. User ID: /user/9hhVvIB2BRAR
+  // 2. Username: /user/qingfeng
+  // 3. AP handle: /user/@qingfeng@neogrp.club
+  let lookupName = rawId
+
+  // Check for @username@domain format
+  const apHandleMatch = rawId.match(/^@?([^@]+)@(.+)$/)
+  if (apHandleMatch) {
+    const [, parsedUsername, domain] = apHandleMatch
+    // Only accept handles for our own domain
+    if (domain === host) {
+      lookupName = parsedUsername
+    } else {
+      // External domain - not found
+      return c.notFound()
+    }
+  } else if (rawId.startsWith('@')) {
+    // @username format (without domain)
+    lookupName = rawId.slice(1)
+  }
+
+  // Try to find by username first
+  let userResult = await db
     .select()
     .from(users)
-    .where(eq(users.id, userId))
+    .where(eq(users.username, lookupName))
     .limit(1)
+
+  // If not found by username, try by ID
+  if (userResult.length === 0) {
+    userResult = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, rawId))
+      .limit(1)
+  }
 
   if (userResult.length === 0) {
     return c.notFound()
   }
 
   const profileUser = userResult[0]
+  const userId = profileUser.id
   const isOwnProfile = currentUser?.id === userId
 
   // 获取 Mastodon 账号信息
@@ -107,8 +141,7 @@ user.get('/:id', async (c) => {
   const description = profileUser.bio
     ? truncate(stripHtml(profileUser.bio), 160)
     : `${displayName} 的个人主页 - NeoGroup`
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-  const userUrl = `${baseUrl}/user/${userId}`
+  const userUrl = `${baseUrl}/user/${profileUser.username}`
 
   return c.html(
     <Layout

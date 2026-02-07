@@ -21,7 +21,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0 }) => {
               提醒
               {unreadCount > 0 && <span class="notification-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
             </a>
-            <a href={`/user/${user.id}`}>{user.displayName || user.username}</a>
+            <a href={`/user/${user.username}`}>{user.displayName || user.username}</a>
             <a href="/auth/logout">登出</a>
           </>
         ) : (
