@@ -101,6 +101,9 @@ export function getActorJson(
     inbox: `${actorUrl}/inbox`,
     outbox: `${actorUrl}/outbox`,
     followers: `${actorUrl}/followers`,
+    endpoints: {
+      sharedInbox: `${baseUrl}/ap/inbox`,
+    },
     publicKey: {
       id: `${actorUrl}#main-key`,
       owner: actorUrl,

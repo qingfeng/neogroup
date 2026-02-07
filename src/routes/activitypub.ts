@@ -181,10 +181,29 @@ ap.post('/ap/users/:username/inbox', async (c) => {
     const noteObject = typeof activity.object === 'object' ? activity.object : null
     if (noteObject?.type === 'Note') {
       const actorUrl = `${baseUrl}/ap/users/${username}`
+      const host = new URL(baseUrl).host
+      const expectedMention = `@${username}@${host}`
       const tags = Array.isArray(noteObject.tag) ? noteObject.tag : []
+
+      // Debug logging
+      console.log('[AP Inbox] Create(Note) received:', {
+        actor: activity.actor,
+        targetUser: username,
+        actorUrl,
+        expectedMention,
+        tags: JSON.stringify(tags),
+      })
+
+      // Match by href (actor URL) OR by name (@username@domain)
       const isMentioned = tags.some(
-        (t: any) => t.type === 'Mention' && t.href === actorUrl
+        (t: any) => t.type === 'Mention' && (
+          t.href === actorUrl ||
+          t.name === expectedMention ||
+          t.name === `@${username}`
+        )
       )
+
+      console.log('[AP Inbox] Mention check result:', { isMentioned })
 
       if (isMentioned) {
         // Fetch remote actor info
@@ -209,11 +228,11 @@ ap.post('/ap/users/:username/inbox', async (c) => {
 
         await createNotification(db, {
           userId: user.id,
-          actorId: 'remote',
           type: 'mention',
           actorName,
           actorAvatarUrl,
           actorUrl: remoteActorUrl,
+          actorUri: remoteActorUri,
           metadata: JSON.stringify({ content: contentSummary, noteUrl }),
         })
       }
@@ -222,6 +241,111 @@ ap.post('/ap/users/:username/inbox', async (c) => {
   }
 
   // Unknown activity type — accept silently
+  return c.json({ status: 'accepted' }, 202)
+})
+
+// --- Shared Inbox (for receiving activities addressed to any local user) ---
+ap.post('/ap/inbox', async (c) => {
+  const db = c.get('db')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+
+  let activity: Record<string, any>
+  try {
+    activity = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400)
+  }
+
+  console.log('[AP SharedInbox] Received activity:', {
+    type: activity.type,
+    actor: activity.actor,
+    objectType: activity.object?.type,
+  })
+
+  const type = activity.type
+
+  if (type === 'Create') {
+    const noteObject = typeof activity.object === 'object' ? activity.object : null
+    if (noteObject?.type === 'Note') {
+      const tags = Array.isArray(noteObject.tag) ? noteObject.tag : []
+
+      console.log('[AP SharedInbox] Create(Note) tags:', JSON.stringify(tags))
+
+      // Find all local users mentioned in this note
+      for (const tag of tags) {
+        if (tag.type !== 'Mention') continue
+
+        // Try to extract username from mention
+        let mentionedUsername: string | null = null
+
+        // Check if href points to our domain
+        if (tag.href && typeof tag.href === 'string') {
+          const hrefMatch = tag.href.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
+          if (hrefMatch) {
+            mentionedUsername = hrefMatch[1]
+          }
+        }
+
+        // Or check name like @username@domain or @username
+        if (!mentionedUsername && tag.name && typeof tag.name === 'string') {
+          const nameMatch = tag.name.match(/^@([^@]+)(?:@(.+))?$/)
+          if (nameMatch) {
+            const [, username, domain] = nameMatch
+            if (!domain || domain === host) {
+              mentionedUsername = username
+            }
+          }
+        }
+
+        if (!mentionedUsername) continue
+
+        console.log('[AP SharedInbox] Found mention for user:', mentionedUsername)
+
+        // Find the user
+        const user = await findUserByApUsername(db, mentionedUsername)
+        if (!user) {
+          console.log('[AP SharedInbox] User not found:', mentionedUsername)
+          continue
+        }
+
+        // Fetch remote actor info
+        const remoteActorUri = activity.actor
+        let actorName = remoteActorUri
+        let actorAvatarUrl: string | null = null
+        let remoteActorUrl: string | null = remoteActorUri
+
+        if (remoteActorUri) {
+          const remoteActor = await fetchActor(remoteActorUri)
+          if (remoteActor) {
+            actorName = remoteActor.name || remoteActor.preferredUsername || remoteActorUri
+            actorAvatarUrl = remoteActor.icon?.url || null
+            remoteActorUrl = remoteActor.url || remoteActorUri
+          }
+        }
+
+        // Extract content summary
+        const noteContent = noteObject.content || ''
+        const contentSummary = truncate(stripHtml(noteContent), 200)
+        const noteUrl = noteObject.url || noteObject.id || null
+
+        await createNotification(db, {
+          userId: user.id,
+          type: 'mention',
+          actorName,
+          actorAvatarUrl,
+          actorUrl: remoteActorUrl,
+          actorUri: remoteActorUri,
+          metadata: JSON.stringify({ content: contentSummary, noteUrl }),
+        })
+
+        console.log('[AP SharedInbox] Created notification for user:', user.id)
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  // For other activity types, accept silently
   return c.json({ status: 'accepted' }, 202)
 })
 

@@ -124,16 +124,17 @@ export const reports = sqliteTable('report', {
 export const notifications = sqliteTable('notification', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id),
-  actorId: text('actor_id').notNull(),
+  actorId: text('actor_id'),  // nullable for remote actors
   type: text('type').notNull(), // reply | comment_reply | topic_like | comment_like | mention
   topicId: text('topic_id'),
   commentId: text('comment_id'),
   isRead: integer('is_read').default(0).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-  // 远程 actor 信息（用于 AP mention 等场景，actorId 不在 users 表中）
+  // 远程 actor 信息（用于 AP mention 等场景）
   actorName: text('actor_name'),
   actorUrl: text('actor_url'),
   actorAvatarUrl: text('actor_avatar_url'),
+  actorUri: text('actor_uri'),  // AP actor URI (unique identifier for remote users)
   metadata: text('metadata'), // JSON: { content, noteUrl }
 })
 
