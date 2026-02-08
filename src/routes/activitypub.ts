@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers } from '../db/schema'
+import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities } from '../db/schema'
 import { generateId, stripHtml, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import {
@@ -107,6 +107,24 @@ ap.get('/ap/groups/:actorName', async (c) => {
   const actorName = c.req.param('actorName')
   const db = c.get('db')
 
+  // Outbox support: optionally return paginated activities
+  if (c.req.query('page') === 'true') {
+    const limit = 10
+    const page = Number(c.req.query('p') || '0')
+
+    const groupResult = await db.select({ id: groups.id }).from(groups).where(eq(groups.actorName, actorName)).limit(1)
+    if (groupResult.length === 0) return c.notFound()
+
+    const activities = await db.select({ activityJson: groupActivities.activityJson })
+      .from(groupActivities)
+      .where(eq(groupActivities.groupId, groupResult[0].id))
+      .orderBy(desc(groupActivities.createdAt))
+      .limit(limit)
+      .offset(page * limit)
+
+    return c.json({ items: activities.map(a => JSON.parse(a.activityJson)) })
+  }
+
   const groupResult = await db.select()
     .from(groups)
     .where(eq(groups.actorName, actorName))
@@ -128,7 +146,47 @@ ap.get('/ap/groups/:actorName', async (c) => {
     iconUrl: group.iconUrl,
   }, publicKeyPem, baseUrl)
 
+  actor.outbox = `${baseUrl}/ap/groups/${actorName}/outbox`
+
   return c.json(actor, 200, {
+    'Content-Type': 'application/activity+json',
+    'Access-Control-Allow-Origin': '*',
+  })
+})
+
+// Group Outbox (FEP-1b12) - read-only
+ap.get('/ap/groups/:actorName/outbox', async (c) => {
+  const actorName = c.req.param('actorName')
+  const db = c.get('db')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  const groupResult = await db.select()
+    .from(groups)
+    .where(eq(groups.actorName, actorName))
+    .limit(1)
+
+  if (groupResult.length === 0) return c.notFound()
+
+  const group = groupResult[0]
+
+  // Serve items in reverse chronological order
+  const activities = await db.select({ activityJson: groupActivities.activityJson })
+    .from(groupActivities)
+    .where(eq(groupActivities.groupId, group.id))
+    .orderBy(desc(groupActivities.createdAt))
+    .limit(20)
+
+  const orderedItems = activities.map(a => JSON.parse(a.activityJson))
+
+  const collection = {
+    '@context': 'https://www.w3.org/ns/activitystreams',
+    id: `${baseUrl}/ap/groups/${actorName}/outbox`,
+    type: 'OrderedCollection',
+    totalItems: orderedItems.length,
+    orderedItems,
+  }
+
+  return c.json(collection, 200, {
     'Content-Type': 'application/activity+json',
     'Access-Control-Allow-Origin': '*',
   })

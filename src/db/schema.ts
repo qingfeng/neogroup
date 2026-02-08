@@ -41,6 +41,14 @@ export const groups = sqliteTable('group', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 小组 AP 动态（用于 Group Outbox）
+export const groupActivities = sqliteTable('group_activity', {
+  id: text('id').primaryKey(),
+  groupId: text('group_id').notNull().references(() => groups.id),
+  activityJson: text('activity_json').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 小组成员表
 export const groupMembers = sqliteTable('group_member', {
   id: text('id').primaryKey(),

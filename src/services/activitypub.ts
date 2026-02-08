@@ -839,6 +839,29 @@ export async function boostToGroupFollowers(
       object: noteId,
     }
 
+    // Also try to deliver directly to the original note's actor inbox so origin instance sees the Announce
+    try {
+      const resp = await fetch(noteId, { headers: { Accept: 'application/activity+json' } })
+      if (resp.ok) {
+        const note = await resp.json()
+        const attributed = Array.isArray(note.attributedTo) ? note.attributedTo[0] : note.attributedTo
+        const targetActorId = typeof attributed === 'string' ? attributed : (typeof note.actor === 'string' ? note.actor : null)
+        if (targetActorId) {
+          const remoteActor = await fetchActor(targetActorId)
+          const targetInbox = remoteActor?.endpoints?.sharedInbox || remoteActor?.inbox
+          if (targetInbox) {
+            followers.push({
+              actorUri: targetActorId,
+              actorInbox: remoteActor?.inbox || null,
+              actorSharedInbox: remoteActor?.endpoints?.sharedInbox || null,
+            } as any)
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[AP Boost] fetch target note failed', e)
+    }
+
     // 4. Deliver
     const inboxes = new Map<string, string>()
     for (const f of followers) {
@@ -856,6 +879,18 @@ export async function boostToGroupFollowers(
       } catch (e) {
         console.error(`AP boost deliver to ${inbox} failed:`, e)
       }
+    }
+
+    // Persist to group outbox
+    try {
+      await db.insert(groupActivities).values({
+        id: generateId(),
+        groupId: group.id,
+        activityJson: JSON.stringify(activity),
+        createdAt: new Date(),
+      })
+    } catch (e) {
+      console.error('[AP Boost] failed to persist activity', e)
     }
 
   } catch (e) {
