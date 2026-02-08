@@ -372,10 +372,8 @@ app.route('/', homeRoutes)
 
 export default {
   fetch: app.fetch,
-  scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
-    const db = createDb(env.DB)
-    // ctx.waitUntil(pollMentions(env, db)) // Legacy bot polling disabled
-  },
+  // No cron triggers configured (legacy polling removed)
+  scheduled: async (_event: ScheduledEvent, _env: Bindings, _ctx: ExecutionContext) => {},
 }
 
 function getExtFromFile(filename: string, mimeType: string): string {
