@@ -8,7 +8,7 @@ import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
-import { deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, fetchActor } from '../services/activitypub'
+import { deliverCommentToFollowers, ensureKeyPair, signAndDeliver, fetchActor } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
 
@@ -803,32 +803,6 @@ topic.post('/:id/comment', async (c) => {
       )
     }
   }
-
-  // AP: Announce comment to group followers if group has actorName
-  c.executionCtx.waitUntil((async () => {
-    const groupData = await db.select({ id: groups.id, actorName: groups.actorName })
-      .from(groups)
-      .innerJoin(topics, eq(topics.groupId, groups.id))
-      .where(eq(topics.id, topicId))
-      .limit(1)
-    if (groupData.length > 0 && groupData[0].actorName) {
-      const noteUrl = `${baseUrlForAp}/topic/${topicId}#comment-${commentId}`
-      const topicUrl = `${baseUrlForAp}/topic/${topicId}`
-      const noteJson = {
-        '@context': 'https://www.w3.org/ns/activitystreams',
-        id: noteUrl,
-        type: 'Note',
-        attributedTo: `${baseUrlForAp}/ap/groups/${groupData[0].actorName}`,
-        inReplyTo: topicUrl,
-        content: htmlContent,
-        url: noteUrl,
-        published: new Date().toISOString(),
-        to: ['https://www.w3.org/ns/activitystreams#Public'],
-        cc: [`${baseUrlForAp}/ap/groups/${groupData[0].actorName}/followers`],
-      }
-      await announceToGroupFollowers(db, groupData[0].id, groupData[0].actorName, noteJson, baseUrlForAp)
-    }
-  })())
 
   return c.redirect(`/topic/${topicId}`)
 })
