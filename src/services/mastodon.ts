@@ -282,3 +282,21 @@ export async function resolveStatusId(
     return null
   }
 }
+
+// 删除一条 status（需要拥有者的 token）
+export async function deleteStatus(
+  domain: string,
+  accessToken: string,
+  statusId: string
+): Promise<void> {
+  const response = await fetch(`https://${domain}/api/v1/statuses/${statusId}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to delete status: ${response.statusText}`)
+  }
+}

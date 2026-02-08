@@ -7,7 +7,7 @@ import { generateId, stripHtml, truncate, parseJson, resizeImage, processContent
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
-import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus } from '../services/mastodon'
+import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
 import { deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, fetchActor } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
@@ -1246,6 +1246,101 @@ topic.post('/:id/comment/:commentId/delete', async (c) => {
   const comment = await db.select().from(comments).where(eq(comments.id, commentId)).limit(1)
   if (comment.length === 0 || (comment[0].userId !== user.id && !isSuperAdmin(user))) {
     return c.redirect(`/topic/${topicId}`)
+  }
+
+  // If this comment was posted to a Mastodon thread using the user's local AP identity and also synced as a Mastodon status, delete that status too
+  if (comment[0].mastodonStatusId && comment[0].mastodonDomain) {
+    const authProvider = await db.query.authProviders.findFirst({
+      where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+    })
+
+    if (authProvider?.accessToken) {
+      try {
+        await deleteStatus(comment[0].mastodonDomain, authProvider.accessToken, comment[0].mastodonStatusId)
+      } catch (e) {
+        console.error('Failed to delete Mastodon status for comment', commentId, e)
+      }
+    }
+  }
+
+  // If this comment was federated as a reply to a remote Mastodon thread, send Delete activity
+  const topicResult = await db
+    .select({ mastodonStatusId: topics.mastodonStatusId })
+    .from(topics)
+    .where(eq(topics.id, topicId))
+    .limit(1)
+
+  const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
+
+  if (topicResult.length > 0 && topicResult[0].mastodonStatusId?.startsWith('http')) {
+    // Determine which remote object we were replying to (topic or parent comment)
+    let remoteInReplyTo: string | null = topicResult[0].mastodonStatusId
+    if (comment[0].replyToId) {
+      const parent = await db.select({ mastodonStatusId: comments.mastodonStatusId })
+        .from(comments)
+        .where(eq(comments.id, comment[0].replyToId))
+        .limit(1)
+      if (parent.length > 0 && parent[0].mastodonStatusId?.startsWith('http')) {
+        remoteInReplyTo = parent[0].mastodonStatusId
+      }
+    }
+
+    // Fetch remote note to locate target actor + inbox
+    let targetActor: string | null = null
+    let remoteInbox: string | null = null
+    let remoteSharedInbox: string | null = null
+    const remoteDomain = (() => { try { return new URL(remoteInReplyTo || topicResult[0].mastodonStatusId!).origin } catch { return null } })()
+
+    if (remoteInReplyTo) {
+      try {
+        const resp = await fetch(remoteInReplyTo, { headers: { Accept: 'application/activity+json' } })
+        if (resp.ok) {
+          const remoteNote = await resp.json()
+          const attributed = Array.isArray(remoteNote.attributedTo) ? remoteNote.attributedTo[0] : remoteNote.attributedTo
+          const actorId = typeof attributed === 'string' ? attributed : (typeof remoteNote.actor === 'string' ? remoteNote.actor : null)
+          if (actorId) {
+            targetActor = actorId
+            const remoteActor = await fetchActor(actorId)
+            if (remoteActor) {
+              remoteSharedInbox = remoteActor.endpoints?.sharedInbox || null
+              remoteInbox = remoteActor.inbox || null
+            }
+          }
+        }
+      } catch (e) {
+        console.error('AP delete reply: fetch remote note error', e)
+      }
+    }
+
+    const inboxToUse = remoteSharedInbox || remoteInbox || (remoteDomain ? `${remoteDomain}/inbox` : null)
+
+    if (inboxToUse) {
+      const actorUrl = `${baseUrlForAp}/ap/users/${user.username}`
+      const { privateKeyPem } = await ensureKeyPair(db, user.id)
+      const noteId = `${baseUrlForAp}/ap/comments/${commentId}`
+
+      const to = ['https://www.w3.org/ns/activitystreams#Public']
+      const cc = [`${actorUrl}/followers`]
+      if (targetActor) {
+        to.push(targetActor)
+        cc.push(targetActor)
+      }
+
+      const activity = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${noteId}/delete`,
+        type: 'Delete',
+        actor: actorUrl,
+        to,
+        cc,
+        object: noteId,
+      }
+
+      c.executionCtx.waitUntil(
+        signAndDeliver(actorUrl, privateKeyPem, inboxToUse, activity)
+          .catch(e => console.error('AP delete reply deliver failed:', e))
+      )
+    }
   }
 
   // 删除评论的点赞、转发记录，再删除评论
