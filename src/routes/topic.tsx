@@ -257,9 +257,12 @@ topic.get('/:id', async (c) => {
     : undefined
 
   const images = parseJson<string[]>(topicData.images, [])
-  const ogImage = images.length > 0 ? images[0] : undefined
-
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  // 优先使用帖子图片，否则使用小组图标
+  const ogImage = images.length > 0
+    ? images[0]
+    : (topicData.group.iconUrl || `${baseUrl}/static/img/default-group.svg`)
+
   const topicUrl = `${baseUrl}/topic/${topicId}`
 
   // JSON-LD 结构化数据

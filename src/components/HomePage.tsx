@@ -42,6 +42,7 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
     <Layout
       title="首页"
       description="NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区"
+      image={`${baseUrl}/static/img/favicon.svg`}
       url={baseUrl}
       jsonLd={jsonLd}
       user={user}

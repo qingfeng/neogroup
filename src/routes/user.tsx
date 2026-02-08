@@ -148,7 +148,7 @@ user.get('/:id', async (c) => {
       user={currentUser}
       title={displayName}
       description={description}
-      image={profileUser.avatarUrl || undefined}
+      image={profileUser.avatarUrl || `${baseUrl}/static/img/default-avatar.svg`}
       url={userUrl}
       unreadCount={c.get('unreadNotificationCount')}
     >

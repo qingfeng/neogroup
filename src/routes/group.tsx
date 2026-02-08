@@ -247,7 +247,7 @@ group.get('/:id', async (c) => {
       user={user}
       title={groupData.name}
       description={description}
-      image={groupData.iconUrl}
+      image={groupData.iconUrl || `${baseUrl}/static/img/default-group.svg`}
       url={groupUrl}
       unreadCount={c.get('unreadNotificationCount')}
     >
