@@ -117,6 +117,8 @@ src/
 - **群组身份**：每个 Group 也是一个 ActivityPub Actor（如 `@board@neogrp.club`）。
 - **自动转发 (Boost)**：当外部用户 @群组 发帖时，群组会自动 Boost 该贴，确保群组关注者能看到。
 - **回复处理**：支持识别 `inReplyTo`，如果回复的是 Fediverse 来源的帖子（通过 `mastodonStatusId`索引），会自动归档为评论。
+- **群组 @ 支持**：外部用户 @ 群组（如 `@board@neogrp.club`）发帖，群组会自动 Boost；远程 Mastodon 上对该帖的后续回复会同步为话题下的评论。
+- **本地回复联邦**：本地用户回复带有远程 Mastodon 原帖的 Topic/Comment 时，以本地 AP 身份发送 ActivityPub 回复到远程线程（保留 `inReplyTo`），不再用用户 Mastodon token 直接发 toot；删除评论会发送 Delete 并尝试删除对应 toot。
 
 ### 影子用户 (Shadow Users)
 
