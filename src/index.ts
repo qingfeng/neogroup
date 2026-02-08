@@ -12,7 +12,7 @@ import userRoutes from './routes/user'
 import notificationRoutes from './routes/notification'
 import activitypubRoutes from './routes/activitypub'
 import type { AppContext, Bindings } from './types'
-import { pollMentions } from './services/mastodon-bot'
+// import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
 
 // @ts-ignore - Workers Sites manifest
 import manifest from '__STATIC_CONTENT_MANIFEST'
@@ -374,7 +374,7 @@ export default {
   fetch: app.fetch,
   scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
     const db = createDb(env.DB)
-    ctx.waitUntil(pollMentions(env, db))
+    // ctx.waitUntil(pollMentions(env, db)) // Legacy bot polling disabled
   },
 }
 

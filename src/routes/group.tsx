@@ -5,7 +5,7 @@ import { groups, groupMembers, topics, users, comments, authProviders } from '..
 import { Layout } from '../components/Layout'
 import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
-import { deliverTopicToFollowers } from '../services/activitypub'
+import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson } from '../services/activitypub'
 
 const group = new Hono<AppContext>()
 
@@ -169,6 +169,8 @@ group.get('/:id', async (c) => {
       creatorId: groups.creatorId,
       name: groups.name,
       description: groups.description,
+      tags: groups.tags,
+      actorName: groups.actorName,
       iconUrl: groups.iconUrl,
       createdAt: groups.createdAt,
       creator: {
@@ -268,6 +270,14 @@ group.get('/:id', async (c) => {
                 {groupData.tags.split(/\s+/).filter(Boolean).map(tag => (
                   <span class="group-tag">{tag}</span>
                 ))}
+              </div>
+            )}
+            {groupData.actorName && (
+              <div class="group-federation" style="margin-top: 8px; color: #666; font-size: 13px;">
+                <span style="background: #e8f4e8; padding: 2px 8px; border-radius: 4px; font-family: monospace;">
+                  @{groupData.actorName}@neogrp.club
+                </span>
+                <span style="margin-left: 8px;">Mastodon 用户可以关注</span>
               </div>
             )}
           </div>
@@ -761,6 +771,27 @@ group.post('/:id/topic/new', async (c) => {
     deliverTopicToFollowers(db, baseUrl, user.id, topicId, title.trim(), content?.trim() || null)
   )
 
+  // AP: Announce to group followers if group has actorName
+  c.executionCtx.waitUntil((async () => {
+    const groupData = await db.select({ actorName: groups.actorName })
+      .from(groups).where(eq(groups.id, groupId)).limit(1)
+    if (groupData.length > 0 && groupData[0].actorName) {
+      const noteUrl = `${baseUrl}/topic/${topicId}`
+      const noteJson = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: noteUrl,
+        type: 'Note',
+        attributedTo: `${baseUrl}/ap/groups/${groupData[0].actorName}`,
+        content: `<p><strong>${title.trim()}</strong></p>${content?.trim() ? `<p>${content.trim()}</p>` : ''}<p><a href="${noteUrl}">${noteUrl}</a></p>`,
+        url: noteUrl,
+        published: new Date().toISOString(),
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        cc: [`${baseUrl}/ap/groups/${groupData[0].actorName}/followers`],
+      }
+      await announceToGroupFollowers(db, groupId, groupData[0].actorName, noteJson, baseUrl)
+    }
+  })())
+
   return c.redirect(`/topic/${topicId}`)
 })
 
@@ -821,6 +852,25 @@ group.get('/:id/settings', async (c) => {
             <input type="text" id="tags" name="tags" value={groupData.tags || ''} placeholder="输入标签，空格分隔，如：电影 读书 音乐" />
           </div>
 
+          <div class="form-group">
+            <label for="actorName">联邦 ID <span style="color: #999; font-weight: normal;">(可选)</span></label>
+            <input
+              type="text"
+              id="actorName"
+              name="actorName"
+              value={groupData.actorName || ''}
+              placeholder="例如: board"
+              pattern="^[a-z0-9_]{0,20}$"
+              maxlength={20}
+              style="max-width: 300px;"
+            />
+            <p style="color: #666; font-size: 13px; margin-top: 8px; line-height: 1.6;">
+              设置后，Mastodon 用户可以通过 <strong>@{groupData.actorName || 'yourname'}@neogrp.club</strong> 关注本小组。
+              <br />
+              <span style="color: #999;">只能使用小写英文字母、数字和下划线，最多 20 个字符。设置后不建议更改。</span>
+            </p>
+          </div>
+
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">保存设置</button>
             <a href={`/group/${groupId}`} class="btn">取消</a>
@@ -863,6 +913,20 @@ group.post('/:id/settings', async (c) => {
   const description = body.description as string
   const tags = body.tags as string
   const iconFile = body.icon as File | undefined
+  const actorNameInput = body.actorName as string | undefined
+
+  // 验证 actorName: 只允许小写英文、数字、下划线，最多20字符
+  let actorName = groupData.actorName
+  if (actorNameInput !== undefined) {
+    const trimmed = actorNameInput.trim().toLowerCase()
+    if (trimmed === '') {
+      // 允许清空
+      actorName = null
+    } else if (/^[a-z0-9_]{1,20}$/.test(trimmed)) {
+      actorName = trimmed
+    }
+    // 格式不正确则保持原值
+  }
 
   let iconUrl = groupData.iconUrl
 
@@ -890,6 +954,7 @@ group.post('/:id/settings', async (c) => {
     .set({
       description: description?.trim() || null,
       tags: tags?.trim() || null,
+      actorName,
       iconUrl,
       updatedAt: now(),
     })

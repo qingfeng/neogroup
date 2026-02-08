@@ -80,6 +80,19 @@ user.get('/:id', async (c) => {
     } catch { }
   }
 
+  // 获取用户创建的小组
+  const createdGroups = await db
+    .select({
+      id: groups.id,
+      name: groups.name,
+      iconUrl: groups.iconUrl,
+      description: groups.description,
+    })
+    .from(groups)
+    .where(eq(groups.creatorId, userId))
+    .orderBy(desc(groups.createdAt))
+    .limit(10)
+
   // 获取用户发布的话题
   const userTopics = await db
     .select({
@@ -184,6 +197,25 @@ user.get('/:id', async (c) => {
         </div>
 
         <div class="profile-content">
+          {createdGroups.length > 0 && (
+            <div class="profile-section">
+              <h2>创建的小组 ({createdGroups.length})</h2>
+              <ul class="group-simple-list">
+                {createdGroups.map((group) => (
+                  <li key={group.id}>
+                    <a href={`/group/${group.id}`} class="group-item">
+                      <img src={group.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
+                      <div>
+                        <span class="group-name">{group.name}</span>
+                        {group.description && <span class="group-desc">{group.description.slice(0, 50)}</span>}
+                      </div>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div class="profile-section">
             <h2>发布的话题 ({userTopics.length})</h2>
             {userTopics.length === 0 ? (

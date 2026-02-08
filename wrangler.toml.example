@@ -5,6 +5,8 @@ workers_dev = true
 
 [vars]
 APP_NAME = "NeoGroup"
+APP_URL = "https://your-domain.com"
+# MASTODON_BOT_TOKEN/DOMAIN are deprecated
 
 [[d1_databases]]
 binding = "DB"

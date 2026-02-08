@@ -1,5 +1,5 @@
-import { eq, sql } from 'drizzle-orm'
-import { users, authProviders, apFollowers, topics, comments } from '../db/schema'
+import { eq, sql, and } from 'drizzle-orm'
+import { users, authProviders, apFollowers, topics, comments, groups, groupFollowers } from '../db/schema'
 import type { Database } from '../db'
 
 // --- Key Pair Generation (Web Crypto API) ---
@@ -124,6 +124,167 @@ export function getActorJson(
   }
 
   return actor
+}
+
+// --- Group Actor Functions (FEP-1b12) ---
+
+export function getGroupWebFingerJson(actorName: string, groupId: string, baseUrl: string) {
+  return {
+    subject: `acct:${actorName}@${new URL(baseUrl).host}`,
+    links: [
+      {
+        rel: 'self',
+        type: 'application/activity+json',
+        href: `${baseUrl}/ap/groups/${actorName}`,
+      },
+      {
+        rel: 'http://webfinger.net/rel/profile-page',
+        type: 'text/html',
+        href: `${baseUrl}/group/${groupId}`,
+      },
+    ],
+  }
+}
+
+export function getGroupActorJson(
+  group: { id: string; name: string; actorName: string; description: string | null; iconUrl: string | null },
+  publicKeyPem: string,
+  baseUrl: string
+) {
+  const actorUrl = `${baseUrl}/ap/groups/${group.actorName}`
+
+  const actor: Record<string, unknown> = {
+    '@context': [
+      'https://www.w3.org/ns/activitystreams',
+      'https://w3id.org/security/v1',
+    ],
+    id: actorUrl,
+    type: 'Group',
+    preferredUsername: group.actorName,
+    name: group.name,
+    url: `${baseUrl}/group/${group.id}`,
+    inbox: `${actorUrl}/inbox`,
+    outbox: `${actorUrl}/outbox`,
+    followers: `${actorUrl}/followers`,
+    endpoints: {
+      sharedInbox: `${baseUrl}/ap/inbox`,
+    },
+    publicKey: {
+      id: `${actorUrl}#main-key`,
+      owner: actorUrl,
+      publicKeyPem,
+    },
+  }
+
+  if (group.description) {
+    actor.summary = group.description
+  }
+
+  if (group.iconUrl) {
+    actor.icon = {
+      type: 'Image',
+      mediaType: 'image/png',
+      url: group.iconUrl,
+    }
+  }
+
+  actor.attachment = [
+    {
+      type: 'PropertyValue',
+      name: 'Group',
+      value: `<a href=\"${baseUrl}/group/${group.id}\">访问小组</a>`,
+    },
+  ]
+
+  return actor
+}
+
+export async function ensureGroupKeyPair(db: Database, groupId: string): Promise<{ publicKeyPem: string; privateKeyPem: string }> {
+  const group = await db.select({ apPublicKey: groups.apPublicKey, apPrivateKey: groups.apPrivateKey })
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1)
+
+  if (group.length > 0 && group[0].apPublicKey && group[0].apPrivateKey) {
+    return { publicKeyPem: group[0].apPublicKey, privateKeyPem: group[0].apPrivateKey }
+  }
+
+  const { publicKeyPem, privateKeyPem } = await generateKeyPair()
+
+  await db.update(groups).set({
+    apPublicKey: publicKeyPem,
+    apPrivateKey: privateKeyPem,
+  }).where(eq(groups.id, groupId))
+
+  return { publicKeyPem, privateKeyPem }
+}
+
+// Announce a Note to all group followers
+export async function announceToGroupFollowers(
+  db: Database,
+  groupId: string,
+  groupActorName: string,
+  noteObject: Record<string, unknown>,
+  baseUrl: string
+): Promise<void> {
+  // Get group's private key
+  const groupData = await db.select({ apPrivateKey: groups.apPrivateKey })
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1)
+
+  if (groupData.length === 0 || !groupData[0].apPrivateKey) {
+    console.log('[AP Announce] Group has no private key:', groupId)
+    return
+  }
+
+  const privateKeyPem = groupData[0].apPrivateKey
+  const groupActorUrl = `${baseUrl}/ap/groups/${groupActorName}`
+
+  // Get all followers
+  const followers = await db.select({
+    actorUri: groupFollowers.actorUri,
+    actorInbox: groupFollowers.actorInbox,
+    actorSharedInbox: groupFollowers.actorSharedInbox,
+  })
+    .from(groupFollowers)
+    .where(eq(groupFollowers.groupId, groupId))
+
+  if (followers.length === 0) {
+    console.log('[AP Announce] No followers for group:', groupActorName)
+    return
+  }
+
+  // Create Announce activity
+  const announce = {
+    '@context': 'https://www.w3.org/ns/activitystreams',
+    id: `${groupActorUrl}#announce-${Date.now()}`,
+    type: 'Announce',
+    actor: groupActorUrl,
+    published: new Date().toISOString(),
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${groupActorUrl}/followers`],
+    object: noteObject,
+  }
+
+  // Dedupe by shared inbox when available
+  const inboxes = new Set<string>()
+  for (const follower of followers) {
+    const inbox = follower.actorSharedInbox || follower.actorInbox
+    if (inbox) {
+      inboxes.add(inbox)
+    }
+  }
+
+  console.log('[AP Announce] Broadcasting to', inboxes.size, 'inboxes for group:', groupActorName)
+
+  // Deliver to each unique inbox
+  const deliveryPromises = Array.from(inboxes).map(inbox =>
+    signAndDeliver(groupActorUrl, privateKeyPem, inbox, announce)
+      .catch(e => console.error('[AP Announce] Delivery failed to', inbox, e))
+  )
+
+  await Promise.allSettled(deliveryPromises)
 }
 
 export function getNodeInfoJson(baseUrl: string, userCount: number) {
@@ -516,4 +677,188 @@ function escapeHtml(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+export async function getOrCreateRemoteUser(db: Database, actorUri: string, actorData?: any): Promise<typeof users.$inferSelect | undefined> {
+  // 1. Check if auth provider exists
+  const existingAuth = await db.select()
+    .from(authProviders)
+    .where(and(
+      eq(authProviders.providerType, 'activitypub'),
+      eq(authProviders.providerId, actorUri)
+    ))
+    .limit(1)
+
+  if (existingAuth.length > 0) {
+    const userResult = await db.select().from(users).where(eq(users.id, existingAuth[0].userId)).limit(1)
+    if (userResult.length > 0) return userResult[0]
+  }
+
+  // 2. Create new user
+  let username = ''
+  let displayName = ''
+  let avatarUrl = ''
+
+  if (actorData) {
+    const preferredUsername = actorData.preferredUsername || 'user'
+    let domain = 'fediverse'
+    try {
+      const url = new URL(actorUri)
+      domain = url.host
+    } catch (e) {
+      // ignore
+    }
+    username = `${preferredUsername}@${domain}`
+    displayName = actorData.name || preferredUsername
+    if (actorData.icon && actorData.icon.url) {
+      avatarUrl = actorData.icon.url
+    }
+  } else {
+    username = `ap_user_${Date.now()}`
+    displayName = 'Fediverse User'
+  }
+
+  // Check username uniqueness and append suffix if needed
+  let finalUsername = username
+  let retryCount = 0
+
+  while (true) {
+    const existingUser = await db.select({ id: users.id })
+      .from(users)
+      .where(eq(users.username, finalUsername))
+      .limit(1)
+
+    if (existingUser.length === 0) break
+
+    retryCount++
+    if (retryCount > 10) {
+      finalUsername = `${username}_${crypto.randomUUID().slice(0, 8)}`
+      break
+    }
+    finalUsername = `${username}_${retryCount}`
+  }
+
+  const userId = crypto.randomUUID()
+  const now = new Date()
+
+  try {
+    await db.insert(users).values({
+      id: userId,
+      username: finalUsername,
+      displayName: displayName || finalUsername,
+      avatarUrl,
+      bio: actorData?.summary ? stripHtml(actorData.summary).slice(0, 200) : null,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    await db.insert(authProviders).values({
+      id: crypto.randomUUID(),
+      userId,
+      providerType: 'activitypub',
+      providerId: actorUri,
+      metadata: actorData ? JSON.stringify(actorData) : null,
+      createdAt: now,
+    })
+
+    return {
+      id: userId,
+      username: finalUsername,
+      displayName: displayName || finalUsername,
+      avatarUrl,
+      bio: actorData?.summary ? stripHtml(actorData.summary).slice(0, 200) : null,
+      role: null,
+      apPublicKey: null,
+      apPrivateKey: null,
+      createdAt: now,
+      updatedAt: now,
+    }
+  } catch (e) {
+    console.error('Failed to create remote user:', e)
+    return undefined
+  }
+}
+
+// Helper to strip HTML
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>?/gm, '')
+}
+
+export async function boostToGroupFollowers(
+  db: Database,
+  groupActorName: string,
+  noteId: string,
+  baseUrl: string
+) {
+  try {
+    // 1. Get group info (keys, id)
+    const groupResult = await db.select({
+      id: groups.id,
+      apPublicKey: groups.apPublicKey,
+      apPrivateKey: groups.apPrivateKey
+    })
+      .from(groups)
+      .where(eq(groups.actorName, groupActorName))
+      .limit(1)
+
+    if (groupResult.length === 0) return
+    const group = groupResult[0]
+
+    // Ensure keys
+    let privateKeyPem = group.apPrivateKey
+    if (!group.apPublicKey || !group.apPrivateKey) {
+      const keys = await ensureGroupKeyPair(db, group.id)
+      privateKeyPem = keys.privateKeyPem
+    }
+    if (!privateKeyPem) return
+
+    // 2. Get followers
+    const followers = await db.select()
+      .from(groupFollowers)
+      .where(eq(groupFollowers.groupId, group.id))
+
+    if (followers.length === 0) {
+      console.log('[AP Boost] No followers to boost to')
+      return
+    }
+
+    // 3. Construct Announce Activity
+    const actorUrl = `${baseUrl}/ap/groups/${groupActorName}`
+    // Use a deterministic ID for boost? or random? Random is fine.
+    const announceId = `${baseUrl}/ap/announce/${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const now = new Date().toISOString()
+
+    const activity = {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: announceId,
+      type: 'Announce',
+      actor: actorUrl,
+      published: now,
+      to: ['https://www.w3.org/ns/activitystreams#Public'],
+      cc: [`${actorUrl}/followers`],
+      object: noteId,
+    }
+
+    // 4. Deliver
+    const inboxes = new Map<string, string>()
+    for (const f of followers) {
+      const inbox = f.actorSharedInbox || f.actorInbox
+      if (inbox && !inboxes.has(inbox)) {
+        inboxes.set(inbox, inbox)
+      }
+    }
+
+    console.log(`[AP Boost] Boosting ${noteId} to ${inboxes.size} inboxes`)
+
+    for (const inbox of inboxes.values()) {
+      try {
+        await signAndDeliver(actorUrl, privateKeyPem, inbox, activity)
+      } catch (e) {
+        console.error(`AP boost deliver to ${inbox} failed:`, e)
+      }
+    }
+
+  } catch (e) {
+    console.error('boostToGroupFollowers error:', e)
+  }
 }

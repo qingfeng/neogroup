@@ -31,9 +31,12 @@ export const groups = sqliteTable('group', {
   id: text('id').primaryKey(),
   creatorId: text('creator_id').notNull().references(() => users.id),
   name: text('name').notNull().unique(),
+  actorName: text('actor_name').unique(), // ActivityPub actor name for federation
   description: text('description'),
   tags: text('tags'),
   iconUrl: text('icon_url'),
+  apPublicKey: text('ap_public_key'),
+  apPrivateKey: text('ap_private_key'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -158,6 +161,16 @@ export const mastodonApps = sqliteTable('mastodon_app', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 小组 followers (远程 AP actors)
+export const groupFollowers = sqliteTable('group_follower', {
+  id: text('id').primaryKey(),
+  groupId: text('group_id').notNull().references(() => groups.id),
+  actorUri: text('actor_uri').notNull(),
+  actorInbox: text('actor_inbox'),
+  actorSharedInbox: text('actor_shared_inbox'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -174,3 +187,4 @@ export type Notification = typeof notifications.$inferSelect
 export type MastodonApp = typeof mastodonApps.$inferSelect
 export type TopicRepost = typeof topicReposts.$inferSelect
 export type ApFollower = typeof apFollowers.$inferSelect
+export type GroupFollower = typeof groupFollowers.$inferSelect

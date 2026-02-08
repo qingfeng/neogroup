@@ -110,7 +110,20 @@ src/
 |---------------|---------|
 | `Follow` | Fetch 远程 actor → 存储到 `ap_follower` 表 → 发送 `Accept` |
 | `Undo(Follow)` | 从 `ap_follower` 表删除 |
-| `Create(Note)` + Mention | 检测 Note `tag` 中是否有指向本地用户的 `Mention` → 创建站内 `mention` 通知 |
+| `Create(Note)` + Mention | 1. **远程用户归属**：为远程 Actor 创建本地影子用户（关联 `auth_provider`）<br>2. **话题/评论创建**：根据 Context 创建 Topic 或 Comment<br>3. **群组转发 (Boost)**：如果提及了 Group Actor，自动发送 `Announce` 活动将原贴转发给群组关注者 |
+
+### Group Actor 机制
+
+- **群组身份**：每个 Group 也是一个 ActivityPub Actor（如 `@board@neogrp.club`）。
+- **自动转发 (Boost)**：当外部用户 @群组 发帖时，群组会自动 Boost 该贴，确保群组关注者能看到。
+- **回复处理**：支持识别 `inReplyTo`，如果回复的是 Fediverse 来源的帖子（通过 `mastodonStatusId`索引），会自动归档为评论。
+
+### 影子用户 (Shadow Users)
+
+- 当收到来自 Fediverse 的 Create 活动时，系统自动为远程用户创建本地账号（如果不存在）。
+- 用户名格式：`preferredUsername@domain`。
+- 存储远程用户的头像、昵称、URL，确保在站内显示正确的作者信息。
+
 
 ### HTTP 签名
 

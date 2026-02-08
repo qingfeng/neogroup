@@ -1310,8 +1310,48 @@ a.group-tag:hover {
 }
 
 .topic-simple-list,
-.comment-simple-list {
+.comment-simple-list,
+.group-simple-list {
   list-style: none;
+}
+
+.group-simple-list li {
+  padding: 8px 0;
+  border-bottom: 1px dotted #e8e8e8;
+}
+
+.group-simple-list li:last-child {
+  border-bottom: none;
+}
+
+.group-simple-list .group-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.group-simple-list .group-item:hover {
+  text-decoration: none;
+}
+
+.group-simple-list .group-icon-sm {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+}
+
+.group-simple-list .group-name {
+  color: #37a;
+  font-weight: 500;
+  display: block;
+}
+
+.group-simple-list .group-desc {
+  color: #999;
+  font-size: 12px;
+  display: block;
 }
 
 .topic-simple-list li,

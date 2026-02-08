@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics, comments } from '../db/schema'
+import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers } from '../db/schema'
 import { generateId, stripHtml, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import {
   ensureKeyPair, getWebFingerJson, getActorJson, getNodeInfoJson,
-  fetchActor, signAndDeliver, getNoteJson, getCommentNoteJson, getApUsername
+  fetchActor, signAndDeliver, getNoteJson, getCommentNoteJson, getApUsername,
+  getGroupWebFingerJson, getGroupActorJson, ensureGroupKeyPair, getOrCreateRemoteUser,
+  boostToGroupFollowers
 } from '../services/activitypub'
 
 const ap = new Hono<AppContext>()
@@ -53,16 +55,30 @@ ap.get('/.well-known/webfinger', async (c) => {
   }
 
   const db = c.get('db')
-  const user = await findUserByApUsername(db, username)
 
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404)
+  // First try to find a user
+  const user = await findUserByApUsername(db, username)
+  if (user) {
+    return c.json(getWebFingerJson(username, user.id, baseUrl), 200, {
+      'Content-Type': 'application/jrd+json',
+      'Access-Control-Allow-Origin': '*',
+    })
   }
 
-  return c.json(getWebFingerJson(username, user.id, baseUrl), 200, {
-    'Content-Type': 'application/jrd+json',
-    'Access-Control-Allow-Origin': '*',
-  })
+  // If no user found, try to find a group by actorName
+  const groupResult = await db.select({ id: groups.id, actorName: groups.actorName })
+    .from(groups)
+    .where(eq(groups.actorName, username))
+    .limit(1)
+
+  if (groupResult.length > 0 && groupResult[0].actorName) {
+    return c.json(getGroupWebFingerJson(groupResult[0].actorName, groupResult[0].id, baseUrl), 200, {
+      'Content-Type': 'application/jrd+json',
+      'Access-Control-Allow-Origin': '*',
+    })
+  }
+
+  return c.json({ error: 'Not found' }, 404)
 })
 
 // --- Actor ---
@@ -84,6 +100,256 @@ ap.get('/ap/users/:username', async (c) => {
     'Content-Type': 'application/activity+json',
     'Access-Control-Allow-Origin': '*',
   })
+})
+
+// --- Group Actor (FEP-1b12) ---
+ap.get('/ap/groups/:actorName', async (c) => {
+  const actorName = c.req.param('actorName')
+  const db = c.get('db')
+
+  const groupResult = await db.select()
+    .from(groups)
+    .where(eq(groups.actorName, actorName))
+    .limit(1)
+
+  if (groupResult.length === 0 || !groupResult[0].actorName) {
+    return c.notFound()
+  }
+
+  const group = groupResult[0]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const { publicKeyPem } = await ensureGroupKeyPair(db, group.id)
+
+  const actor = getGroupActorJson({
+    id: group.id,
+    name: group.name,
+    actorName: group.actorName,
+    description: group.description,
+    iconUrl: group.iconUrl,
+  }, publicKeyPem, baseUrl)
+
+  return c.json(actor, 200, {
+    'Content-Type': 'application/activity+json',
+    'Access-Control-Allow-Origin': '*',
+  })
+})
+
+// --- Group Inbox (FEP-1b12 Follow handling) ---
+ap.post('/ap/groups/:actorName/inbox', async (c) => {
+  const actorName = c.req.param('actorName')
+  const db = c.get('db')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  const groupResult = await db.select()
+    .from(groups)
+    .where(eq(groups.actorName, actorName))
+    .limit(1)
+
+  if (groupResult.length === 0 || !groupResult[0].actorName) {
+    return c.json({ error: 'Group not found' }, 404)
+  }
+
+  const group = groupResult[0]
+  let activity: Record<string, any>
+  try {
+    activity = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400)
+  }
+
+  const type = activity.type
+  console.log('[AP GroupInbox] Received activity:', { type, actor: activity.actor, groupActorName: actorName })
+
+  if (type === 'Follow') {
+    // Handle Follow - auto accept and add to followers
+    const followerActorUri = activity.actor
+    if (!followerActorUri) {
+      return c.json({ error: 'Missing actor' }, 400)
+    }
+
+    const remoteActor = await fetchActor(followerActorUri)
+    if (!remoteActor) {
+      return c.json({ error: 'Could not fetch remote actor' }, 400)
+    }
+
+    const inboxUrl = remoteActor.inbox
+    if (!inboxUrl) {
+      return c.json({ error: 'Remote actor has no inbox' }, 400)
+    }
+
+    // Save follower
+    const existingFollower = await db.select({ id: groupFollowers.id })
+      .from(groupFollowers)
+      .where(and(eq(groupFollowers.groupId, group.id), eq(groupFollowers.actorUri, followerActorUri)))
+      .limit(1)
+
+    if (existingFollower.length === 0) {
+      await db.insert(groupFollowers).values({
+        id: generateId(),
+        groupId: group.id,
+        actorUri: followerActorUri,
+        actorInbox: remoteActor.inbox || null,
+        actorSharedInbox: remoteActor.endpoints?.sharedInbox || null,
+        createdAt: new Date(),
+      })
+    }
+
+    // Send Accept
+    const groupActorUrl = `${baseUrl}/ap/groups/${actorName}`
+    const { privateKeyPem } = await ensureGroupKeyPair(db, group.id)
+
+    const accept = {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${groupActorUrl}#accept-${Date.now()}`,
+      type: 'Accept',
+      actor: groupActorUrl,
+      object: activity,
+    }
+
+    c.executionCtx.waitUntil(
+      signAndDeliver(groupActorUrl, privateKeyPem, inboxUrl, accept).catch(e =>
+        console.error('[AP GroupInbox] Failed to deliver Accept:', e)
+      )
+    )
+
+    console.log('[AP GroupInbox] Accepted follow from:', followerActorUri)
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Undo') {
+    const innerObject = activity.object
+    if (innerObject?.type === 'Follow') {
+      const followerActorUri = activity.actor
+      if (followerActorUri) {
+        await db.delete(groupFollowers)
+          .where(and(eq(groupFollowers.groupId, group.id), eq(groupFollowers.actorUri, followerActorUri)))
+        console.log('[AP GroupInbox] Removed follower:', followerActorUri)
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Create') {
+    // Handle Create Note - could be @mention (new topic) or reply (comment)
+    const obj = activity.object
+    if (obj?.type === 'Note') {
+      const noteId = obj.id || `note-${Date.now()}`
+      const content = obj.content || ''
+      const actorUri = activity.actor
+      const inReplyTo = obj.inReplyTo as string | undefined
+
+      // Fetch the remote actor info
+      const remoteActor = await fetchActor(actorUri)
+      const actorName = remoteActor?.preferredUsername || 'fediverse_user'
+
+      // Get or create local user for the remote actor
+      const author = await getOrCreateRemoteUser(db, actorUri, remoteActor)
+      const userId = author ? author.id : group.creatorId
+
+
+      // Check if this is a reply to an existing topic
+      if (inReplyTo) {
+        let topicId: string | null = null
+        let replyToCommentId: string | null = null
+
+        // 1. Check if reply to local topic URL
+        const topicMatch = inReplyTo.match(/\/topic\/([a-zA-Z0-9_-]+)/)
+        if (topicMatch) {
+          topicId = topicMatch[1]
+        } else {
+          // 2. Check if reply to known Fediverse object (Topic)
+          const parentTopic = await db.select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.mastodonStatusId, inReplyTo))
+            .limit(1)
+
+          if (parentTopic.length > 0) {
+            topicId = parentTopic[0].id
+          } else {
+            // 3. Check if reply to known Fediverse object (Comment)
+            const parentComment = await db.select({ id: comments.id, topicId: comments.topicId })
+              .from(comments)
+              .where(eq(comments.mastodonStatusId, inReplyTo))
+              .limit(1)
+
+            if (parentComment.length > 0) {
+              topicId = parentComment[0].topicId
+              replyToCommentId = parentComment[0].id
+            }
+          }
+        }
+
+        if (topicId) {
+          // Verify topic exists
+          const topicResult = await db.select({ id: topics.id, userId: topics.userId })
+            .from(topics)
+            .where(eq(topics.id, topicId))
+            .limit(1)
+
+          if (topicResult.length > 0) {
+            // Create comment from reply
+            const commentId = generateId()
+            const commentNow = new Date()
+            const htmlContent = content // Use original content
+
+            await db.insert(comments).values({
+              id: commentId,
+              topicId,
+              userId: userId,
+              content: htmlContent,
+              replyToId: replyToCommentId,
+              mastodonStatusId: noteId,
+              mastodonDomain: 'activitypub_origin',
+              createdAt: commentNow,
+              updatedAt: commentNow,
+            })
+
+            // Update topic updatedAt
+            await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
+
+            console.log('[AP GroupInbox] Created comment from reply:', { commentId, topicId, actorName, userId, inReplyTo })
+            return c.json({ status: 'created' }, 202)
+          }
+        }
+      }
+
+      // Not a reply - create new topic from @mention
+      const textContent = stripHtml(content)
+      // Remove @mentions from title
+      const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+      const title = truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+      const fullContent = content
+
+      const topicId = generateId()
+      const topicNow = new Date()
+
+      await db.insert(topics).values({
+        id: topicId,
+        groupId: group.id,
+        userId: userId,
+        title: title,
+        content: fullContent,
+        type: 1,
+        mastodonStatusId: noteId,
+        mastodonDomain: 'activitypub_origin',
+        createdAt: topicNow,
+        updatedAt: topicNow,
+      })
+
+      console.log('[AP GroupInbox] Created topic from @mention:', { topicId, actorName, noteId })
+
+      // Announce (Boost) to group followers
+      c.executionCtx.waitUntil(
+        boostToGroupFollowers(db, group.actorName!, noteId, baseUrl)
+      )
+
+      return c.json({ status: 'created' }, 202)
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  // Unknown activity type - accept silently
+  return c.json({ status: 'accepted' }, 202)
 })
 
 // --- Inbox ---
@@ -278,12 +544,18 @@ ap.post('/ap/inbox', async (c) => {
 
         // Try to extract username from mention
         let mentionedUsername: string | null = null
+        let isGroupMention = false
 
-        // Check if href points to our domain
+        // Check if href points to our domain - could be user or group
         if (tag.href && typeof tag.href === 'string') {
-          const hrefMatch = tag.href.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
-          if (hrefMatch) {
-            mentionedUsername = hrefMatch[1]
+          const userHrefMatch = tag.href.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
+          if (userHrefMatch) {
+            mentionedUsername = userHrefMatch[1]
+          }
+          const groupHrefMatch = tag.href.match(new RegExp(`^${baseUrl}/ap/groups/([^/]+)$`))
+          if (groupHrefMatch) {
+            mentionedUsername = groupHrefMatch[1]
+            isGroupMention = true
           }
         }
 
@@ -300,9 +572,128 @@ ap.post('/ap/inbox', async (c) => {
 
         if (!mentionedUsername) continue
 
-        console.log('[AP SharedInbox] Found mention for user:', mentionedUsername)
+        console.log('[AP SharedInbox] Found mention:', { mentionedUsername, isGroupMention })
 
-        // Find the user
+        // Check if it's a group mention
+        if (isGroupMention || !await findUserByApUsername(db, mentionedUsername)) {
+          // Try to find as group
+          const groupResult = await db.select()
+            .from(groups)
+            .where(eq(groups.actorName, mentionedUsername))
+            .limit(1)
+
+          if (groupResult.length > 0 && groupResult[0].actorName) {
+            const group = groupResult[0]
+            const remoteActorUri = activity.actor
+            const remoteActor = await fetchActor(remoteActorUri)
+            const actorName = remoteActor?.preferredUsername || 'fediverse_user'
+
+            // Get or create local user for the remote actor
+            const author = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+            const userId = author ? author.id : group.creatorId
+
+            const noteContent = noteObject.content || ''
+            const inReplyTo = noteObject.inReplyTo as string | undefined
+            const noteId = noteObject.id
+
+            // Check if this is a reply to an existing topic
+            if (inReplyTo) {
+              let topicId: string | null = null
+              let replyToCommentId: string | null = null
+
+              // 1. Check if reply to local topic URL
+              const topicMatch = inReplyTo.match(/\/topic\/([a-zA-Z0-9_-]+)/)
+              if (topicMatch) {
+                topicId = topicMatch[1]
+              } else {
+                // 2. Check if reply to known Fediverse object (Topic)
+                const parentTopic = await db.select({ id: topics.id })
+                  .from(topics)
+                  .where(eq(topics.mastodonStatusId, inReplyTo))
+                  .limit(1)
+
+                if (parentTopic.length > 0) {
+                  topicId = parentTopic[0].id
+                } else {
+                  // 3. Check if reply to known Fediverse object (Comment)
+                  const parentComment = await db.select({ id: comments.id, topicId: comments.topicId })
+                    .from(comments)
+                    .where(eq(comments.mastodonStatusId, inReplyTo))
+                    .limit(1)
+
+                  if (parentComment.length > 0) {
+                    topicId = parentComment[0].topicId
+                    replyToCommentId = parentComment[0].id
+                  }
+                }
+              }
+
+              if (topicId) {
+                // Verify topic exists
+                const topicResult = await db.select({ id: topics.id })
+                  .from(topics)
+                  .where(eq(topics.id, topicId))
+                  .limit(1)
+
+                if (topicResult.length > 0) {
+                  // Create comment from reply
+                  const commentId = generateId()
+                  const commentNow = new Date()
+                  const htmlContent = noteContent
+
+                  await db.insert(comments).values({
+                    id: commentId,
+                    topicId,
+                    userId: userId,
+                    content: htmlContent,
+                    replyToId: replyToCommentId,
+                    mastodonStatusId: noteId,
+                    mastodonDomain: 'activitypub_origin',
+                    createdAt: commentNow,
+                    updatedAt: commentNow,
+                  })
+
+                  await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
+                  console.log('[AP SharedInbox] Created comment from reply:', { commentId, topicId, actorName, userId, inReplyTo })
+                  continue
+                }
+              }
+            }
+
+            // Not a reply - create new topic
+            console.log('[AP SharedInbox] Creating topic from group mention:', mentionedUsername)
+            const textContent = stripHtml(noteContent)
+            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+            const title = truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+
+            const topicId = generateId()
+            const topicNow = new Date()
+
+            await db.insert(topics).values({
+              id: topicId,
+              groupId: group.id,
+              userId: userId,
+              title: title,
+              content: noteContent,
+              type: 1,
+              mastodonStatusId: noteId,
+              mastodonDomain: 'activitypub_origin',
+              createdAt: topicNow,
+              updatedAt: topicNow,
+            })
+
+            console.log('[AP SharedInbox] Created topic from mention:', { topicId, groupId: group.id })
+
+            // Announce (Boost) to group followers
+            c.executionCtx.waitUntil(
+              boostToGroupFollowers(db, group.actorName!, noteId, baseUrl)
+            )
+
+            continue
+          }
+        }
+
+        // Find the user for user mention
         const user = await findUserByApUsername(db, mentionedUsername)
         if (!user) {
           console.log('[AP SharedInbox] User not found:', mentionedUsername)

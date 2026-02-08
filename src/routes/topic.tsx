@@ -8,7 +8,7 @@ import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus } from '../services/mastodon'
-import { deliverCommentToFollowers } from '../services/activitypub'
+import { deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, fetchActor } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
 
@@ -431,14 +431,6 @@ topic.get('/:id', async (c) => {
                   rows={3}
                   required
                 ></textarea>
-                {hasMastodonAuth && (
-                  <div class="form-option">
-                    <label class="checkbox-label">
-                      <input type="checkbox" name="syncMastodon" value="1" />
-                      同步到 Mastodon
-                    </label>
-                  </div>
-                )}
                 <button type="submit" class="btn btn-primary">发表评论</button>
               </form>
             ) : (
@@ -665,7 +657,6 @@ topic.post('/:id/comment', async (c) => {
   const body = await c.req.parseBody()
   const content = body.content as string
   const replyToId = body.replyToId as string | undefined
-  const syncMastodon = body.syncMastodon as string
 
   if (!content || !content.trim()) {
     return c.redirect(`/topic/${topicId}`)
@@ -720,80 +711,124 @@ topic.post('/:id/comment', async (c) => {
     deliverCommentToFollowers(db, baseUrlForAp, user.id, commentId, topicId, htmlContent, replyToId || null)
   )
 
-  // 同步评论到 Mastodon
-  if (syncMastodon === '1') {
-    try {
-      const authProvider = await db.query.authProviders.findFirst({
-        where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
-      })
-      if (authProvider?.accessToken) {
-        const userDomain = authProvider.providerId.split('@')[1]
-        const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-        const plainText = stripHtml(content.trim())
-        const link = `${baseUrl}/topic/${topicId}`
-
-        let toot: { id: string }
-
-        if (topicResult[0].mastodonStatusId && topicResult[0].mastodonDomain) {
-          // 情况1: 帖子有 Mastodon status → 作为回复发送
-          const replyToStatusId = await resolveStatusId(
-            userDomain, authProvider.accessToken,
-            topicResult[0].mastodonDomain, topicResult[0].mastodonStatusId
-          )
-          if (replyToStatusId) {
-            const tootContent = plainText.length > 450 ? `${plainText.slice(0, 450)}...\n\n${link}` : `${plainText}\n\n${link}`
-            toot = await postStatus(userDomain, authProvider.accessToken, tootContent, 'unlisted', replyToStatusId)
-          } else {
-            throw new Error('Could not resolve Mastodon status ID')
-          }
-        } else {
-          // 情况2: 帖子没有 Mastodon status → 作为独立 status 发送
-          const topicTitle = topicResult[0].title
-
-          // 确定要 @的人：如果是回复评论，@评论作者；否则@帖子作者（不@自己）
-          let mentionUserId = topicResult[0].userId
-          if (replyToId) {
-            const replyTarget = await db.select({ userId: comments.userId }).from(comments).where(eq(comments.id, replyToId)).limit(1)
-            if (replyTarget.length > 0) {
-              mentionUserId = replyTarget[0].userId
-            }
-          }
-
-          let mention = ''
-          if (mentionUserId !== user.id) {
-            const mentionAuth = await db.query.authProviders.findFirst({
-              where: and(
-                eq(authProviders.userId, mentionUserId),
-                eq(authProviders.providerType, 'mastodon')
-              ),
-            })
-            if (mentionAuth?.metadata) {
-              try {
-                const meta = JSON.parse(mentionAuth.metadata) as { username?: string }
-                const mentionDomain = mentionAuth.providerId.split('@')[1]
-                if (meta.username && mentionDomain) {
-                  mention = `@${meta.username}@${mentionDomain} `
-                }
-              } catch { /* ignore parse error */ }
-            }
-          }
-
-          const tootContent = plainText.length > 380
-            ? `${mention}${plainText.slice(0, 380)}...\n\n📝 ${topicTitle}\n${link}`
-            : `${mention}${plainText}\n\n📝 ${topicTitle}\n${link}`
-          toot = await postStatus(userDomain, authProvider.accessToken, tootContent, 'unlisted')
-        }
-
-        // 保存 mastodonStatusId 和 mastodonDomain 以便同步回复
-        await db.update(comments).set({
-          mastodonStatusId: toot.id,
-          mastodonDomain: userDomain,
-        }).where(eq(comments.id, commentId))
+  // AP: also deliver reply directly to remote origin inbox if topic/comment originated from fediverse
+  if (topicResult[0].mastodonStatusId && topicResult[0].mastodonStatusId.startsWith('http')) {
+    const remoteDomain = (() => { try { return new URL(topicResult[0].mastodonStatusId!).origin } catch { return null } })()
+    // Prefer replying to the remote status/comment URL to keep threading on origin
+    let remoteInReplyTo: string | null = topicResult[0].mastodonStatusId
+    if (replyToId) {
+      const parentComment = commentMap.get(replyToId)
+      if (parentComment?.mastodonStatusId?.startsWith('http')) {
+        remoteInReplyTo = parentComment.mastodonStatusId
       }
-    } catch (e) {
-      console.error('Failed to sync comment to Mastodon:', e)
+    }
+    if (remoteDomain) {
+      const actorUrl = `${baseUrlForAp}/ap/users/${user.username}`
+      const { privateKeyPem } = await ensureKeyPair(db, user.id)
+      const noteId = `${baseUrlForAp}/ap/comments/${commentId}`
+      const commentUrl = `${baseUrlForAp}/topic/${topicId}#comment-${commentId}`
+      const published = new Date().toISOString()
+
+      // Resolve remote actor + inbox for the target status to ensure Mastodon accepts the reply
+      let targetActor: string | null = null
+      let remoteInbox: string | null = null
+      let remoteSharedInbox: string | null = null
+
+      if (remoteInReplyTo) {
+        try {
+          const resp = await fetch(remoteInReplyTo, { headers: { Accept: 'application/activity+json' } })
+          if (resp.ok) {
+            const remoteNote = await resp.json()
+            const attributed = Array.isArray(remoteNote.attributedTo)
+              ? remoteNote.attributedTo[0]
+              : remoteNote.attributedTo
+            const actorId = typeof attributed === 'string'
+              ? attributed
+              : (typeof remoteNote.actor === 'string' ? remoteNote.actor : null)
+
+            if (actorId) {
+              targetActor = actorId
+              const remoteActor = await fetchActor(actorId)
+              if (remoteActor) {
+                remoteSharedInbox = remoteActor.endpoints?.sharedInbox || null
+                remoteInbox = remoteActor.inbox || null
+              }
+            }
+          } else {
+            console.error('AP direct reply: fetch remote note failed', resp.status)
+          }
+        } catch (e) {
+          console.error('AP direct reply: fetch remote note error', e)
+        }
+      }
+
+      const inboxToUse = remoteSharedInbox || remoteInbox || `${remoteDomain}/inbox`
+      const inReplyTo = remoteInReplyTo || (replyToId
+        ? `${baseUrlForAp}/ap/comments/${replyToId}`
+        : `${baseUrlForAp}/ap/notes/${topicId}`)
+
+      const to = ['https://www.w3.org/ns/activitystreams#Public']
+      const cc = [`${actorUrl}/followers`]
+      if (targetActor) {
+        to.push(targetActor)
+        cc.push(targetActor)
+      }
+
+      const note = {
+        id: noteId,
+        type: 'Note',
+        attributedTo: actorUrl,
+        inReplyTo,
+        content: htmlContent,
+        url: commentUrl,
+        published,
+        to,
+        cc,
+      }
+
+      const activity = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${noteId}/activity`,
+        type: 'Create',
+        actor: actorUrl,
+        published,
+        to,
+        cc,
+        object: note,
+      }
+
+      c.executionCtx.waitUntil(
+        signAndDeliver(actorUrl, privateKeyPem, inboxToUse, activity)
+          .catch(e => console.error('AP direct reply deliver failed:', e))
+      )
     }
   }
+
+  // AP: Announce comment to group followers if group has actorName
+  c.executionCtx.waitUntil((async () => {
+    const groupData = await db.select({ id: groups.id, actorName: groups.actorName })
+      .from(groups)
+      .innerJoin(topics, eq(topics.groupId, groups.id))
+      .where(eq(topics.id, topicId))
+      .limit(1)
+    if (groupData.length > 0 && groupData[0].actorName) {
+      const noteUrl = `${baseUrlForAp}/topic/${topicId}#comment-${commentId}`
+      const topicUrl = `${baseUrlForAp}/topic/${topicId}`
+      const noteJson = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: noteUrl,
+        type: 'Note',
+        attributedTo: `${baseUrlForAp}/ap/groups/${groupData[0].actorName}`,
+        inReplyTo: topicUrl,
+        content: htmlContent,
+        url: noteUrl,
+        published: new Date().toISOString(),
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        cc: [`${baseUrlForAp}/ap/groups/${groupData[0].actorName}/followers`],
+      }
+      await announceToGroupFollowers(db, groupData[0].id, groupData[0].actorName, noteJson, baseUrlForAp)
+    }
+  })())
 
   return c.redirect(`/topic/${topicId}`)
 })

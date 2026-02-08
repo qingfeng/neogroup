@@ -108,6 +108,8 @@ ActivityPub 联邦功能需要知道站点的公开 URL。在 `wrangler.toml` �
 [vars]
 APP_URL = "https://your-domain.com"
 APP_NAME = "NeoGroup"
+# MASTODON_BOT_TOKEN = "..." (deprecated)
+# MASTODON_BOT_DOMAIN = "..." (deprecated)
 ```
 
 如果不设置 `APP_URL`，系统会从请求的 `Origin` 自动推断，但建议显式配置以确保 AP URL 一致性。
