@@ -144,6 +144,13 @@ npx wrangler d1 execute neogroup --remote --file=drizzle/0001_xxx.sql
 
 **重要**：新部署必须执行所有迁移文件，否则会缺少表或字段导致运行时错误。
 
+最近新增迁移示例：
+
+```bash
+# 站内关注（user_follow）
+npx wrangler d1 execute neogroup --remote --file=drizzle/0015_user_follow.sql
+```
+
 ## ActivityPub 注意事项
 
 - ActivityPub 需要 HTTPS + 自定义域名才能正常工作（`.workers.dev` 域名也可以，但建议用自定义域名）
@@ -171,6 +178,12 @@ npx wrangler d1 execute neogroup --remote --command="SELECT * FROM user LIMIT 10
 
 ```bash
 npx wrangler tail
+```
+
+如果遇到 Wrangler 写日志文件权限问题（`EPERM`），可以用：
+
+```bash
+WRANGLER_LOG=none npx wrangler tail neogroup --format=pretty
 ```
 
 ## 项目技术栈

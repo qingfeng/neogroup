@@ -149,6 +149,14 @@ export const notifications = sqliteTable('notification', {
   metadata: text('metadata'), // JSON: { content, noteUrl }
 })
 
+// 本地用户关注关系
+export const userFollows = sqliteTable('user_follow', {
+  id: text('id').primaryKey(),
+  followerId: text('follower_id').notNull().references(() => users.id),
+  followeeId: text('followee_id').notNull().references(() => users.id),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // ActivityPub Followers 表
 export const apFollowers = sqliteTable('ap_follower', {
   id: text('id').primaryKey(),
@@ -196,3 +204,4 @@ export type MastodonApp = typeof mastodonApps.$inferSelect
 export type TopicRepost = typeof topicReposts.$inferSelect
 export type ApFollower = typeof apFollowers.$inferSelect
 export type GroupFollower = typeof groupFollowers.$inferSelect
+export type UserFollow = typeof userFollows.$inferSelect

@@ -23,7 +23,7 @@
 
 ```
 src/
-├── index.ts              # 入口文件，API 路由，Cron handler
+├── index.ts              # 入口文件，API 路由
 ├── types.ts              # TypeScript 类型定义
 ├── db/
 │   ├── index.ts          # 数据库连接
@@ -67,6 +67,7 @@ src/
 | report | 举报 |
 | mastodon_app | Mastodon 应用配置（按实例缓存） |
 | ap_follower | ActivityPub 关注者 |
+| user_follow | 站内关注关系（本地用户关注） |
 
 ## ActivityPub 联邦机制
 
@@ -126,6 +127,12 @@ src/
 - 用户名格式：`preferredUsername@domain`。
 - 存储远程用户的头像、昵称、URL，确保在站内显示正确的作者信息。
 
+## 站内关注（Follow）
+
+- 站内用户之间可以直接关注（自动接受），关系写入 `user_follow`。
+- 个人页提供关注按钮，以及关注/被关注列表。
+- 被关注列表会合并：站内关注（`user_follow`）+ 远程 AP follower（`ap_follower`）。
+
 
 ### HTTP 签名
 
@@ -164,6 +171,7 @@ src/
 | `comment_reply` | 回复了你的评论 | 站内用户 |
 | `topic_like` | 喜欢了你的话题 | 站内用户 |
 | `comment_like` | 赞了你的评论 | 站内用户 |
+| `follow` | 关注了你 | 站内用户 |
 | `mention` | 远程用户 @ 了你 | 远程 AP actor |
 
 ### 远程 actor 通知

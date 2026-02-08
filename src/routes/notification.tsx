@@ -81,6 +81,7 @@ notification.get('/', async (c) => {
       case 'comment_like': return `赞了你在「${topicTitle}」的评论`
       case 'topic_repost': return `转发了你的话题「${topicTitle}」`
       case 'comment_repost': return `转发了你在「${topicTitle}」的评论`
+      case 'follow': return '关注了你'
       case 'mention': {
         let meta: { content?: string } = {}
         try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
