@@ -3,7 +3,7 @@ import type { Topic, User, Group } from '../db/schema'
 import { stripHtml, truncate } from '../lib/utils'
 
 interface TopicCardProps {
-  topic: Topic & { user: User; group: Group; likeCount: number }
+  topic: Topic & { user: User; group: Group; replyCount: number }
 }
 
 export const TopicCard: FC<TopicCardProps> = ({ topic }) => {
@@ -13,8 +13,8 @@ export const TopicCard: FC<TopicCardProps> = ({ topic }) => {
   return (
     <div class="topic-card">
       <div class="topic-card-likes">
-        <span class="topic-card-like-count">{topic.likeCount}</span>
-        <span class="topic-card-like-label">喜欢</span>
+        <span class="topic-card-like-count">{topic.replyCount}</span>
+        <span class="topic-card-like-label">回复</span>
       </div>
       <div class="topic-card-main">
         <h3 class="topic-card-title">

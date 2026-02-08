@@ -22,7 +22,7 @@ home.get('/', async (c) => {
       images: topics.images,
       createdAt: topics.createdAt,
       updatedAt: topics.updatedAt,
-      likeCount: sql<number>`(SELECT COUNT(*) FROM topic_like WHERE topic_like.topic_id = ${topics.id})`.as('like_count'),
+      replyCount: sql<number>`(SELECT COUNT(*) FROM comment WHERE comment.topic_id = ${topics.id})`.as('reply_count'),
       user: {
         id: users.id,
         username: users.username,
