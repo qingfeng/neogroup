@@ -362,6 +362,48 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
               updatedAt: commentNow,
             })
 
+            // Notify topic/comment owners (support remote actors)
+            const topicOwner = await db.select({ userId: topics.userId })
+              .from(topics)
+              .where(eq(topics.id, topicId))
+              .limit(1)
+
+            const actorIdLocal = author?.id || null
+            const actorNameLocal = remoteActor?.preferredUsername || activity.actor || 'fediverse_user'
+            const actorUrlLocal = remoteActor?.url || activity.actor || null
+            const actorAvatarLocal = remoteActor?.icon?.url || null
+
+            if (topicOwner.length > 0 && topicOwner[0].userId !== userId) {
+              await createNotification(db, {
+                userId: topicOwner[0].userId,
+                actorId: actorIdLocal,
+                actorName: actorIdLocal ? null : actorNameLocal,
+                actorUrl: actorIdLocal ? null : actorUrlLocal,
+                actorAvatarUrl: actorIdLocal ? null : actorAvatarLocal,
+                type: 'reply',
+                topicId,
+                commentId,
+              })
+            }
+            if (replyToCommentId) {
+              const parentAuthor = await db.select({ userId: comments.userId })
+                .from(comments)
+                .where(eq(comments.id, replyToCommentId))
+                .limit(1)
+              if (parentAuthor.length > 0 && parentAuthor[0].userId !== userId) {
+                await createNotification(db, {
+                  userId: parentAuthor[0].userId,
+                  actorId: actorIdLocal,
+                  actorName: actorIdLocal ? null : actorNameLocal,
+                  actorUrl: actorIdLocal ? null : actorUrlLocal,
+                  actorAvatarUrl: actorIdLocal ? null : actorAvatarLocal,
+                  type: 'comment_reply',
+                  topicId,
+                  commentId,
+                })
+              }
+            }
+
             // Update topic updatedAt
             await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
 
@@ -710,6 +752,48 @@ ap.post('/ap/inbox', async (c) => {
                     createdAt: commentNow,
                     updatedAt: commentNow,
                   })
+
+                  // Notify topic/comment owners (support remote actor)
+                  const actorIdLocal = author?.id || null
+                  const actorNameLocal = remoteActor?.preferredUsername || remoteActor?.name || activity.actor || 'fediverse_user'
+                  const actorUrlLocal = remoteActor?.url || activity.actor || null
+                  const actorAvatarLocal = remoteActor?.icon?.url || null
+
+                  const topicOwner = await db.select({ userId: topics.userId })
+                    .from(topics)
+                    .where(eq(topics.id, topicId))
+                    .limit(1)
+                  if (topicOwner.length > 0 && topicOwner[0].userId !== userId) {
+                    await createNotification(db, {
+                      userId: topicOwner[0].userId,
+                      actorId: actorIdLocal,
+                      actorName: actorIdLocal ? null : actorNameLocal,
+                      actorUrl: actorIdLocal ? null : actorUrlLocal,
+                      actorAvatarUrl: actorIdLocal ? null : actorAvatarLocal,
+                      type: 'reply',
+                      topicId,
+                      commentId,
+                    })
+                  }
+
+                  if (replyToCommentId) {
+                    const parentAuthor = await db.select({ userId: comments.userId })
+                      .from(comments)
+                      .where(eq(comments.id, replyToCommentId))
+                      .limit(1)
+                    if (parentAuthor.length > 0 && parentAuthor[0].userId !== userId) {
+                      await createNotification(db, {
+                        userId: parentAuthor[0].userId,
+                        actorId: actorIdLocal,
+                        actorName: actorIdLocal ? null : actorNameLocal,
+                        actorUrl: actorIdLocal ? null : actorUrlLocal,
+                        actorAvatarUrl: actorIdLocal ? null : actorAvatarLocal,
+                        type: 'comment_reply',
+                        topicId,
+                        commentId,
+                      })
+                    }
+                  }
 
                   await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
                   console.log('[AP SharedInbox] Created comment from reply:', { commentId, topicId, actorName, userId, inReplyTo })

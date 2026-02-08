@@ -680,18 +680,44 @@ function escapeHtml(text: string): string {
 }
 
 export async function getOrCreateRemoteUser(db: Database, actorUri: string, actorData?: any): Promise<typeof users.$inferSelect | undefined> {
-  // 1. Check if auth provider exists
+  const preferredUsername = actorData?.preferredUsername || actorData?.name || extractUsername(actorUri)
+  let actorDomain: string | null = null
+  try { actorDomain = new URL(actorUri).host } catch { /* ignore */ }
+
+  // 1) existing activitypub mapping
   const existingAuth = await db.select()
     .from(authProviders)
-    .where(and(
-      eq(authProviders.providerType, 'activitypub'),
-      eq(authProviders.providerId, actorUri)
-    ))
+    .where(and(eq(authProviders.providerType, 'activitypub'), eq(authProviders.providerId, actorUri)))
     .limit(1)
-
   if (existingAuth.length > 0) {
     const userResult = await db.select().from(users).where(eq(users.id, existingAuth[0].userId)).limit(1)
     if (userResult.length > 0) return userResult[0]
+  }
+
+  // 2) match by users.username (username@domain)
+  if (preferredUsername && actorDomain) {
+    const candidateUsername = `${preferredUsername}@${actorDomain}`
+    const userMatch = await db.select().from(users).where(eq(users.username, candidateUsername)).limit(1)
+    if (userMatch.length > 0) return userMatch[0]
+  }
+
+  // 3) match existing mastodon auth provider with same domain+username
+  if (preferredUsername && actorDomain) {
+    const mastodonAuth = await db.select({ userId: authProviders.userId, metadata: authProviders.metadata, providerId: authProviders.providerId })
+      .from(authProviders)
+      .where(eq(authProviders.providerType, 'mastodon'))
+      .limit(200) // small scan
+
+    for (const auth of mastodonAuth) {
+      try {
+        const meta = auth.metadata ? JSON.parse(auth.metadata) as { username?: string } : {}
+        const domain = auth.providerId.split('@')[1]
+        if (domain === actorDomain && meta.username === preferredUsername) {
+          const userResult = await db.select().from(users).where(eq(users.id, auth.userId)).limit(1)
+          if (userResult.length > 0) return userResult[0]
+        }
+      } catch { /* ignore parse errors */ }
+    }
   }
 
   // 2. Create new user
