@@ -1,14 +1,14 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
-import { deliverCommentToFollowers, ensureKeyPair, signAndDeliver, fetchActor } from '../services/activitypub'
+import { deliverCommentToFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
 
 const topic = new Hono<AppContext>()
 
@@ -707,9 +707,86 @@ topic.post('/:id/comment', async (c) => {
 
   // AP: deliver Create(Note) to followers
   const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
-  c.executionCtx.waitUntil(
-    deliverCommentToFollowers(db, baseUrlForAp, user.id, commentId, topicId, htmlContent, replyToId || null)
-  )
+
+  // Check if this topic belongs to a mirror group — deliver comment to remote group
+  const remoteGroupForComment = await db.select()
+    .from(remoteGroups)
+    .where(eq(remoteGroups.localGroupId, topicResult[0].groupId))
+    .limit(1)
+
+  if (remoteGroupForComment.length > 0) {
+    const rg = remoteGroupForComment[0]
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const apUsername = await getApUsername(db, user.id)
+        if (!apUsername) return
+
+        const { privateKeyPem } = await ensureKeyPair(db, user.id)
+        const actorUrl = `${baseUrlForAp}/ap/users/${apUsername}`
+        const noteId = `${baseUrlForAp}/ap/comments/${commentId}`
+        const commentUrl = `${baseUrlForAp}/topic/${topicId}#comment-${commentId}`
+        const published = new Date().toISOString()
+
+        // Determine inReplyTo
+        let inReplyTo: string
+        if (replyToId) {
+          // Check if parent comment has a remote mastodonStatusId
+          const parentComment = await db.select({ mastodonStatusId: comments.mastodonStatusId })
+            .from(comments)
+            .where(eq(comments.id, replyToId))
+            .limit(1)
+          if (parentComment.length > 0 && parentComment[0].mastodonStatusId?.startsWith('http')) {
+            inReplyTo = parentComment[0].mastodonStatusId
+          } else {
+            inReplyTo = `${baseUrlForAp}/ap/comments/${replyToId}`
+          }
+        } else {
+          // Reply to topic — use topic's mastodonStatusId if remote, else AP note URL
+          if (topicResult[0].mastodonStatusId?.startsWith('http')) {
+            inReplyTo = topicResult[0].mastodonStatusId
+          } else {
+            inReplyTo = `${baseUrlForAp}/ap/notes/${topicId}`
+          }
+        }
+
+        const note = {
+          id: noteId,
+          type: 'Note',
+          attributedTo: actorUrl,
+          inReplyTo,
+          content: htmlContent,
+          url: commentUrl,
+          published,
+          to: ['https://www.w3.org/ns/activitystreams#Public'],
+          cc: [rg.actorUri, `${actorUrl}/followers`],
+          tag: [{
+            type: 'Mention',
+            href: rg.actorUri,
+            name: `@${rg.actorUri.split('/').pop()}@${rg.domain}`,
+          }],
+        }
+
+        const activity = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: `${noteId}/activity`,
+          type: 'Create',
+          actor: actorUrl,
+          published,
+          to: ['https://www.w3.org/ns/activitystreams#Public'],
+          cc: [rg.actorUri, `${actorUrl}/followers`],
+          object: note,
+        }
+
+        await signAndDeliver(actorUrl, privateKeyPem, rg.inboxUrl, activity)
+      } catch (e) {
+        console.error('[Remote Group] Failed to deliver comment to remote group:', e)
+      }
+    })())
+  } else {
+    c.executionCtx.waitUntil(
+      deliverCommentToFollowers(db, baseUrlForAp, user.id, commentId, topicId, htmlContent, replyToId || null)
+    )
+  }
 
   // AP: also deliver reply directly to remote origin inbox if topic/comment originated from fediverse
   if (topicResult[0].mastodonStatusId && topicResult[0].mastodonStatusId.startsWith('http')) {

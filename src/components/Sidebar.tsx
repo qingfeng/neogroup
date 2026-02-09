@@ -7,9 +7,10 @@ interface SidebarProps {
   randomGroups?: Group[]
   newUsers: User[]
   userGroups?: Group[]
+  remoteGroupDomains?: Record<string, string> // groupId → domain
 }
 
-export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, newUsers, userGroups }) => {
+export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains }) => {
   return (
     <aside>
       {userGroups && userGroups.length > 0 && (
@@ -19,6 +20,9 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, ne
             {userGroups.map((group) => (
               <li>
                 <a href={`/group/${group.id}`}>{group.name}</a>
+                {remoteGroupDomains?.[group.id] && (
+                  <span style="font-size: 11px; color: #888; margin-left: 4px;">({remoteGroupDomains[group.id]})</span>
+                )}
               </li>
             ))}
           </ul>

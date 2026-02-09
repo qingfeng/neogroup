@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { desc, eq, sql } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, groupMembers, comments } from '../db/schema'
+import { topics, users, groups, groupMembers, comments, remoteGroups } from '../db/schema'
 import { HomePage } from '../components/HomePage'
 
 const home = new Hono<AppContext>()
@@ -167,6 +167,7 @@ home.get('/', async (c) => {
 
   // 用户加入的小组
   let userGroups: typeof groups.$inferSelect[] = []
+  let remoteGroupDomains: Record<string, string> = {}
   if (user) {
     const memberships = await db
       .select({ group: groups })
@@ -175,6 +176,15 @@ home.get('/', async (c) => {
       .where(eq(groupMembers.userId, user.id))
       .limit(10)
     userGroups = memberships.map((m) => m.group)
+
+    // Fetch remote group domains for sidebar indicators
+    if (userGroups.length > 0) {
+      const rgList = await db.select({ localGroupId: remoteGroups.localGroupId, domain: remoteGroups.domain })
+        .from(remoteGroups)
+      for (const rg of rgList) {
+        remoteGroupDomains[rg.localGroupId] = rg.domain
+      }
+    }
   }
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -189,6 +199,7 @@ home.get('/', async (c) => {
       randomGroups={randomGroups as any}
       newUsers={newUsers}
       userGroups={userGroups}
+      remoteGroupDomains={remoteGroupDomains}
       baseUrl={baseUrl}
       unreadCount={c.get('unreadNotificationCount')}
     />

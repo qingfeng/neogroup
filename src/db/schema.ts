@@ -55,6 +55,7 @@ export const groupMembers = sqliteTable('group_member', {
   groupId: text('group_id').notNull().references(() => groups.id),
   userId: text('user_id').notNull().references(() => users.id),
   joinReason: text('join_reason'),
+  followStatus: text('follow_status'), // NULL=local group, 'pending'=Follow sent, 'accepted'=confirmed
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
@@ -187,6 +188,17 @@ export const groupFollowers = sqliteTable('group_follower', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 远程镜像小组
+export const remoteGroups = sqliteTable('remote_group', {
+  id: text('id').primaryKey(),
+  localGroupId: text('local_group_id').notNull().unique().references(() => groups.id),
+  actorUri: text('actor_uri').notNull().unique(),
+  inboxUrl: text('inbox_url').notNull(),
+  sharedInboxUrl: text('shared_inbox_url'),
+  domain: text('domain').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -205,3 +217,4 @@ export type TopicRepost = typeof topicReposts.$inferSelect
 export type ApFollower = typeof apFollowers.$inferSelect
 export type GroupFollower = typeof groupFollowers.$inferSelect
 export type UserFollow = typeof userFollows.$inferSelect
+export type RemoteGroup = typeof remoteGroups.$inferSelect

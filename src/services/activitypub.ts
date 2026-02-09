@@ -1,5 +1,5 @@
 import { eq, sql, and } from 'drizzle-orm'
-import { users, authProviders, apFollowers, topics, comments, groups, groupFollowers } from '../db/schema'
+import { users, authProviders, apFollowers, topics, comments, groups, groupFollowers, remoteGroups } from '../db/schema'
 import type { Database } from '../db'
 
 // --- Key Pair Generation (Web Crypto API) ---
@@ -149,7 +149,8 @@ export function getGroupWebFingerJson(actorName: string, groupId: string, baseUr
 export function getGroupActorJson(
   group: { id: string; name: string; actorName: string; description: string | null; iconUrl: string | null },
   publicKeyPem: string,
-  baseUrl: string
+  baseUrl: string,
+  moderatorActorUrls?: string[]
 ) {
   const actorUrl = `${baseUrl}/ap/groups/${group.actorName}`
 
@@ -186,6 +187,10 @@ export function getGroupActorJson(
       mediaType: 'image/png',
       url: group.iconUrl,
     }
+  }
+
+  if (moderatorActorUrls && moderatorActorUrls.length > 0) {
+    actor.attributedTo = moderatorActorUrls
   }
 
   actor.attachment = [
@@ -261,6 +266,7 @@ export async function announceToGroupFollowers(
     id: `${groupActorUrl}#announce-${Date.now()}`,
     type: 'Announce',
     actor: groupActorUrl,
+    audience: groupActorUrl,
     published: new Date().toISOString(),
     to: ['https://www.w3.org/ns/activitystreams#Public'],
     cc: [`${groupActorUrl}/followers`],
@@ -394,6 +400,61 @@ export async function fetchActor(actorUri: string): Promise<Record<string, any> 
   }
 }
 
+// --- Remote Group Discovery ---
+
+export interface RemoteGroupInfo {
+  actorUri: string
+  name: string
+  description: string | null
+  iconUrl: string | null
+  inbox: string
+  sharedInbox: string | null
+  domain: string
+  preferredUsername: string
+}
+
+export async function discoverRemoteGroup(handle: string): Promise<RemoteGroupInfo | null> {
+  // Parse @actorName@domain or actorName@domain
+  const match = handle.replace(/^@/, '').match(/^([^@]+)@(.+)$/)
+  if (!match) return null
+
+  const [, actorName, domain] = match
+
+  // WebFinger lookup
+  try {
+    const webfingerUrl = `https://${domain}/.well-known/webfinger?resource=acct:${actorName}@${domain}`
+    const wfRes = await fetch(webfingerUrl, {
+      headers: { 'Accept': 'application/jrd+json, application/json' },
+    })
+    if (!wfRes.ok) return null
+
+    const wfData = await wfRes.json() as any
+    const selfLink = wfData.links?.find((l: any) => l.rel === 'self' && l.type === 'application/activity+json')
+    if (!selfLink?.href) return null
+
+    // Fetch actor
+    const actor = await fetchActor(selfLink.href)
+    if (!actor) return null
+
+    // Verify it's a Group type
+    if (actor.type !== 'Group') return null
+
+    return {
+      actorUri: actor.id,
+      name: actor.name || actor.preferredUsername || actorName,
+      description: actor.summary ? stripHtml(actor.summary).slice(0, 500) : null,
+      iconUrl: actor.icon?.url || null,
+      inbox: actor.inbox,
+      sharedInbox: actor.endpoints?.sharedInbox || null,
+      domain,
+      preferredUsername: actor.preferredUsername || actorName,
+    }
+  } catch (e) {
+    console.error('[discoverRemoteGroup] Error:', e)
+    return null
+  }
+}
+
 // --- AP Username lookup ---
 
 export async function getApUsername(db: Database, userId: string): Promise<string | null> {
@@ -452,6 +513,7 @@ export async function deliverTopicToFollowers(
       id: noteId,
       type: 'Note',
       attributedTo: actorUrl,
+      context: noteId,
       content: noteContent,
       url: topicUrl,
       published,
@@ -531,6 +593,7 @@ export async function getNoteJson(
     id: noteId,
     type: 'Note',
     attributedTo: actorUrl,
+    context: noteId,
     content: noteContent,
     url: topicUrl,
     published: topic.createdAt.toISOString(),
@@ -582,6 +645,7 @@ export async function getCommentNoteJson(
     id: noteId,
     type: 'Note',
     attributedTo: actorUrl,
+    context: `${baseUrl}/ap/notes/${comment.topicId}`,
     inReplyTo,
     content: comment.content,
     url: commentUrl,
@@ -631,6 +695,7 @@ export async function deliverCommentToFollowers(
       id: noteId,
       type: 'Note',
       attributedTo: actorUrl,
+      context: `${baseUrl}/ap/notes/${topicId}`,
       inReplyTo,
       content,
       url: commentUrl,
@@ -859,6 +924,7 @@ export async function boostToGroupFollowers(
       id: announceId,
       type: 'Announce',
       actor: actorUrl,
+      audience: actorUrl,
       published: now,
       to: ['https://www.w3.org/ns/activitystreams#Public'],
       cc: [`${actorUrl}/followers`],

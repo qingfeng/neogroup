@@ -25,11 +25,12 @@ interface HomePageProps {
   randomGroups: Group[]
   newUsers: User[]
   userGroups: Group[]
+  remoteGroupDomains?: Record<string, string>
   baseUrl: string
   unreadCount?: number
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, baseUrl, unreadCount }) => {
+export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount }) => {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
@@ -95,7 +96,7 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
             </div>
           )}
         </div>
-        <Sidebar hotGroups={hotGroups} topTags={topTags} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} />
+        <Sidebar hotGroups={hotGroups} topTags={topTags} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} remoteGroupDomains={remoteGroupDomains} />
       </div>
     </Layout>
   )

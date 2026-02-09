@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities } from '../db/schema'
+import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers } from '../db/schema'
 import { generateId, stripHtml, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import {
@@ -138,13 +138,22 @@ ap.get('/ap/groups/:actorName', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
   const { publicKeyPem } = await ensureGroupKeyPair(db, group.id)
 
+  // Resolve creator's AP actor URL for attributedTo
+  const creatorUser = await db.select({ username: users.username })
+    .from(users)
+    .where(eq(users.id, group.creatorId))
+    .limit(1)
+  const moderatorUrls = creatorUser.length > 0
+    ? [`${baseUrl}/ap/users/${creatorUser[0].username}`]
+    : undefined
+
   const actor = getGroupActorJson({
     id: group.id,
     name: group.name,
     actorName: group.actorName,
     description: group.description,
     iconUrl: group.iconUrl,
-  }, publicKeyPem, baseUrl)
+  }, publicKeyPem, baseUrl, moderatorUrls)
 
   actor.outbox = `${baseUrl}/ap/groups/${actorName}/outbox`
 
@@ -187,6 +196,35 @@ ap.get('/ap/groups/:actorName/outbox', async (c) => {
   }
 
   return c.json(collection, 200, {
+    'Content-Type': 'application/activity+json',
+    'Access-Control-Allow-Origin': '*',
+  })
+})
+
+// Group Followers Collection (FEP-1b12)
+ap.get('/ap/groups/:actorName/followers', async (c) => {
+  const actorName = c.req.param('actorName')
+  const db = c.get('db')
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  const groupResult = await db.select({ id: groups.id })
+    .from(groups)
+    .where(eq(groups.actorName, actorName))
+    .limit(1)
+
+  if (groupResult.length === 0) return c.notFound()
+
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(groupFollowers)
+    .where(eq(groupFollowers.groupId, groupResult[0].id))
+
+  return c.json({
+    '@context': 'https://www.w3.org/ns/activitystreams',
+    id: `${baseUrl}/ap/groups/${actorName}/followers`,
+    type: 'OrderedCollection',
+    totalItems: countResult[0]?.count || 0,
+  }, 200, {
     'Content-Type': 'application/activity+json',
     'Access-Control-Allow-Origin': '*',
   })
@@ -290,7 +328,7 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
   if (type === 'Create') {
     // Handle Create Note - could be @mention (new topic) or reply (comment)
     const obj = activity.object
-    if (obj?.type === 'Note') {
+    if (obj?.type === 'Note' || obj?.type === 'Page') {
       const noteId = obj.id || `note-${Date.now()}`
       const content = obj.content || ''
       const actorUri = activity.actor
@@ -414,10 +452,11 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
       }
 
       // Not a reply - create new topic from @mention
+      // Lemmy Page has a `name` field for the title
+      const pageTitle = obj.name as string | undefined
       const textContent = stripHtml(content)
-      // Remove @mentions from title
       const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-      const title = truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+      const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
       const fullContent = content
 
       const topicId = generateId()
@@ -444,6 +483,41 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
       )
 
       return c.json({ status: 'created' }, 202)
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Update') {
+    const obj = activity.object
+    if (obj?.type === 'Note' || obj?.type === 'Page') {
+      const noteId = obj.id
+      if (noteId) {
+        // Check if we have this as a topic
+        const existingTopic = await db.select({ id: topics.id })
+          .from(topics)
+          .where(eq(topics.mastodonStatusId, noteId))
+          .limit(1)
+        if (existingTopic.length > 0) {
+          const pageTitle = obj.name as string | undefined
+          const content = obj.content || ''
+          const textContent = stripHtml(content)
+          const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+          const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+          await db.update(topics).set({ title, content, updatedAt: new Date() }).where(eq(topics.id, existingTopic[0].id))
+          console.log('[AP GroupInbox] Updated topic:', existingTopic[0].id)
+          return c.json({ status: 'updated' }, 202)
+        }
+        // Check if we have this as a comment
+        const existingComment = await db.select({ id: comments.id })
+          .from(comments)
+          .where(eq(comments.mastodonStatusId, noteId))
+          .limit(1)
+        if (existingComment.length > 0) {
+          await db.update(comments).set({ content: obj.content || '', updatedAt: new Date() }).where(eq(comments.id, existingComment[0].id))
+          console.log('[AP GroupInbox] Updated comment:', existingComment[0].id)
+          return c.json({ status: 'updated' }, 202)
+        }
+      }
     }
     return c.json({ status: 'accepted' }, 202)
   }
@@ -543,9 +617,181 @@ ap.post('/ap/users/:username/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
+  if (type === 'Accept') {
+    // Handle Accept(Follow) — remote group accepted our follow
+    const innerObject = typeof activity.object === 'object' ? activity.object : null
+    if (innerObject?.type === 'Follow') {
+      const targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id
+      if (targetActorUri) {
+        const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
+          .from(remoteGroups)
+          .where(eq(remoteGroups.actorUri, targetActorUri))
+          .limit(1)
+
+        if (rg.length > 0) {
+          await db.update(groupMembers)
+            .set({ followStatus: 'accepted' })
+            .where(and(
+              eq(groupMembers.groupId, rg[0].localGroupId),
+              eq(groupMembers.userId, user.id),
+              eq(groupMembers.followStatus, 'pending')
+            ))
+          console.log('[AP Inbox] Accept(Follow) for remote group:', targetActorUri, 'user:', user.id)
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Announce') {
+    // Handle Announce from remote group
+    const announceActorUri = activity.actor
+    if (announceActorUri) {
+      const rg = await db.select({
+        localGroupId: remoteGroups.localGroupId,
+        domain: remoteGroups.domain,
+      })
+        .from(remoteGroups)
+        .where(eq(remoteGroups.actorUri, announceActorUri))
+        .limit(1)
+
+      if (rg.length > 0) {
+        const mirrorGroupId = rg[0].localGroupId
+
+        // Get the announced object (Note)
+        let noteObject: Record<string, any> | null = null
+        if (typeof activity.object === 'string') {
+          // URL — fetch it
+          try {
+            const res = await fetch(activity.object, {
+              headers: { 'Accept': 'application/activity+json, application/ld+json' },
+            })
+            if (res.ok) noteObject = await res.json() as Record<string, any>
+          } catch (e) {
+            console.error('[AP Inbox] Failed to fetch announced object:', e)
+          }
+        } else if (typeof activity.object === 'object') {
+          noteObject = activity.object
+        }
+
+        if (noteObject && (noteObject.type === 'Note' || noteObject.type === 'Page')) {
+          const noteId = noteObject.id || ''
+
+          // Dedup: skip if note ID starts with our baseUrl (echo of our own post)
+          if (noteId.startsWith(baseUrl)) {
+            return c.json({ status: 'accepted' }, 202)
+          }
+
+          // Dedup: skip if already imported
+          if (noteId) {
+            const existingTopic = await db.select({ id: topics.id })
+              .from(topics)
+              .where(eq(topics.mastodonStatusId, noteId))
+              .limit(1)
+            if (existingTopic.length > 0) {
+              return c.json({ status: 'accepted' }, 202)
+            }
+            const existingComment = await db.select({ id: comments.id })
+              .from(comments)
+              .where(eq(comments.mastodonStatusId, noteId))
+              .limit(1)
+            if (existingComment.length > 0) {
+              return c.json({ status: 'accepted' }, 202)
+            }
+          }
+
+          // Resolve author
+          const authorUri = typeof noteObject.attributedTo === 'string'
+            ? noteObject.attributedTo
+            : (Array.isArray(noteObject.attributedTo) ? noteObject.attributedTo[0] : null)
+
+          let authorActor: Record<string, any> | null = null
+          if (authorUri) {
+            authorActor = await fetchActor(authorUri)
+          }
+          const author = authorUri ? await getOrCreateRemoteUser(db, authorUri, authorActor) : null
+          const userId = author?.id || user.id
+
+          const inReplyTo = noteObject.inReplyTo as string | undefined
+          const noteContent = noteObject.content || ''
+          const noteNow = new Date()
+
+          if (inReplyTo) {
+            // It's a reply — create as comment
+            let topicId: string | null = null
+            let replyToCommentId: string | null = null
+
+            // Check if reply to local topic AP note URL
+            const topicNoteMatch = inReplyTo.match(/\/ap\/notes\/([a-zA-Z0-9_-]+)/)
+            if (topicNoteMatch) {
+              topicId = topicNoteMatch[1]
+            } else {
+              // Check by mastodonStatusId
+              const parentTopic = await db.select({ id: topics.id })
+                .from(topics)
+                .where(eq(topics.mastodonStatusId, inReplyTo))
+                .limit(1)
+              if (parentTopic.length > 0) {
+                topicId = parentTopic[0].id
+              } else {
+                const parentComment = await db.select({ id: comments.id, topicId: comments.topicId })
+                  .from(comments)
+                  .where(eq(comments.mastodonStatusId, inReplyTo))
+                  .limit(1)
+                if (parentComment.length > 0) {
+                  topicId = parentComment[0].topicId
+                  replyToCommentId = parentComment[0].id
+                }
+              }
+            }
+
+            if (topicId) {
+              const commentId = generateId()
+              await db.insert(comments).values({
+                id: commentId,
+                topicId,
+                userId,
+                content: noteContent,
+                replyToId: replyToCommentId,
+                mastodonStatusId: noteId || null,
+                mastodonDomain: rg[0].domain,
+                createdAt: noteNow,
+                updatedAt: noteNow,
+              })
+              await db.update(topics).set({ updatedAt: noteNow }).where(eq(topics.id, topicId))
+              console.log('[AP Inbox] Created comment from Announce:', commentId, 'in topic:', topicId)
+            }
+          } else {
+            // No inReplyTo — create as topic
+            const pageTitle = noteObject.name as string | undefined
+            const textContent = stripHtml(noteContent)
+            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+
+            const topicId = generateId()
+            await db.insert(topics).values({
+              id: topicId,
+              groupId: mirrorGroupId,
+              userId,
+              title,
+              content: noteContent,
+              type: 0,
+              mastodonStatusId: noteId || null,
+              mastodonDomain: rg[0].domain,
+              createdAt: noteNow,
+              updatedAt: noteNow,
+            })
+            console.log('[AP Inbox] Created topic from Announce:', topicId, 'in mirror group:', mirrorGroupId)
+          }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
   if (type === 'Create') {
     const noteObject = typeof activity.object === 'object' ? activity.object : null
-    if (noteObject?.type === 'Note') {
+    if (noteObject?.type === 'Note' || noteObject?.type === 'Page') {
       const actorUrl = `${baseUrl}/ap/users/${username}`
       const host = new URL(baseUrl).host
       const expectedMention = `@${username}@${host}`
@@ -631,9 +877,116 @@ ap.post('/ap/inbox', async (c) => {
 
   const type = activity.type
 
+  // Handle Follow/Undo(Follow) for groups via shared inbox
+  if (type === 'Follow') {
+    const targetUri = typeof activity.object === 'string' ? activity.object : activity.object?.id
+    if (targetUri) {
+      // Check if it's a Follow for a local group
+      const groupMatch = targetUri.match(new RegExp(`^${baseUrl}/ap/groups/([^/]+)$`))
+      if (groupMatch) {
+        const actorName = groupMatch[1]
+        const groupResult = await db.select()
+          .from(groups)
+          .where(eq(groups.actorName, actorName))
+          .limit(1)
+
+        if (groupResult.length > 0 && groupResult[0].actorName) {
+          const group = groupResult[0]
+          const followerActorUri = activity.actor
+          if (followerActorUri) {
+            const remoteActor = await fetchActor(followerActorUri)
+            if (remoteActor) {
+              const inboxUrl = remoteActor.inbox
+              if (inboxUrl) {
+                // Save follower
+                const existingFollower = await db.select({ id: groupFollowers.id })
+                  .from(groupFollowers)
+                  .where(and(eq(groupFollowers.groupId, group.id), eq(groupFollowers.actorUri, followerActorUri)))
+                  .limit(1)
+
+                if (existingFollower.length === 0) {
+                  await db.insert(groupFollowers).values({
+                    id: generateId(),
+                    groupId: group.id,
+                    actorUri: followerActorUri,
+                    actorInbox: remoteActor.inbox || null,
+                    actorSharedInbox: remoteActor.endpoints?.sharedInbox || null,
+                    createdAt: new Date(),
+                  })
+                }
+
+                // Send Accept
+                const groupActorUrl = `${baseUrl}/ap/groups/${actorName}`
+                const { privateKeyPem } = await ensureGroupKeyPair(db, group.id)
+
+                const accept = {
+                  '@context': 'https://www.w3.org/ns/activitystreams',
+                  id: `${groupActorUrl}#accept-${Date.now()}`,
+                  type: 'Accept',
+                  actor: groupActorUrl,
+                  object: activity,
+                }
+
+                c.executionCtx.waitUntil(
+                  signAndDeliver(groupActorUrl, privateKeyPem, inboxUrl, accept).catch(e =>
+                    console.error('[AP SharedInbox] Failed to deliver Accept for group follow:', e)
+                  )
+                )
+
+                console.log('[AP SharedInbox] Accepted group follow from:', followerActorUri, 'for group:', actorName)
+              }
+            }
+          }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Undo') {
+    const innerObject = typeof activity.object === 'object' ? activity.object : null
+    if (innerObject?.type === 'Follow') {
+      const targetUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id
+      if (targetUri) {
+        // Check if it's Undo Follow for a local group
+        const groupMatch = targetUri.match(new RegExp(`^${baseUrl}/ap/groups/([^/]+)$`))
+        if (groupMatch) {
+          const actorName = groupMatch[1]
+          const groupResult = await db.select({ id: groups.id })
+            .from(groups)
+            .where(eq(groups.actorName, actorName))
+            .limit(1)
+
+          if (groupResult.length > 0) {
+            const followerActorUri = activity.actor
+            if (followerActorUri) {
+              await db.delete(groupFollowers)
+                .where(and(eq(groupFollowers.groupId, groupResult[0].id), eq(groupFollowers.actorUri, followerActorUri)))
+              console.log('[AP SharedInbox] Removed group follower:', followerActorUri, 'from group:', actorName)
+            }
+          }
+        }
+
+        // Also check if it's Undo Follow for a local user
+        const userMatch = targetUri.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
+        if (userMatch) {
+          const user = await findUserByApUsername(db, userMatch[1])
+          if (user) {
+            const followerActorUri = activity.actor
+            if (followerActorUri) {
+              await db.delete(apFollowers)
+                .where(and(eq(apFollowers.userId, user.id), eq(apFollowers.actorUri, followerActorUri)))
+            }
+          }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
   if (type === 'Create') {
     const noteObject = typeof activity.object === 'object' ? activity.object : null
-    if (noteObject?.type === 'Note') {
+    if (noteObject?.type === 'Note' || noteObject?.type === 'Page') {
       const tags = Array.isArray(noteObject.tag) ? noteObject.tag : []
 
       console.log('[AP SharedInbox] Create(Note) tags:', JSON.stringify(tags))
@@ -804,9 +1157,10 @@ ap.post('/ap/inbox', async (c) => {
 
             // Not a reply - create new topic
             console.log('[AP SharedInbox] Creating topic from group mention:', mentionedUsername)
+            const pageTitle = noteObject.name as string | undefined
             const textContent = stripHtml(noteContent)
             const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-            const title = truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
 
             const topicId = generateId()
             const topicNow = new Date()
@@ -873,6 +1227,407 @@ ap.post('/ap/inbox', async (c) => {
         })
 
         console.log('[AP SharedInbox] Created notification for user:', user.id)
+      }
+    }
+
+    // Fallback: check audience / to / cc for group actor URI (Lemmy uses audience instead of tag Mention)
+    const audienceUris: string[] = []
+    const audience = noteObject.audience || activity.audience
+    if (typeof audience === 'string') audienceUris.push(audience)
+    else if (Array.isArray(audience)) audienceUris.push(...audience.filter((a: unknown) => typeof a === 'string'))
+    const toField = Array.isArray(activity.to) ? activity.to : (typeof activity.to === 'string' ? [activity.to] : [])
+    const ccField = Array.isArray(activity.cc) ? activity.cc : (typeof activity.cc === 'string' ? [activity.cc] : [])
+    audienceUris.push(...toField.filter((u: unknown) => typeof u === 'string'))
+    audienceUris.push(...ccField.filter((u: unknown) => typeof u === 'string'))
+
+    const groupPattern = new RegExp(`^${baseUrl}/ap/groups/([^/]+)$`)
+    for (const uri of audienceUris) {
+      const match = uri.match(groupPattern)
+      if (!match) continue
+
+      const groupActorName = match[1]
+      const groupResult = await db.select()
+        .from(groups)
+        .where(eq(groups.actorName, groupActorName))
+        .limit(1)
+
+      if (groupResult.length === 0 || !groupResult[0].actorName) continue
+
+      const group = groupResult[0]
+      const noteId = noteObject.id
+      const noteContent = noteObject.content || ''
+
+      // Dedup check
+      if (noteId) {
+        const existing = await db.select({ id: topics.id })
+          .from(topics)
+          .where(eq(topics.mastodonStatusId, noteId))
+          .limit(1)
+        if (existing.length > 0) {
+          console.log('[AP SharedInbox] Skipping duplicate note (audience):', noteId)
+          return c.json({ status: 'accepted' }, 202)
+        }
+      }
+
+      const remoteActorUri = activity.actor
+      const remoteActor = await fetchActor(remoteActorUri)
+      const author = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+      const userId = author ? author.id : group.creatorId
+
+      const inReplyTo = noteObject.inReplyTo as string | undefined
+
+      if (inReplyTo) {
+        let topicId: string | null = null
+        let replyToCommentId: string | null = null
+
+        const topicMatch = inReplyTo.match(/\/topic\/([a-zA-Z0-9_-]+)/)
+        if (topicMatch) {
+          topicId = topicMatch[1]
+        } else {
+          const parentTopic = await db.select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.mastodonStatusId, inReplyTo))
+            .limit(1)
+          if (parentTopic.length > 0) {
+            topicId = parentTopic[0].id
+          } else {
+            const parentComment = await db.select({ id: comments.id, topicId: comments.topicId })
+              .from(comments)
+              .where(eq(comments.mastodonStatusId, inReplyTo))
+              .limit(1)
+            if (parentComment.length > 0) {
+              topicId = parentComment[0].topicId
+              replyToCommentId = parentComment[0].id
+            }
+          }
+        }
+
+        if (topicId) {
+          const topicResult = await db.select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.id, topicId))
+            .limit(1)
+
+          if (topicResult.length > 0) {
+            const commentId = generateId()
+            const commentNow = new Date()
+            await db.insert(comments).values({
+              id: commentId,
+              topicId,
+              userId,
+              content: noteContent,
+              replyToId: replyToCommentId,
+              mastodonStatusId: noteId,
+              mastodonDomain: 'activitypub_origin',
+              createdAt: commentNow,
+              updatedAt: commentNow,
+            })
+            await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
+            console.log('[AP SharedInbox] Created comment from audience reply:', { commentId, topicId, noteId })
+            return c.json({ status: 'accepted' }, 202)
+          }
+        }
+      }
+
+      // Create new topic
+      const pageTitle = noteObject.name as string | undefined
+      const textContent = stripHtml(noteContent)
+      const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+      const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+
+      const topicId = generateId()
+      const topicNow = new Date()
+      await db.insert(topics).values({
+        id: topicId,
+        groupId: group.id,
+        userId,
+        title,
+        content: noteContent,
+        type: 1,
+        mastodonStatusId: noteId,
+        mastodonDomain: 'activitypub_origin',
+        createdAt: topicNow,
+        updatedAt: topicNow,
+      })
+
+      console.log('[AP SharedInbox] Created topic from audience:', { topicId, groupId: group.id, noteId })
+
+      c.executionCtx.waitUntil(
+        boostToGroupFollowers(db, group.actorName!, noteId, baseUrl)
+      )
+
+      return c.json({ status: 'created' }, 202)
+    }
+
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Update') {
+    const obj = typeof activity.object === 'object' ? activity.object : null
+    if (obj?.type === 'Note' || obj?.type === 'Page') {
+      const noteId = obj.id
+      if (noteId) {
+        const existingTopic = await db.select({ id: topics.id })
+          .from(topics)
+          .where(eq(topics.mastodonStatusId, noteId))
+          .limit(1)
+        if (existingTopic.length > 0) {
+          const pageTitle = obj.name as string | undefined
+          const content = obj.content || ''
+          const textContent = stripHtml(content)
+          const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+          const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+          await db.update(topics).set({ title, content, updatedAt: new Date() }).where(eq(topics.id, existingTopic[0].id))
+          console.log('[AP SharedInbox] Updated topic:', existingTopic[0].id)
+          return c.json({ status: 'updated' }, 202)
+        }
+        const existingComment = await db.select({ id: comments.id })
+          .from(comments)
+          .where(eq(comments.mastodonStatusId, noteId))
+          .limit(1)
+        if (existingComment.length > 0) {
+          await db.update(comments).set({ content: obj.content || '', updatedAt: new Date() }).where(eq(comments.id, existingComment[0].id))
+          console.log('[AP SharedInbox] Updated comment:', existingComment[0].id)
+          return c.json({ status: 'updated' }, 202)
+        }
+
+        // Update for something we don't have yet — try to treat as Create (Lemmy sends Update for edits even if we missed the original)
+        const audienceUri = obj.audience || activity.audience
+        if (audienceUri && typeof audienceUri === 'string') {
+          const groupPattern = new RegExp(`^${baseUrl}/ap/groups/([^/]+)$`)
+          const match = audienceUri.match(groupPattern)
+          if (match) {
+            const groupActorName = match[1]
+            const groupResult = await db.select()
+              .from(groups)
+              .where(eq(groups.actorName, groupActorName))
+              .limit(1)
+
+            if (groupResult.length > 0 && groupResult[0].actorName) {
+              const group = groupResult[0]
+              const remoteActorUri = activity.actor
+              const remoteActor = await fetchActor(remoteActorUri)
+              const author = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+              const userId = author ? author.id : group.creatorId
+
+              const pageTitle = obj.name as string | undefined
+              const noteContent = obj.content || ''
+              const textContent = stripHtml(noteContent)
+              const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+              const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+
+              const topicId = generateId()
+              const topicNow = new Date()
+              await db.insert(topics).values({
+                id: topicId,
+                groupId: group.id,
+                userId,
+                title,
+                content: noteContent,
+                type: 1,
+                mastodonStatusId: noteId,
+                mastodonDomain: 'activitypub_origin',
+                createdAt: topicNow,
+                updatedAt: topicNow,
+              })
+              console.log('[AP SharedInbox] Created topic from Update (missed Create):', { topicId, noteId })
+
+              c.executionCtx.waitUntil(
+                boostToGroupFollowers(db, group.actorName!, noteId, baseUrl)
+              )
+              return c.json({ status: 'created' }, 202)
+            }
+          }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Accept') {
+    // Handle Accept(Follow) in shared inbox — remote group accepted our follow
+    const innerObject = typeof activity.object === 'object' ? activity.object : null
+    if (innerObject?.type === 'Follow') {
+      const followActor = typeof innerObject.actor === 'string' ? innerObject.actor : null
+      const targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id
+
+      if (followActor && targetActorUri) {
+        // Find the local user who sent the Follow
+        const userMatch = followActor.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
+        if (userMatch) {
+          const followUser = await findUserByApUsername(db, userMatch[1])
+          if (followUser) {
+            const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
+              .from(remoteGroups)
+              .where(eq(remoteGroups.actorUri, targetActorUri))
+              .limit(1)
+
+            if (rg.length > 0) {
+              await db.update(groupMembers)
+                .set({ followStatus: 'accepted' })
+                .where(and(
+                  eq(groupMembers.groupId, rg[0].localGroupId),
+                  eq(groupMembers.userId, followUser.id),
+                  eq(groupMembers.followStatus, 'pending')
+                ))
+              console.log('[AP SharedInbox] Accept(Follow) for remote group:', targetActorUri, 'user:', followUser.id)
+            }
+          }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Announce') {
+    // Handle Announce from remote group in shared inbox
+    const announceActorUri = activity.actor
+    if (announceActorUri) {
+      const rg = await db.select({
+        localGroupId: remoteGroups.localGroupId,
+        domain: remoteGroups.domain,
+      })
+        .from(remoteGroups)
+        .where(eq(remoteGroups.actorUri, announceActorUri))
+        .limit(1)
+
+      if (rg.length > 0) {
+        const mirrorGroupId = rg[0].localGroupId
+
+        // Get the announced object
+        let noteObject: Record<string, any> | null = null
+        if (typeof activity.object === 'string') {
+          try {
+            const res = await fetch(activity.object, {
+              headers: { 'Accept': 'application/activity+json, application/ld+json' },
+            })
+            if (res.ok) noteObject = await res.json() as Record<string, any>
+          } catch (e) {
+            console.error('[AP SharedInbox] Failed to fetch announced object:', e)
+          }
+        } else if (typeof activity.object === 'object') {
+          noteObject = activity.object
+        }
+
+        if (noteObject && (noteObject.type === 'Note' || noteObject.type === 'Page')) {
+          const noteId = noteObject.id || ''
+
+          // Dedup: skip our own content
+          if (noteId.startsWith(baseUrl)) {
+            return c.json({ status: 'accepted' }, 202)
+          }
+
+          // Dedup: already imported
+          if (noteId) {
+            const existingTopic = await db.select({ id: topics.id })
+              .from(topics)
+              .where(eq(topics.mastodonStatusId, noteId))
+              .limit(1)
+            if (existingTopic.length > 0) {
+              return c.json({ status: 'accepted' }, 202)
+            }
+            const existingComment = await db.select({ id: comments.id })
+              .from(comments)
+              .where(eq(comments.mastodonStatusId, noteId))
+              .limit(1)
+            if (existingComment.length > 0) {
+              return c.json({ status: 'accepted' }, 202)
+            }
+          }
+
+          // Resolve author
+          const authorUri = typeof noteObject.attributedTo === 'string'
+            ? noteObject.attributedTo
+            : (Array.isArray(noteObject.attributedTo) ? noteObject.attributedTo[0] : null)
+
+          let authorActor: Record<string, any> | null = null
+          if (authorUri) {
+            authorActor = await fetchActor(authorUri)
+          }
+          const author = authorUri ? await getOrCreateRemoteUser(db, authorUri, authorActor) : null
+
+          // We need a fallback userId — use first member of the mirror group
+          let fallbackUserId: string | null = null
+          if (!author) {
+            const firstMember = await db.select({ userId: groupMembers.userId })
+              .from(groupMembers)
+              .where(eq(groupMembers.groupId, mirrorGroupId))
+              .limit(1)
+            fallbackUserId = firstMember.length > 0 ? firstMember[0].userId : null
+          }
+          const userId = author?.id || fallbackUserId
+          if (!userId) {
+            return c.json({ status: 'accepted' }, 202)
+          }
+
+          const inReplyTo = noteObject.inReplyTo as string | undefined
+          const noteContent = noteObject.content || ''
+          const noteNow = new Date()
+
+          if (inReplyTo) {
+            let topicId: string | null = null
+            let replyToCommentId: string | null = null
+
+            const topicNoteMatch = inReplyTo.match(/\/ap\/notes\/([a-zA-Z0-9_-]+)/)
+            if (topicNoteMatch) {
+              topicId = topicNoteMatch[1]
+            } else {
+              const parentTopic = await db.select({ id: topics.id })
+                .from(topics)
+                .where(eq(topics.mastodonStatusId, inReplyTo))
+                .limit(1)
+              if (parentTopic.length > 0) {
+                topicId = parentTopic[0].id
+              } else {
+                const parentComment = await db.select({ id: comments.id, topicId: comments.topicId })
+                  .from(comments)
+                  .where(eq(comments.mastodonStatusId, inReplyTo))
+                  .limit(1)
+                if (parentComment.length > 0) {
+                  topicId = parentComment[0].topicId
+                  replyToCommentId = parentComment[0].id
+                }
+              }
+            }
+
+            if (topicId) {
+              const commentId = generateId()
+              await db.insert(comments).values({
+                id: commentId,
+                topicId,
+                userId,
+                content: noteContent,
+                replyToId: replyToCommentId,
+                mastodonStatusId: noteId || null,
+                mastodonDomain: rg[0].domain,
+                createdAt: noteNow,
+                updatedAt: noteNow,
+              })
+              await db.update(topics).set({ updatedAt: noteNow }).where(eq(topics.id, topicId))
+              console.log('[AP SharedInbox] Created comment from Announce:', commentId)
+            }
+          } else {
+            const pageTitle = noteObject.name as string | undefined
+            const textContent = stripHtml(noteContent)
+            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
+            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+
+            const topicId = generateId()
+            await db.insert(topics).values({
+              id: topicId,
+              groupId: mirrorGroupId,
+              userId,
+              title,
+              content: noteContent,
+              type: 0,
+              mastodonStatusId: noteId || null,
+              mastodonDomain: rg[0].domain,
+              createdAt: noteNow,
+              updatedAt: noteNow,
+            })
+            console.log('[AP SharedInbox] Created topic from Announce:', topicId, 'in mirror group:', mirrorGroupId)
+          }
+        }
       }
     }
     return c.json({ status: 'accepted' }, 202)
