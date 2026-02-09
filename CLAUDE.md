@@ -13,8 +13,8 @@
 | 数据库 | Cloudflare D1 (SQLite) |
 | ORM | [Drizzle](https://orm.drizzle.team) |
 | 会话存储 | Cloudflare KV |
-| 文件存储 | Cloudflare R2 |
-| AI | Cloudflare Workers AI |
+| 文件存储 | Cloudflare R2（可选，用于图片上传） |
+| AI | Cloudflare Workers AI（可选，用于 Bot 标题生成） |
 | 认证 | Mastodon OAuth2 |
 | 联邦协议 | ActivityPub |
 | 模板引擎 | Hono JSX (SSR) |
@@ -213,6 +213,8 @@ src/
 
 ## 常用命令
 
+> 首次部署的完整流程请参考 [skill.md](./skill.md)
+
 ```bash
 # 本地开发
 npm run dev
@@ -223,8 +225,10 @@ npm run deploy
 # 生成数据库迁移
 npx drizzle-kit generate
 
-# 执行迁移（远程）
-npx wrangler d1 execute neogroup --remote --file=drizzle/0006_xxx.sql
+# 执行全部迁移（远程）
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --remote --file="$f"
+done
 
 # 查看远程数据库
 npx wrangler d1 execute neogroup --remote --command="SELECT * FROM user LIMIT 10;"

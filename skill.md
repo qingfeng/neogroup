@@ -1,124 +1,174 @@
-# NeoGroup 开发环境设置
+# NeoGroup 部署指南
 
-这是一个 Claude Code Agent 技能文件，用于帮助开发者快速搭建 NeoGroup 开发环境。
+这是一份 AI Agent 友好的部署指南。你可以将本文件交给 Claude Code、Cursor 等 AI 工具，让它们自动完成部署。
+
+## Cloudflare 免费版完全兼容
+
+NeoGroup 只依赖以下 Cloudflare 免费资源，**无需付费**：
+
+| 资源 | 用途 | 免费额度 |
+|------|------|---------|
+| Workers | 运行应用 | 10 万请求/天 |
+| D1 | 数据库 | 5GB 存储 |
+| KV | 会话存储 | 1GB 存储 |
+
+以下资源为**可选**，不配置不影响核心功能：
+
+| 资源 | 用途 | 不配置的影响 |
+|------|------|-------------|
+| R2 | 图片上传 | 不能上传头像和图片，其他功能正常 |
+| Workers AI | Bot 长文自动生成标题 | 不用 Bot 功能则无影响 |
 
 ## 前置条件
 
 - Node.js v20 或更高版本
-- Cloudflare 账号
-- Wrangler CLI（会自动通过 npx 使用）
+- Cloudflare 账号（免费版即可，注册地址：https://dash.cloudflare.com/sign-up ）
+- Wrangler CLI（通过 npx 自动使用，无需全局安装）
 
-## 设置步骤
+## 部署步骤
 
-### 1. 安装依赖
+### 第 1 步：安装依赖
 
 ```bash
 npm install
 ```
 
-### 2. 登录 Cloudflare
+### 第 2 步：登录 Cloudflare
 
 ```bash
 npx wrangler login
 ```
 
-这会打开浏览器让你授权 Wrangler 访问你的 Cloudflare 账号。
+这会打开浏览器让用户授权。**Agent 注意**：这一步需要用户在浏览器中操作，等待命令返回成功即可。
 
-### 3. 创建 D1 数据库
+验证登录成功：
+
+```bash
+npx wrangler whoami
+```
+
+预期输出包含账号名称和 Account ID。
+
+### 第 3 步：创建 D1 数据库
 
 ```bash
 npx wrangler d1 create neogroup
 ```
 
-输出示例：
+预期输出：
 ```
 ✅ Successfully created DB 'neogroup'
 database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
-**记下 `database_id`，后面要用。**
+**记下 `database_id` 值。**
 
-### 4. 创建 KV 命名空间
+> 如果报错 `already exists`，说明已有同名数据库。运行 `npx wrangler d1 list` 查看已有数据库的 ID，直接使用即可。
+
+### 第 4 步：创建 KV 命名空间
 
 ```bash
 npx wrangler kv namespace create KV
 ```
 
-输出示例：
+预期输出：
 ```
-✅ Successfully created KV namespace "KV"
+✅ Successfully created KV namespace
 id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-**记下 `id`，后面要用。**
+**记下 `id` 值。**
 
-### 5. 创建本地配置文件
+> 如果报错 `already exists`，运行 `npx wrangler kv namespace list` 查看已有命名空间的 ID。
 
-从模板创建配置文件：
+### 第 5 步：创建配置文件
 
 ```bash
 cp wrangler.toml.example wrangler.toml
 ```
 
-编辑 `wrangler.toml`，替换占位符：
+编辑 `wrangler.toml`，将占位符替换为实际的 ID：
 
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "neogroup"
-database_id = "替换为你的database_id"
+- 将 `your-database-id-here` 替换为第 3 步获得的 D1 database_id
+- 将 `your-kv-namespace-id-here` 替换为第 4 步获得的 KV id
 
-[[kv_namespaces]]
-binding = "KV"
-id = "替换为你的KV命名空间id"
-```
+`APP_URL` 暂时保留不动，第 8 步会处理。
 
-### 6. 初始化数据库表结构
+> `wrangler.toml` 已在 `.gitignore` 中，不会被提交到仓库。
+
+### 第 6 步：初始化数据库
+
+**必须按顺序执行 `drizzle/` 目录下的所有 `.sql` 迁移文件**，缺少任何一个都会导致运行时报错。
+
+本地开发数据库：
 
 ```bash
-# 生成迁移 SQL（如果 drizzle 目录已有则跳过）
-npx drizzle-kit generate
-
-# 应用到本地开发数据库
-npx wrangler d1 execute neogroup --local --file=drizzle/0000_peaceful_white_tiger.sql
-
-# 应用到远程生产数据库
-npx wrangler d1 execute neogroup --remote --file=drizzle/0000_peaceful_white_tiger.sql
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --local --file="$f"
+done
 ```
 
-### 7. 本地开发
+远程生产数据库：
+
+```bash
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --remote --file="$f"
+done
+```
+
+> `drizzle/*.sql` 的文件名以数字编号（0000、0001、...），shell glob 会按字母序展开，正好是正确的执行顺序。
+
+### 第 7 步：本地开发验证
 
 ```bash
 npm run dev
 ```
 
-访问 http://localhost:8787
+访问 http://localhost:8787 ，确认页面能正常加载。按 `Ctrl+C` 停止。
 
-### 8. 部署到 Cloudflare
+### 第 8 步：部署到 Cloudflare
 
 ```bash
 npm run deploy
 ```
 
-### 9. 设置 APP_URL 环境变量
+部署成功后，Wrangler 会输出你的 Workers URL，格式为：
 
-ActivityPub 联邦功能需要知道站点的公开 URL。在 `wrangler.toml` 中添加：
+```
+https://neogroup.<your-subdomain>.workers.dev
+```
+
+**记下这个 URL。**
+
+### 第 9 步：设置 APP_URL
+
+编辑 `wrangler.toml`，将 `APP_URL` 设置为第 8 步获得的 Workers URL（或你的自定义域名）：
 
 ```toml
 [vars]
-APP_URL = "https://your-domain.com"
-APP_NAME = "NeoGroup"
-# MASTODON_BOT_TOKEN = "..." (deprecated)
-# MASTODON_BOT_DOMAIN = "..." (deprecated)
+APP_URL = "https://neogroup.xxx.workers.dev"
 ```
 
-如果不设置 `APP_URL`，系统会从请求的 `Origin` 自动推断，但建议显式配置以确保 AP URL 一致性。
+然后重新部署：
+
+```bash
+npm run deploy
+```
+
+> `APP_URL` 用于 ActivityPub 联邦身份。如果不设置，系统会从请求自动推断，但建议显式配置以确保一致性。
+
+### 第 10 步：验证部署
+
+访问你的 URL，确认：
+
+1. 首页能正常加载
+2. 点击登录，输入 Mastodon 实例域名（如 `mastodon.social`），能跳转到 OAuth 授权页面
 
 ## 可选：绑定自定义域名
 
-1. 确保域名已添加到 Cloudflare
-2. 删除域名已有的 A/CNAME 记录
-3. 在 `wrangler.toml` 中添加：
+如果你有自己的域名且已添加到 Cloudflare：
+
+1. 在 `wrangler.toml` 中添加：
 
 ```toml
 [[routes]]
@@ -126,43 +176,103 @@ pattern = "your-domain.com"
 custom_domain = true
 ```
 
-4. 重新部署：`npm run deploy`
+2. 将 `APP_URL` 更新为自定义域名：
 
-## 数据库迁移
-
-首次部署后，需要按顺序执行 `drizzle/` 目录下的所有迁移文件。迁移文件以数字编号，必须按顺序执行：
-
-```bash
-# 查看所有迁移文件
-ls drizzle/*.sql
-
-# 逐个执行（远程）
-npx wrangler d1 execute neogroup --remote --file=drizzle/0000_peaceful_white_tiger.sql
-npx wrangler d1 execute neogroup --remote --file=drizzle/0001_xxx.sql
-# ... 依次执行所有 .sql 文件
+```toml
+[vars]
+APP_URL = "https://your-domain.com"
 ```
 
-**重要**：新部署必须执行所有迁移文件，否则会缺少表或字段导致运行时错误。
+3. 重新部署：`npm run deploy`
 
-最近新增迁移示例：
+> **重要**：ActivityPub 身份绑定域名（如 `user@your-domain.com`），更换域名后已有的联邦关注关系会断开。请在首次部署时就确定好域名。
+
+## 可选：启用图片上传（R2）
+
+如果需要用户上传头像和图片：
+
+1. 创建 R2 存储桶：
 
 ```bash
-# 站内关注（user_follow）
-npx wrangler d1 execute neogroup --remote --file=drizzle/0015_user_follow.sql
+npx wrangler r2 bucket create neogroup-uploads
 ```
 
-## ActivityPub 注意事项
+2. 在 `wrangler.toml` 中取消 R2 部分的注释：
 
-- ActivityPub 需要 HTTPS + 自定义域名才能正常工作（`.workers.dev` 域名也可以，但建议用自定义域名）
-- 用户的 AP 身份绑定域名（如 `user@neogrp.club`），**更换域名后 AP 身份会失效**，已有的关注关系会断开
-- 用户首次被 AP 请求访问时会自动生成密钥对，无需额外配置
-- Backfill 端点 (`POST /ap/users/:username/backfill`) 可以将已有话题推送给关注者，需要登录后访问
+```toml
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "neogroup-uploads"
+```
+
+3. 重新部署：`npm run deploy`
+
+## Agent 自动化脚本
+
+如果你是 AI Agent，可以按以下流程自动执行。每一步都有预期输出，用于验证是否成功。
+
+```bash
+# 1. 安装依赖
+npm install
+
+# 2. 从模板创建配置文件
+cp wrangler.toml.example wrangler.toml
+
+# 3. 登录 Cloudflare（需要用户在浏览器中操作）
+npx wrangler login
+
+# 4. 创建 D1 数据库并提取 ID
+#    如果已存在，从 list 命令获取
+D1_OUTPUT=$(npx wrangler d1 create neogroup 2>&1) || true
+D1_ID=$(echo "$D1_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+if [ -z "$D1_ID" ]; then
+  D1_ID=$(npx wrangler d1 list 2>&1 | grep neogroup | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+fi
+echo "D1 ID: $D1_ID"
+
+# 5. 创建 KV 命名空间并提取 ID
+#    如果已存在，从 list 命令获取
+KV_OUTPUT=$(npx wrangler kv namespace create KV 2>&1) || true
+KV_ID=$(echo "$KV_OUTPUT" | grep -oE '[0-9a-f]{32}')
+if [ -z "$KV_ID" ]; then
+  KV_ID=$(npx wrangler kv namespace list 2>&1 | grep -A1 "KV" | grep -oE '[0-9a-f]{32}')
+fi
+echo "KV ID: $KV_ID"
+
+# 6. 更新 wrangler.toml（跨平台兼容写法）
+#    Agent 建议直接用文件编辑工具替换，而不是 sed
+#    如果必须用 sed：
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  sed -i '' "s/your-database-id-here/$D1_ID/" wrangler.toml
+  sed -i '' "s/your-kv-namespace-id-here/$KV_ID/" wrangler.toml
+else
+  sed -i "s/your-database-id-here/$D1_ID/" wrangler.toml
+  sed -i "s/your-kv-namespace-id-here/$KV_ID/" wrangler.toml
+fi
+
+# 7. 初始化数据库（本地 + 远程，执行全部迁移文件）
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --local --file="$f"
+done
+for f in drizzle/*.sql; do
+  npx wrangler d1 execute neogroup --remote --file="$f"
+done
+
+# 8. 部署
+npm run deploy
+# 从输出中提取 Workers URL，更新 wrangler.toml 的 APP_URL，然后再次部署
+
+# 9. 验证
+# 访问 Workers URL 确认首页可加载
+```
+
+> **提示**：Agent 使用文件编辑工具（如 Edit）直接修改 `wrangler.toml` 比用 `sed` 更可靠。
 
 ## 常见问题
 
 ### Q: 登录时提示回调地址无效？
 
-Mastodon 应用是按域名注册的。如果你更换了部署域名，需要清空 mastodon_app 表让系统重新注册：
+Mastodon 应用是按域名注册的。如果你更换了部署域名，需要清空 mastodon_app 表：
 
 ```bash
 npx wrangler d1 execute neogroup --remote --command="DELETE FROM mastodon_app;"
@@ -180,58 +290,14 @@ npx wrangler d1 execute neogroup --remote --command="SELECT * FROM user LIMIT 10
 npx wrangler tail
 ```
 
-如果遇到 Wrangler 写日志文件权限问题（`EPERM`），可以用：
+如果遇到权限问题（`EPERM`）：
 
 ```bash
 WRANGLER_LOG=none npx wrangler tail neogroup --format=pretty
 ```
 
-## 项目技术栈
+### Q: ActivityPub 联邦需要注意什么？
 
-| 组件 | 技术 |
-|-----|------|
-| Web 框架 | Hono |
-| 运行时 | Cloudflare Workers |
-| 数据库 | Cloudflare D1 (SQLite) |
-| ORM | Drizzle |
-| 会话存储 | Cloudflare KV |
-| 认证 | Mastodon OAuth2 |
-| 模板引擎 | Hono JSX (SSR) |
-| 样式 | 原生 CSS (豆瓣风格) |
-
-## Agent 自动化脚本
-
-如果你是 AI Agent，可以按以下顺序执行命令来自动设置环境：
-
-```bash
-# 1. 安装依赖
-npm install
-
-# 2. 从模板创建配置文件
-cp wrangler.toml.example wrangler.toml
-
-# 3. 登录 Cloudflare（需要用户交互）
-npx wrangler login
-
-# 4. 创建 D1 数据库并提取 ID
-D1_OUTPUT=$(npx wrangler d1 create neogroup 2>&1)
-D1_ID=$(echo "$D1_OUTPUT" | grep -o 'database_id = "[^"]*"' | cut -d'"' -f2)
-
-# 5. 创建 KV 命名空间并提取 ID
-KV_OUTPUT=$(npx wrangler kv namespace create KV 2>&1)
-KV_ID=$(echo "$KV_OUTPUT" | grep -o 'id = "[^"]*"' | cut -d'"' -f2)
-
-# 6. 更新 wrangler.toml 中的 ID
-sed -i '' "s/your-database-id-here/$D1_ID/" wrangler.toml
-sed -i '' "s/your-kv-namespace-id-here/$KV_ID/" wrangler.toml
-
-# 7. 初始化数据库（执行所有迁移文件）
-for f in drizzle/*.sql; do
-  npx wrangler d1 execute neogroup --local --file="$f"
-done
-
-# 8. 启动开发服务器
-npm run dev
-```
-
-**注意：** `wrangler.toml` 已加入 `.gitignore`，不会被提交到仓库，避免泄露你的资源 ID。
+- `.workers.dev` 域名可以使用 ActivityPub，但建议用自定义域名
+- 用户 AP 身份绑定域名（如 `user@neogrp.club`），**更换域名后关注关系会断开**
+- 用户首次被 AP 请求访问时自动生成密钥对，无需额外配置
