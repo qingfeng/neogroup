@@ -374,7 +374,7 @@ export default {
   fetch: app.fetch,
   // No cron triggers configured (legacy polling removed)
   scheduled: async (_event: ScheduledEvent, _env: Bindings, _ctx: ExecutionContext) => {},
-  // Nostr Queue consumer: batch signed events and broadcast to Mac Mini
+  // Nostr Queue consumer: publish signed events directly to relays via WebSocket
   async queue(batch: MessageBatch, env: Bindings) {
     const events: any[] = []
     for (const msg of batch.messages) {
@@ -386,25 +386,28 @@ export default {
 
     if (events.length === 0) return
 
-    if (!env.NOSTR_BRIDGE_URL || !env.NOSTR_BRIDGE_TOKEN) {
-      console.error('[Nostr Queue] Missing NOSTR_BRIDGE_URL or NOSTR_BRIDGE_TOKEN')
+    const relayUrls = (env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
+    if (relayUrls.length === 0) {
+      console.error('[Nostr] No relays configured (NOSTR_RELAYS)')
       return
     }
 
-    const res = await fetch(`${env.NOSTR_BRIDGE_URL}/broadcast`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${env.NOSTR_BRIDGE_TOKEN}`,
-      },
-      body: JSON.stringify({ events }),
-    })
-
-    if (!res.ok) {
-      throw new Error(`[Nostr Queue] Bridge broadcast failed: ${res.status}`)
+    let successCount = 0
+    for (const relayUrl of relayUrls) {
+      try {
+        const ok = await publishToRelay(relayUrl, events)
+        console.log(`[Nostr] ${relayUrl}: ${ok}/${events.length} events accepted`)
+        if (ok > 0) successCount++
+      } catch (e) {
+        console.error(`[Nostr] ${relayUrl} failed:`, e)
+      }
     }
 
-    console.log(`[Nostr Queue] Broadcast ${events.length} events`)
+    if (successCount === 0) {
+      throw new Error(`[Nostr] Failed to publish to any relay (${relayUrls.length} tried)`)
+    }
+
+    console.log(`[Nostr] Published ${events.length} events to ${successCount}/${relayUrls.length} relays`)
   },
 }
 
@@ -433,4 +436,56 @@ function getContentType(ext: string): string {
     webp: 'image/webp',
   }
   return types[ext] || 'image/png'
+}
+
+// Publish Nostr events to a single relay via WebSocket
+async function publishToRelay(relayUrl: string, events: any[]): Promise<number> {
+  // Workers use fetch with Upgrade header for outbound WebSocket
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://')
+  const resp = await fetch(httpUrl, {
+    headers: { Upgrade: 'websocket' },
+  })
+
+  const ws = (resp as any).webSocket as WebSocket
+  if (!ws) {
+    throw new Error('WebSocket upgrade failed')
+  }
+  ws.accept()
+
+  return new Promise<number>((resolve) => {
+    let okCount = 0
+    const timeout = setTimeout(() => {
+      try { ws.close() } catch {}
+      resolve(okCount)
+    }, 10000)
+
+    ws.addEventListener('message', (msg: MessageEvent) => {
+      try {
+        const data = JSON.parse(msg.data as string)
+        if (Array.isArray(data) && data[0] === 'OK') {
+          okCount++
+          if (okCount >= events.length) {
+            clearTimeout(timeout)
+            try { ws.close() } catch {}
+            resolve(okCount)
+          }
+        }
+      } catch {}
+    })
+
+    ws.addEventListener('close', () => {
+      clearTimeout(timeout)
+      resolve(okCount)
+    })
+
+    ws.addEventListener('error', () => {
+      clearTimeout(timeout)
+      resolve(okCount)
+    })
+
+    // Send all events
+    for (const event of events) {
+      ws.send(JSON.stringify(['EVENT', event]))
+    }
+  })
 }

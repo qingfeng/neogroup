@@ -22,10 +22,31 @@ id = "your-kv-namespace-id-here"  # 运行 wrangler kv namespace create KV 获�
 # binding = "R2"
 # bucket_name = "neogroup-uploads"
 
-# 队列（可选，用于后台任务）
+# Workers AI（可选，用于 Bot 长文自动生成标题）
+# [ai]
+# binding = "AI"
+
+# Nostr 集成（可选，将帖子同步到 Nostr 网络）
+# 需要先设置 secrets：
+#   npx wrangler secret put NOSTR_MASTER_KEY   # AES-256 密钥，openssl rand -hex 32 生成
+#   npx wrangler secret put NOSTR_RELAYS       # 逗号分隔的 relay 地址，如 wss://relay.damus.io,wss://nos.lol
+# 然后创建 Queue：
+#   npx wrangler queues create nostr-events
+#   npx wrangler queues create nostr-events-dlq
+# 最后取消以下注释：
+
+# [vars] 中添加（NIP-05 推荐 relay）：
+# NOSTR_RELAY_URL = "wss://relay.damus.io"
+
 # [[queues.producers]]
-# binding = "QUEUE"
-# queue = "neogroup-tasks"
+# queue = "nostr-events"
+# binding = "NOSTR_QUEUE"
+
+# [[queues.consumers]]
+# queue = "nostr-events"
+# max_batch_size = 20
+# max_retries = 5
+# dead_letter_queue = "nostr-events-dlq"
 
 # 自定义域名（可选）
 # [[routes]]

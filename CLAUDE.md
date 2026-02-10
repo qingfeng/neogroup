@@ -217,14 +217,17 @@ src/
 
 ### 架构
 
-采用 Cloudflare Worker + Mac Mini 分离架构：
+全部运行在 Cloudflare 上，无需额外服务器：
 
-- **Cloudflare Worker**（大脑）：密钥生成、AES-GCM 加密存储、解密签名、NIP-05 认证
-- **Cloudflare Queue**（管道）：可靠传递已签名 event 到 Mac Mini
-- **Mac Mini broadcaster**（广播塔）：通过 WebSocket 长连接池将 event 推送到 Nostr relay
-- **本地 nostr-rs-relay**（档案馆）：持久化存储所有 event
+```
+Worker（签名）→ Queue → Consumer（同一 Worker）→ WebSocket 直连 Nostr relay
+```
 
-Mac Mini 不接触任何私钥，只接收已签名的 event（公开数据）。
+- **Cloudflare Worker**：密钥生成、AES-GCM 加密存储、解密签名、NIP-05 认证
+- **Cloudflare Queue**：可靠投递，自动重试（最多 5 次），失败进 Dead Letter Queue
+- **Queue Consumer**：从 Queue 取出已签名 event，通过短连接 WebSocket 直接发布到公共 relay
+
+Nostr event 有唯一 ID，relay 自动去重，重试安全。
 
 ### 密钥管理
 
@@ -256,9 +259,8 @@ Mac Mini 不接触任何私钥，只接收已签名的 event（公开数据）�
 | 变量 | 类型 | 说明 |
 |------|------|------|
 | `NOSTR_MASTER_KEY` | Secret | AES-256 主密钥（64 位 hex） |
-| `NOSTR_BRIDGE_TOKEN` | Secret | Mac Mini 通信认证 token |
-| `NOSTR_BRIDGE_URL` | Secret | Mac Mini broadcaster URL |
-| `NOSTR_RELAY_URL` | Var | NIP-05 返回的推荐 relay URL |
+| `NOSTR_RELAYS` | Secret | 逗号分隔的 relay WebSocket URL 列表 |
+| `NOSTR_RELAY_URL` | Var | NIP-05 返回的推荐 relay（默认取 NOSTR_RELAYS 第一个） |
 | `NOSTR_QUEUE` | Queue binding | Cloudflare Queue（`nostr-events`） |
 
 ### 用户设置页
@@ -268,19 +270,17 @@ Mac Mini 不接触任何私钥，只接收已签名的 event（公开数据）�
 - `POST /user/:id/nostr/disable` — 关闭同步（保留密钥，可重新激活）
 - `GET /user/:id/nostr/export` — 导出密钥（npub 公开显示，nsec 需确认后显示）
 
-### Mac Mini 部署架构
+### Queue Consumer（WebSocket 直连 relay）
 
-Mac Mini 运行三个服务：
+Queue Consumer 在 Worker 内运行（`src/index.ts`），接收一批 event 后：
 
-| 服务 | 端口 | 说明 |
-|------|------|------|
-| broadcaster | 3000 | 接收 Worker 投递的已签名 event，推送到 relay |
-| nostr-rs-relay | 8080 | 本地档案 relay，纯本地不对外暴露 |
-| cloudflared tunnel | — | 只暴露 `bridge.neogrp.club` → localhost:3000 |
+1. 依次连接每个 relay（`NOSTR_RELAYS` 列表）
+2. 通过 WebSocket 发送 `["EVENT", signed_event]`
+3. 等待 `["OK", event_id, true/false]` 响应（10 秒超时）
+4. 关闭连接
+5. 只要有一个 relay 成功就算通过，全部失败则抛错触发 Queue 重试
 
-- **broadcaster**（`broadcaster/` 目录）：Node.js + nostr-tools，接收 `POST /broadcast`（Bearer Token 认证），维护 WebSocket 长连接池，纯推不拉
-- **nostr-rs-relay**：本地 Rust relay，只监听 127.0.0.1，broadcaster 通过 `ws://localhost:8080` 写入，作为私人备份
-- **Cloudflare Tunnel**：只暴露 bridge 域名给 Worker 调用，relay 不对外暴露。NIP-05 中推荐的 relay 指向公共 relay（如 `wss://relay.damus.io`），Nostr 客户端从公共 relay 读取内容
+无需外部服务器、无需 tunnel、无需 Mac Mini。
 
 ### 历史内容回填
 
@@ -293,8 +293,7 @@ Mac Mini 运行三个服务：
 - `src/routes/user.tsx` — Nostr 设置页面、开启/关闭/导出
 - `src/routes/group.tsx` — 发帖时 Nostr 同步（Kind 1）
 - `src/routes/topic.tsx` — 评论时 Nostr 同步（Kind 1 + e tag）
-- `src/index.ts` — Queue consumer（批量发送到 Mac Mini）
-- `broadcaster/index.js` — Mac Mini broadcaster 服务
+- `src/index.ts` — Queue consumer（WebSocket 直连 relay 发布）
 
 ## 常用命令
 

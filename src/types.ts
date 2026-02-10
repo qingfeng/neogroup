@@ -12,8 +12,7 @@ export type Bindings = {
   MASTODON_BOT_TOKEN?: string
   MASTODON_BOT_DOMAIN?: string
   NOSTR_MASTER_KEY?: string
-  NOSTR_BRIDGE_URL?: string
-  NOSTR_BRIDGE_TOKEN?: string
+  NOSTR_RELAYS?: string
   NOSTR_RELAY_URL?: string
 }
 
