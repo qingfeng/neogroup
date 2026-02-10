@@ -964,11 +964,11 @@ user.post('/:id/nostr/enable', async (c) => {
       updatedAt: new Date(),
     }).where(eq(users.id, userId))
 
-    // 广播 Kind 0 (metadata)
+    // 广播 Kind 0 (metadata) + 历史内容回填
     const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
     const host = new URL(baseUrl).host
     if (c.env.NOSTR_QUEUE) {
-      const event = await buildSignedEvent({
+      const metadataEvent = await buildSignedEvent({
         privEncrypted,
         iv,
         masterKey: c.env.NOSTR_MASTER_KEY,
@@ -981,10 +981,68 @@ user.post('/:id/nostr/enable', async (c) => {
         }),
         tags: [],
       })
-      await c.env.NOSTR_QUEUE.send({ events: [event] })
+      await c.env.NOSTR_QUEUE.send({ events: [metadataEvent] })
+
+      // 回填历史话题（在后台执行，不阻塞用户响应）
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const userTopics = await db
+            .select({
+              id: topics.id,
+              title: topics.title,
+              content: topics.content,
+              createdAt: topics.createdAt,
+              nostrEventId: topics.nostrEventId,
+            })
+            .from(topics)
+            .where(eq(topics.userId, userId))
+            .orderBy(topics.createdAt)
+
+          const BATCH_SIZE = 10
+          for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
+            const batch = userTopics.slice(i, i + BATCH_SIZE)
+            const events = []
+
+            for (const t of batch) {
+              if (t.nostrEventId) continue // 已同步过
+
+              const textContent = t.content ? stripHtml(t.content).trim() : ''
+              const noteContent = textContent
+                ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
+                : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
+
+              const event = await buildSignedEvent({
+                privEncrypted,
+                iv,
+                masterKey: c.env.NOSTR_MASTER_KEY!,
+                kind: 1,
+                content: noteContent,
+                tags: [
+                  ['r', `${baseUrl}/topic/${t.id}`],
+                  ['client', 'NeoGroup'],
+                ],
+                createdAt: Math.floor(t.createdAt.getTime() / 1000),
+              })
+
+              await db.update(topics)
+                .set({ nostrEventId: event.id })
+                .where(eq(topics.id, t.id))
+
+              events.push(event)
+            }
+
+            if (events.length > 0) {
+              await c.env.NOSTR_QUEUE!.send({ events })
+            }
+          }
+          console.log(`[Nostr] Backfilled ${userTopics.filter(t => !t.nostrEventId).length} topics for user ${userId}`)
+        } catch (e) {
+          console.error('[Nostr] Backfill failed:', e)
+        }
+      })())
     }
 
-    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 身份已创建，同步已开启')}`)
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 身份已创建，同步已开启，历史内容正在后台同步')}`)
   } catch (error) {
     console.error('Failed to generate Nostr keypair:', error)
     return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('创建失败，请稍后重试')}`)
