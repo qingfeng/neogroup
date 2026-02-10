@@ -27,7 +27,7 @@ cd neogroup
 
 后续步骤参考 **[skill.md](./skill.md)** —— 这是一份 AI Agent 友好的部署指南，你可以让 Claude Code、Cursor 等 AI 工具读取它，自动完成全部部署流程。
 
-> **Cloudflare 免费版**包含 Workers、D1 数据库、KV 存储，足以运行完整的 NeoGroup 实例。图片上传（R2）和 AI 标题生成为可选功能。
+> **Cloudflare 免费版**包含 Workers、D1 数据库、KV 存储，足以运行完整的 NeoGroup 实例。图片上传（R2）、AI 标题生成、Nostr 同步（Queue）均为可选功能。
 
 ## 功能特性
 
@@ -37,6 +37,7 @@ cd neogroup
 - **ActivityPub 联邦** — 每个用户和小组都是 Fediverse Actor，外部用户可以关注并接收更新
 - **Mastodon 同步** — 评论同步到 Mastodon，Mastodon 上的回复同步回网站
 - **书影音卡片** — 编辑器内粘贴 NeoDB 链接自动生成卡片
+- **Nostr 同步** — 一键将帖子同步到 Nostr 去中心化网络，支持 NIP-05 身份验证
 - **站内关注** — 关注其他用户，接收通知
 
 ## 去中心化架构
@@ -47,15 +48,15 @@ cd neogroup
 │  my.group    │                     │  neogrp.club │
 └──────┬───────┘                     └──────┬───────┘
        │                                     │
-       │         ActivityPub                 │
-       ▼                                     ▼
-┌──────────────┐                     ┌──────────────┐
-│  Mastodon    │                     │  Misskey     │
-│  实例        │                     │  实例        │
-└──────────────┘                     └──────────────┘
+       │    ActivityPub          Nostr        │
+       ▼                           ▼         ▼
+┌──────────────┐           ┌──────────────┐
+│  Mastodon    │           │  Nostr       │
+│  Misskey ... │           │  Relays      │
+└──────────────┘           └──────────────┘
 ```
 
-每个 NeoGroup 实例的用户和小组都有 ActivityPub 身份（如 `user@my.group`），可以被任何 Mastodon、Misskey 等 Fediverse 平台的用户关注和互动。
+每个 NeoGroup 实例的用户和小组都有 ActivityPub 身份（如 `user@my.group`），可以被任何 Mastodon、Misskey 等 Fediverse 平台的用户关注和互动。用户还可以开启 Nostr 同步，将帖子同步到 Nostr 网络，并通过 NIP-05 验证身份（如 `user@my.group`）。
 
 ## 技术栈
 
@@ -69,7 +70,7 @@ cd neogroup
 | 文件存储 | Cloudflare R2（可选） |
 | AI | Cloudflare Workers AI（可选） |
 | 认证 | Mastodon OAuth2 |
-| 联邦协议 | ActivityPub |
+| 联邦协议 | ActivityPub + Nostr |
 | 模板引擎 | Hono JSX (SSR) |
 
 ## 文档
