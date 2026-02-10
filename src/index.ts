@@ -280,10 +280,11 @@ app.get('/api/toot-preview', async (c) => {
 
   try {
     // 使用 ActivityPub 获取 toot 数据
+    const appName = c.env.APP_NAME || 'NeoGroup'
     const response = await fetch(url, {
       headers: {
         'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
-        'User-Agent': 'NeoGroup/1.0',
+        'User-Agent': `${appName}/1.0`,
       },
     })
 
@@ -306,7 +307,7 @@ app.get('/api/toot-preview', async (c) => {
         const actorRes = await fetch(attributedTo, {
           headers: {
             'Accept': 'application/activity+json',
-            'User-Agent': 'NeoGroup/1.0',
+            'User-Agent': `${appName}/1.0`,
           },
         })
         if (actorRes.ok) {

@@ -145,7 +145,11 @@ async function processMention(
   // 创建话题
   const topicId = generateId()
   const now = new Date()
-  const baseUrl = env.APP_URL || 'https://neogrp.club'
+  if (!env.APP_URL) {
+    console.error('APP_URL is required for Mastodon bot')
+    return
+  }
+  const baseUrl = env.APP_URL
 
   await db.insert(topics).values({
     id: topicId,

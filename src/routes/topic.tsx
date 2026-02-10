@@ -303,6 +303,7 @@ topic.get('/:id', async (c) => {
       ogType="article"
       jsonLd={jsonLd}
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={c.env.APP_NAME}
     >
       <div class="topic-page-layout">
         <div class="topic-detail">
@@ -892,7 +893,7 @@ topic.post('/:id/comment', async (c) => {
 
         const tags: string[][] = [
           ['r', `${baseUrl}/topic/${topicId}`],
-          ['client', 'NeoGroup'],
+          ['client', c.env.APP_NAME || 'NeoGroup'],
         ]
 
         // Thread linking: reference topic's Nostr event as root
@@ -1531,7 +1532,7 @@ topic.get('/:id/edit', async (c) => {
   }
 
   return c.html(
-    <Layout user={user} title={`编辑话题 - ${topicData.title}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title={`编辑话题 - ${topicData.title}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">

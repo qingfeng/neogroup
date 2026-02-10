@@ -112,7 +112,7 @@ notification.get('/', async (c) => {
   const unreadCount = c.get('unreadNotificationCount') || 0
 
   return c.html(
-    <Layout user={user} title="提醒" unreadCount={0}>
+    <Layout user={user} title="提醒" unreadCount={0} siteName={c.env.APP_NAME}>
       <div class="notification-page">
         <h1>提醒</h1>
 

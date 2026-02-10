@@ -4,13 +4,14 @@ import type { User } from '../db/schema'
 interface NavbarProps {
   user: User | null
   unreadCount?: number
+  siteName?: string
 }
 
-export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0 }) => {
+export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => {
   return (
     <nav class="navbar">
       <div class="navbar-brand">
-        <a href="/">NeoGroup</a>
+        <a href="/">{siteName || 'NeoGroup'}</a>
       </div>
       <div class="navbar-menu">
         {user ? (

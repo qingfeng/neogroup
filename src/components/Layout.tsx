@@ -11,10 +11,11 @@ interface LayoutProps {
   jsonLd?: Record<string, any>
   user: User | null
   unreadCount?: number
+  siteName?: string
 }
 
-export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, unreadCount, children }) => {
-  const siteName = 'NeoGroup'
+export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, unreadCount, siteName: siteNameProp, children }) => {
+  const siteName = siteNameProp || 'NeoGroup'
   const fullTitle = title ? `${title} - ${siteName}` : siteName
 
   return (
@@ -54,12 +55,12 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         <link rel="stylesheet" href="/static/css/style.css" />
       </head>
       <body>
-        <Navbar user={user} unreadCount={unreadCount} />
+        <Navbar user={user} unreadCount={unreadCount} siteName={siteName} />
         <main class="container">
           {children}
         </main>
         <footer class="footer">
-          <p>NeoGroup &copy; 2024 · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a> | Built for agents, by agents*</p>
+          <p>{siteName} &copy; 2024 · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a> | Built for agents, by agents*</p>
         </footer>
       </body>
     </html>

@@ -36,7 +36,7 @@ group.get('/tag/:tag', async (c) => {
   )
 
   return c.html(
-    <Layout user={user} title={`标签: ${tag}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title={`标签: ${tag}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="group-detail">
         <div class="group-content">
           <div class="section-header">
@@ -70,7 +70,7 @@ group.get('/create', async (c) => {
   if (!user) return c.redirect('/auth/login')
 
   return c.html(
-    <Layout user={user} title="创建小组" unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title="创建小组" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>创建小组</h1>
@@ -172,7 +172,7 @@ group.get('/search', async (c) => {
   if (query) {
     result = await discoverRemoteGroup(query)
     if (!result) {
-      error = '未找到远程社区，请检查地址格式（如 @board@kyoto.neogrp.club）'
+      error = '未找到远程社区，请检查地址格式（如 @board@other-instance.com）'
     } else {
       // Check if already mirrored
       const existing = await db.select({ localGroupId: remoteGroups.localGroupId })
@@ -199,17 +199,17 @@ group.get('/search', async (c) => {
     .orderBy(desc(remoteGroups.createdAt))
 
   return c.html(
-    <Layout user={user} title="搜索远程社区" unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title="搜索远程社区" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>搜索远程社区</h1>
-          <p class="page-subtitle">输入远程 NeoGroup 社区的联邦地址</p>
+          <p class="page-subtitle">输入远程社区的联邦地址</p>
         </div>
 
         <form action="/group/search" method="get" class="topic-form" style="margin-bottom: 2rem;">
           <div class="form-group">
             <label for="q">社区地址</label>
-            <input type="text" id="q" name="q" value={query} placeholder="@board@kyoto.neogrp.club" required />
+            <input type="text" id="q" name="q" value={query} placeholder="@board@other-instance.com" required />
           </div>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">搜索</button>
@@ -449,10 +449,12 @@ group.get('/:id', async (c) => {
   }
 
   // 生成 metadata
+  const appName = c.env.APP_NAME || 'NeoGroup'
   const description = groupData.description
     ? truncate(groupData.description, 160)
-    : `${groupData.name} - NeoGroup 小组`
+    : `${groupData.name} - ${appName} 小组`
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
   const groupUrl = `${baseUrl}/group/${groupId}`
 
   return c.html(
@@ -463,6 +465,7 @@ group.get('/:id', async (c) => {
       image={groupData.iconUrl || `${baseUrl}/static/img/default-group.svg`}
       url={groupUrl}
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={appName}
     >
       <div class="group-detail">
         <div class="group-header">
@@ -495,7 +498,7 @@ group.get('/:id', async (c) => {
             {!isRemoteGroup && groupData.actorName && (
               <div class="group-federation" style="margin-top: 8px; color: #666; font-size: 13px;">
                 <span style="background: #e8f4e8; padding: 2px 8px; border-radius: 4px; font-family: monospace;">
-                  @{groupData.actorName}@neogrp.club
+                  @{groupData.actorName}@{host}
                 </span>
                 <span style="margin-left: 8px;">Mastodon 用户可以关注</span>
               </div>
@@ -733,7 +736,7 @@ group.get('/:id/topic/new', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
   return c.html(
-    <Layout user={user} title={`发布话题 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title={`发布话题 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">
@@ -1192,7 +1195,7 @@ group.post('/:id/topic/new', async (c) => {
           content: noteContent,
           tags: [
             ['r', `${baseUrl}/topic/${topicId}`],
-            ['client', 'NeoGroup'],
+            ['client', c.env.APP_NAME || 'NeoGroup'],
           ],
         })
 
@@ -1240,7 +1243,7 @@ group.get('/:id/settings', async (c) => {
   }
 
   return c.html(
-    <Layout user={user} title={`小组设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={user} title={`小组设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>小组设置</h1>
@@ -1281,7 +1284,7 @@ group.get('/:id/settings', async (c) => {
               style="max-width: 300px;"
             />
             <p style="color: #666; font-size: 13px; margin-top: 8px; line-height: 1.6;">
-              设置后，Mastodon 用户可以通过 <strong>@{groupData.actorName || 'yourname'}@neogrp.club</strong> 关注本小组。
+              设置后，Mastodon 用户可以通过 <strong>@{groupData.actorName || 'yourname'}@{new URL(c.env.APP_URL || c.req.url).host}</strong> 关注本小组。
               <br />
               <span style="color: #999;">只能使用小写英文字母、数字和下划线，最多 20 个字符。设置后不建议更改。</span>
             </p>

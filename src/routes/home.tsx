@@ -202,6 +202,7 @@ home.get('/', async (c) => {
       remoteGroupDomains={remoteGroupDomains}
       baseUrl={baseUrl}
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={c.env.APP_NAME}
     />
   )
 })

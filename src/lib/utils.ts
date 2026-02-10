@@ -231,7 +231,8 @@ export async function uploadAvatarToR2(
   r2: R2Bucket | undefined,
   userId: string,
   avatarUrl: string,
-  siteUrl: string
+  siteUrl: string,
+  appName?: string
 ): Promise<string> {
   if (!r2 || !avatarUrl) {
     return avatarUrl
@@ -250,7 +251,7 @@ export async function uploadAvatarToR2(
   try {
     // 下载头像
     const response = await fetch(avatarUrl, {
-      headers: { 'User-Agent': 'NeoGroup/1.0' },
+      headers: { 'User-Agent': `${appName || 'NeoGroup'}/1.0` },
     })
 
     if (!response.ok) {

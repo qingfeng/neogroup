@@ -120,7 +120,7 @@ user.get('/:id', async (c) => {
   // Support multiple lookup formats:
   // 1. User ID: /user/9hhVvIB2BRAR
   // 2. Username: /user/qingfeng
-  // 3. AP handle: /user/@qingfeng@neogrp.club
+  // 3. AP handle: /user/@qingfeng@your-domain.com
   let lookupName = rawId
 
   // Check for @username@domain format
@@ -297,10 +297,11 @@ user.get('/:id', async (c) => {
   const followingCount = followingCountRow[0]?.count || 0
 
   // 生成 metadata
+  const appName = c.env.APP_NAME || 'NeoGroup'
   const displayName = profileUser.displayName || profileUser.username
   const description = profileUser.bio
     ? truncate(stripHtml(profileUser.bio), 160)
-    : `${displayName} 的个人主页 - NeoGroup`
+    : `${displayName} 的个人主页 - ${appName}`
   const userUrl = `${baseUrl}/user/${profileUser.username}`
 
   return c.html(
@@ -311,6 +312,7 @@ user.get('/:id', async (c) => {
       image={profileUser.avatarUrl || `${baseUrl}/static/img/default-avatar.svg`}
       url={userUrl}
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={appName}
     >
       <div class="user-profile">
         <div class="profile-header">
@@ -467,7 +469,7 @@ user.get('/:id/following', async (c) => {
   )
 
   return c.html(
-    <Layout user={c.get('user')} title={`关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={c.get('user')} title={`关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="profile-list-page">
         <h1>@{profileUser.username} 关注了 ({following.length})</h1>
         {following.length === 0 ? (
@@ -556,7 +558,7 @@ user.get('/:id/followers', async (c) => {
   ].sort((a, b) => (b.createdAt as any) - (a.createdAt as any))
 
   return c.html(
-    <Layout user={c.get('user')} title={`被关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')}>
+    <Layout user={c.get('user')} title={`被关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="profile-list-page">
         <h1>关注 @{profileUser.username} 的人 ({merged.length})</h1>
         {merged.length === 0 ? (
@@ -623,6 +625,7 @@ user.get('/:id/edit', async (c) => {
       user={currentUser}
       title="编辑资料"
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={c.env.APP_NAME}
     >
       <div class="edit-profile-page">
         <h1>编辑资料</h1>
@@ -818,11 +821,14 @@ user.get('/:id/nostr', async (c) => {
   const npub = profileUser.nostrPubkey ? pubkeyToNpub(profileUser.nostrPubkey) : null
   const message = c.req.query('msg')
 
+  const appName = c.env.APP_NAME || 'NeoGroup'
+
   return c.html(
     <Layout
       user={currentUser}
       title="Nostr 设置"
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={appName}
     >
       <div class="edit-profile-page">
         <h1>Nostr 设置</h1>
@@ -897,7 +903,7 @@ user.get('/:id/nostr', async (c) => {
           <div>
             <div class="nostr-info-box">
               <h2>连接到 Nostr 网络</h2>
-              <p>开启后，你在 NeoGroup 发布的话题和评论将自动同步到 Nostr 去中心化网络。</p>
+              <p>开启后，你在本站发布的话题和评论将自动同步到 Nostr 去中心化网络。</p>
               <ul>
                 <li>系统会为你生成一个 Nostr 身份（公私钥对）</li>
                 <li>你的用户名将获得 NIP-05 认证：<strong>{profileUser.username}@{host}</strong></li>
@@ -1019,7 +1025,7 @@ user.post('/:id/nostr/enable', async (c) => {
                 content: noteContent,
                 tags: [
                   ['r', `${baseUrl}/topic/${t.id}`],
-                  ['client', 'NeoGroup'],
+                  ['client', c.env.APP_NAME || 'NeoGroup'],
                 ],
                 createdAt: Math.floor(t.createdAt.getTime() / 1000),
               })
@@ -1112,6 +1118,7 @@ user.get('/:id/nostr/export', async (c) => {
       user={currentUser}
       title="导出 Nostr 密钥"
       unreadCount={c.get('unreadNotificationCount')}
+      siteName={c.env.APP_NAME}
     >
       <div class="edit-profile-page">
         <h1>导出 Nostr 密钥</h1>

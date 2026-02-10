@@ -25,13 +25,15 @@ auth.get('/login', (c) => {
     return c.redirect('/')
   }
 
+  const appName = c.env.APP_NAME || 'NeoGroup'
+
   return c.html(`
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>登录 - NeoGroup</title>
+      <title>登录 - ${appName}</title>
       <style>
         body { font-family: system-ui; max-width: 400px; margin: 50px auto; padding: 20px; }
         input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
@@ -40,7 +42,7 @@ auth.get('/login', (c) => {
       </style>
     </head>
     <body>
-      <h1>登录 NeoGroup</h1>
+      <h1>登录 ${appName}</h1>
       <form action="/auth/connect" method="get">
         <label>输入你的 Mastodon 实例域名：</label>
         <input type="text" name="domain" placeholder="mastodon.social" required />
@@ -119,6 +121,7 @@ auth.get('/callback', async (c) => {
   }
 
   const db = c.get('db')
+  const appName = c.env.APP_NAME || 'NeoGroup'
 
   try {
     // 获取应用凭证 (使用组合 key: mastodon域名:我们的域名)
@@ -172,7 +175,8 @@ auth.get('/callback', async (c) => {
         c.env.R2,
         userId,
         account.avatar,
-        appUrl
+        appUrl,
+        appName
       )
 
       // 更新用户信息
@@ -215,7 +219,8 @@ auth.get('/callback', async (c) => {
         c.env.R2,
         userId,
         account.avatar,
-        appUrl
+        appUrl,
+        appName
       )
 
       // 更新用户信息（头像、昵称）

@@ -28,21 +28,24 @@ interface HomePageProps {
   remoteGroupDomains?: Record<string, string>
   baseUrl: string
   unreadCount?: number
+  siteName?: string
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount }) => {
+export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount, siteName }) => {
+  const name = siteName || 'NeoGroup'
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
-    name: 'NeoGroup',
+    name,
     url: baseUrl,
-    description: 'NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区',
+    description: `${name} 是一个基于 Mastodon 登录的去中心化小组讨论社区`,
   }
 
   return (
     <Layout
       title="首页"
-      description="NeoGroup 是一个基于 Mastodon 登录的去中心化小组讨论社区"
+      description={`${name} 是一个基于 Mastodon 登录的去中心化小组讨论社区`}
+      siteName={name}
       image={`${baseUrl}/static/img/favicon.svg`}
       url={baseUrl}
       jsonLd={jsonLd}
