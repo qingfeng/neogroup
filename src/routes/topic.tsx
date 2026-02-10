@@ -9,6 +9,7 @@ import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
 import { deliverCommentToFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
+import { buildSignedEvent } from '../services/nostr'
 
 const topic = new Hono<AppContext>()
 
@@ -879,6 +880,56 @@ topic.post('/:id/comment', async (c) => {
           .catch(e => console.error('AP direct reply deliver failed:', e))
       )
     }
+  }
+
+  // Nostr: broadcast comment as Kind 1 event with threading tags
+  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+        const textContent = stripHtml(htmlContent)
+        const noteContent = `${textContent}\n\n🔗 ${baseUrl}/topic/${topicId}#comment-${commentId}`
+
+        const tags: string[][] = [
+          ['r', `${baseUrl}/topic/${topicId}`],
+          ['client', 'NeoGroup'],
+        ]
+
+        // Thread linking: reference topic's Nostr event as root
+        if (topicResult[0].nostrEventId) {
+          tags.push(['e', topicResult[0].nostrEventId, '', 'root'])
+        }
+
+        // If replying to a comment, reference it as reply
+        if (replyToId) {
+          const parentComment = await db.select({ nostrEventId: comments.nostrEventId })
+            .from(comments)
+            .where(eq(comments.id, replyToId))
+            .limit(1)
+          if (parentComment.length > 0 && parentComment[0].nostrEventId) {
+            tags.push(['e', parentComment[0].nostrEventId, '', 'reply'])
+          }
+        }
+
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 1,
+          content: noteContent,
+          tags,
+        })
+
+        await db.update(comments)
+          .set({ nostrEventId: event.id })
+          .where(eq(comments.id, commentId))
+
+        await c.env.NOSTR_QUEUE.send({ events: [event] })
+        console.log('[Nostr] Queued comment event:', event.id)
+      } catch (e) {
+        console.error('[Nostr] Failed to publish comment:', e)
+      }
+    })())
   }
 
   return c.redirect(`/topic/${topicId}`)

@@ -10,6 +10,11 @@ export const users = sqliteTable('user', {
   role: text('role'), // 'admin' = 超级管理员
   apPublicKey: text('ap_public_key'),
   apPrivateKey: text('ap_private_key'),
+  nostrPubkey: text('nostr_pubkey'),
+  nostrPrivEncrypted: text('nostr_priv_encrypted'),
+  nostrPrivIv: text('nostr_priv_iv'),
+  nostrKeyVersion: integer('nostr_key_version').default(1),
+  nostrSyncEnabled: integer('nostr_sync_enabled').default(0),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -71,6 +76,7 @@ export const topics = sqliteTable('topic', {
   mastodonStatusId: text('mastodon_status_id'),
   mastodonDomain: text('mastodon_domain'),
   mastodonSyncedAt: integer('mastodon_synced_at', { mode: 'timestamp' }),
+  nostrEventId: text('nostr_event_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -85,6 +91,7 @@ export const comments = sqliteTable('comment', {
   mastodonStatusId: text('mastodon_status_id'),
   mastodonDomain: text('mastodon_domain'),
   mastodonSyncedAt: integer('mastodon_synced_at', { mode: 'timestamp' }),
+  nostrEventId: text('nostr_event_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })

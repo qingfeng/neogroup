@@ -374,6 +374,38 @@ export default {
   fetch: app.fetch,
   // No cron triggers configured (legacy polling removed)
   scheduled: async (_event: ScheduledEvent, _env: Bindings, _ctx: ExecutionContext) => {},
+  // Nostr Queue consumer: batch signed events and broadcast to Mac Mini
+  async queue(batch: MessageBatch, env: Bindings) {
+    const events: any[] = []
+    for (const msg of batch.messages) {
+      const payload = msg.body as { events: any[] }
+      if (payload?.events) {
+        events.push(...payload.events)
+      }
+    }
+
+    if (events.length === 0) return
+
+    if (!env.NOSTR_BRIDGE_URL || !env.NOSTR_BRIDGE_TOKEN) {
+      console.error('[Nostr Queue] Missing NOSTR_BRIDGE_URL or NOSTR_BRIDGE_TOKEN')
+      return
+    }
+
+    const res = await fetch(`${env.NOSTR_BRIDGE_URL}/broadcast`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${env.NOSTR_BRIDGE_TOKEN}`,
+      },
+      body: JSON.stringify({ events }),
+    })
+
+    if (!res.ok) {
+      throw new Error(`[Nostr Queue] Bridge broadcast failed: ${res.status}`)
+    }
+
+    console.log(`[Nostr Queue] Broadcast ${events.length} events`)
+  },
 }
 
 function getExtFromFile(filename: string, mimeType: string): string {

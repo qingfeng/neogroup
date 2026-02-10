@@ -102,6 +102,36 @@ ap.get('/ap/users/:username', async (c) => {
   })
 })
 
+// --- NIP-05 Nostr Verification ---
+ap.get('/.well-known/nostr.json', async (c) => {
+  const name = c.req.query('name')
+  if (!name) {
+    return c.json({ names: {}, relays: {} }, 200, {
+      'Access-Control-Allow-Origin': '*',
+    })
+  }
+
+  const db = c.get('db')
+  const user = await db.select({ nostrPubkey: users.nostrPubkey })
+    .from(users)
+    .where(and(eq(users.username, name), eq(users.nostrSyncEnabled, 1)))
+    .limit(1)
+
+  if (user.length === 0 || !user[0].nostrPubkey) {
+    return c.json({ names: {}, relays: {} }, 200, {
+      'Access-Control-Allow-Origin': '*',
+    })
+  }
+
+  const relayUrl = c.env.NOSTR_RELAY_URL || 'wss://relay.damus.io'
+  return c.json({
+    names: { [name]: user[0].nostrPubkey },
+    relays: { [user[0].nostrPubkey]: [relayUrl] },
+  }, 200, {
+    'Access-Control-Allow-Origin': '*',
+  })
+})
+
 // --- Group Actor (FEP-1b12) ---
 ap.get('/ap/groups/:actorName', async (c) => {
   const actorName = c.req.param('actorName')

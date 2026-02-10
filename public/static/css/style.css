@@ -2102,3 +2102,116 @@ button.ql-neodb:hover::after {
 .btn-secondary:hover {
   background: #f0efe8;
 }
+
+/* Nostr 设置 */
+.nostr-identity-card {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.nostr-identity-card h2 {
+  font-size: 15px;
+  margin: 0 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.nostr-field {
+  margin-bottom: 16px;
+}
+
+.nostr-field:last-child {
+  margin-bottom: 0;
+}
+
+.nostr-field label {
+  display: block;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.nostr-value {
+  background: #faf9f5;
+  border: 1px solid #e8e8e8;
+  padding: 8px 12px;
+  border-radius: 2px;
+  word-break: break-all;
+}
+
+.nostr-value code {
+  font-size: 13px;
+  color: #333;
+}
+
+.nostr-nsec {
+  background: #fff8f0;
+  border-color: #f0c060;
+}
+
+.nostr-status-on {
+  color: #2e7d32;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.nostr-status-off {
+  color: #999;
+  font-size: 14px;
+}
+
+.nostr-info-box {
+  background: #faf9f5;
+  border: 1px solid #e8e8e8;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.nostr-info-box h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+.nostr-info-box p {
+  font-size: 14px;
+  color: #555;
+  margin: 0 0 8px;
+  line-height: 1.6;
+}
+
+.nostr-info-box ul {
+  padding-left: 20px;
+  margin: 8px 0 0;
+}
+
+.nostr-info-box li {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+
+.nostr-actions {
+  margin-top: 16px;
+}
+
+.nostr-warning {
+  background: #fff3e0;
+  border: 1px solid #f0c060;
+  color: #8b6914;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.nostr-message {
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  color: #2e7d32;
+  padding: 10px 14px;
+  font-size: 14px;
+  margin-bottom: 16px;
+}

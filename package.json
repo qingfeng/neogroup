@@ -17,6 +17,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "bech32": "^2.0.0",
     "hono": "^4.11.7",
     "nanoid": "^5.1.6"
   },

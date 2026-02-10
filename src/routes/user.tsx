@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { eq, desc, sql, and, or, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, topics, groups, comments, topicLikes, authProviders, userFollows, apFollowers } from '../db/schema'
+import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub, decryptNostrPrivkey, privkeyToNsec } from '../services/nostr'
 import { Layout } from '../components/Layout'
 import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml, generateId } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
@@ -669,6 +670,10 @@ user.get('/:id/edit', async (c) => {
             <button type="submit" class="btn-primary">保存</button>
           </div>
         </form>
+
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+          <a href={`/user/${userId}/nostr`} class="link">Nostr 设置 &rarr;</a>
+        </div>
       </div>
 
       <script dangerouslySetInnerHTML={{
@@ -756,7 +761,352 @@ user.post('/:id/edit', async (c) => {
 
   await db.update(users).set(updateData).where(eq(users.id, userId))
 
+  // 如果开启了 Nostr 同步，广播 Kind 0 (metadata 更新)
+  const updatedUser = await applyLimit(
+    db.select().from(users).where(eq(users.id, userId)),
+    1
+  )
+  if (updatedUser.length > 0 && updatedUser[0].nostrSyncEnabled && updatedUser[0].nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    try {
+      const u = updatedUser[0]
+      const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+      const host = new URL(baseUrl).host
+      const event = await buildSignedEvent({
+        privEncrypted: u.nostrPrivEncrypted!,
+        iv: u.nostrPrivIv!,
+        masterKey: c.env.NOSTR_MASTER_KEY,
+        kind: 0,
+        content: JSON.stringify({
+          name: u.displayName || u.username,
+          about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
+          picture: u.avatarUrl || '',
+          nip05: `${u.username}@${host}`,
+        }),
+        tags: [],
+      })
+      await c.env.NOSTR_QUEUE.send({ events: [event] })
+    } catch (e) {
+      console.error('Failed to broadcast Nostr Kind 0:', e)
+    }
+  }
+
   return c.redirect(`/user/${userId}`)
+})
+
+// --- Nostr 设置 ---
+
+// Nostr 设置页面
+user.get('/:id/nostr', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+
+  const userResult = await applyLimit(
+    db.select().from(users).where(eq(users.id, userId)),
+    1
+  )
+  if (userResult.length === 0) return c.notFound()
+
+  const profileUser = userResult[0]
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+  const hasMasterKey = !!c.env.NOSTR_MASTER_KEY
+  const npub = profileUser.nostrPubkey ? pubkeyToNpub(profileUser.nostrPubkey) : null
+  const message = c.req.query('msg')
+
+  return c.html(
+    <Layout
+      user={currentUser}
+      title="Nostr 设置"
+      unreadCount={c.get('unreadNotificationCount')}
+    >
+      <div class="edit-profile-page">
+        <h1>Nostr 设置</h1>
+
+        {message && (
+          <div class="nostr-message">{decodeURIComponent(message)}</div>
+        )}
+
+        {!hasMasterKey ? (
+          <div class="nostr-info-box">
+            <p>Nostr 功能尚未配置。管理员需要设置 NOSTR_MASTER_KEY 后才能启用。</p>
+          </div>
+        ) : profileUser.nostrSyncEnabled && profileUser.nostrPubkey ? (
+          <div>
+            <div class="nostr-identity-card">
+              <h2>Nostr 身份</h2>
+              <div class="nostr-field">
+                <label>公钥 (npub)</label>
+                <div class="nostr-value">
+                  <code>{npub}</code>
+                </div>
+              </div>
+              <div class="nostr-field">
+                <label>NIP-05 认证</label>
+                <div class="nostr-value">
+                  <code>{profileUser.username}@{host}</code>
+                </div>
+                <p class="form-hint">在 Nostr 客户端搜索此地址即可找到你</p>
+              </div>
+              <div class="nostr-field">
+                <label>同步状态</label>
+                <div class="nostr-status-on">已开启</div>
+                <p class="form-hint">发帖和评论将自动同步到 Nostr 网络</p>
+              </div>
+            </div>
+
+            <div class="nostr-actions">
+              <a href={`/user/${userId}/nostr/export`} class="btn-secondary">导出密钥</a>
+              <form action={`/user/${userId}/nostr/disable`} method="POST" style="display:inline;">
+                <button type="submit" class="btn-secondary btn-muted" onclick="return confirm('确定要关闭 Nostr 同步吗？关闭后新发的内容将不再同步到 Nostr 网络。你的 Nostr 身份和已发布的内容不会被删除。')">
+                  关闭同步
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : profileUser.nostrPubkey ? (
+          <div>
+            <div class="nostr-identity-card">
+              <h2>Nostr 身份</h2>
+              <div class="nostr-field">
+                <label>公钥 (npub)</label>
+                <div class="nostr-value">
+                  <code>{npub}</code>
+                </div>
+              </div>
+              <div class="nostr-field">
+                <label>同步状态</label>
+                <div class="nostr-status-off">已关闭</div>
+                <p class="form-hint">你已有 Nostr 身份，但同步已关闭</p>
+              </div>
+            </div>
+
+            <div class="nostr-actions">
+              <form action={`/user/${userId}/nostr/enable`} method="POST">
+                <input type="hidden" name="reactivate" value="1" />
+                <button type="submit" class="btn-primary">重新开启同步</button>
+              </form>
+              <a href={`/user/${userId}/nostr/export`} class="btn-secondary" style="margin-left:8px;">导出密钥</a>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div class="nostr-info-box">
+              <h2>连接到 Nostr 网络</h2>
+              <p>开启后，你在 NeoGroup 发布的话题和评论将自动同步到 Nostr 去中心化网络。</p>
+              <ul>
+                <li>系统会为你生成一个 Nostr 身份（公私钥对）</li>
+                <li>你的用户名将获得 NIP-05 认证：<strong>{profileUser.username}@{host}</strong></li>
+                <li>发布到 Nostr 的内容无法删除，请知悉</li>
+              </ul>
+            </div>
+            <form action={`/user/${userId}/nostr/enable`} method="POST" class="nostr-actions">
+              <button type="submit" class="btn-primary" onclick="return confirm('开启 Nostr 同步后，你发布的内容将同步到去中心化的 Nostr 网络。发布到 Nostr 的内容无法删除。确定要开启吗？')">
+                开启 Nostr 同步
+              </button>
+            </form>
+          </div>
+        )}
+
+        <div style="margin-top:20px;">
+          <a href={`/user/${userId}/edit`} class="link">&larr; 返回编辑资料</a>
+        </div>
+      </div>
+    </Layout>
+  )
+})
+
+// 开启 Nostr 同步
+user.post('/:id/nostr/enable', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+  if (!c.env.NOSTR_MASTER_KEY) {
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 功能未配置')}`)
+  }
+
+  const userResult = await applyLimit(
+    db.select().from(users).where(eq(users.id, userId)),
+    1
+  )
+  if (userResult.length === 0) return c.notFound()
+  const profileUser = userResult[0]
+
+  const formData = await c.req.formData()
+  const reactivate = formData.get('reactivate')
+
+  if (reactivate && profileUser.nostrPubkey) {
+    // 重新激活已有身份
+    await db.update(users)
+      .set({ nostrSyncEnabled: 1, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 同步已重新开启')}`)
+  }
+
+  // 生成新密钥对
+  try {
+    const { pubkey, privEncrypted, iv } = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
+
+    await db.update(users).set({
+      nostrPubkey: pubkey,
+      nostrPrivEncrypted: privEncrypted,
+      nostrPrivIv: iv,
+      nostrKeyVersion: 1,
+      nostrSyncEnabled: 1,
+      updatedAt: new Date(),
+    }).where(eq(users.id, userId))
+
+    // 广播 Kind 0 (metadata)
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    const host = new URL(baseUrl).host
+    if (c.env.NOSTR_QUEUE) {
+      const event = await buildSignedEvent({
+        privEncrypted,
+        iv,
+        masterKey: c.env.NOSTR_MASTER_KEY,
+        kind: 0,
+        content: JSON.stringify({
+          name: profileUser.displayName || profileUser.username,
+          about: profileUser.bio ? profileUser.bio.replace(/<[^>]*>/g, '') : '',
+          picture: profileUser.avatarUrl || '',
+          nip05: `${profileUser.username}@${host}`,
+        }),
+        tags: [],
+      })
+      await c.env.NOSTR_QUEUE.send({ events: [event] })
+    }
+
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 身份已创建，同步已开启')}`)
+  } catch (error) {
+    console.error('Failed to generate Nostr keypair:', error)
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('创建失败，请稍后重试')}`)
+  }
+})
+
+// 关闭 Nostr 同步
+user.post('/:id/nostr/disable', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+
+  await db.update(users)
+    .set({ nostrSyncEnabled: 0, updatedAt: new Date() })
+    .where(eq(users.id, userId))
+
+  return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 同步已关闭')}`)
+})
+
+// 导出 Nostr 密钥
+user.get('/:id/nostr/export', async (c) => {
+  const db = c.get('db')
+  const currentUser = c.get('user')
+  const userId = c.req.param('id')
+
+  if (!currentUser || currentUser.id !== userId) {
+    return c.redirect(`/user/${userId}`)
+  }
+
+  const userResult = await applyLimit(
+    db.select().from(users).where(eq(users.id, userId)),
+    1
+  )
+  if (userResult.length === 0) return c.notFound()
+  const profileUser = userResult[0]
+
+  if (!profileUser.nostrPubkey || !profileUser.nostrPrivEncrypted) {
+    return c.redirect(`/user/${userId}/nostr`)
+  }
+
+  const npub = pubkeyToNpub(profileUser.nostrPubkey)
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+  const showNsec = c.req.query('reveal') === '1'
+
+  let nsec: string | null = null
+  if (showNsec && c.env.NOSTR_MASTER_KEY && profileUser.nostrPrivEncrypted && profileUser.nostrPrivIv) {
+    try {
+      const privkeyHex = await decryptNostrPrivkey(
+        profileUser.nostrPrivEncrypted,
+        profileUser.nostrPrivIv,
+        c.env.NOSTR_MASTER_KEY
+      )
+      nsec = privkeyToNsec(privkeyHex)
+    } catch (error) {
+      console.error('Failed to decrypt Nostr privkey:', error)
+    }
+  }
+
+  return c.html(
+    <Layout
+      user={currentUser}
+      title="导出 Nostr 密钥"
+      unreadCount={c.get('unreadNotificationCount')}
+    >
+      <div class="edit-profile-page">
+        <h1>导出 Nostr 密钥</h1>
+
+        <div class="nostr-identity-card">
+          <div class="nostr-field">
+            <label>公钥 (npub) — 可安全分享</label>
+            <div class="nostr-value">
+              <code>{npub}</code>
+            </div>
+          </div>
+
+          <div class="nostr-field">
+            <label>NIP-05</label>
+            <div class="nostr-value">
+              <code>{profileUser.username}@{host}</code>
+            </div>
+          </div>
+
+          <div class="nostr-field">
+            <label>私钥 (nsec) — 绝不要分享给任何人</label>
+            {nsec ? (
+              <div>
+                <div class="nostr-warning">
+                  私钥已显示！请立即复制并妥善保管。拥有此私钥的人可以完全控制你的 Nostr 身份。切勿截图或发送给他人。
+                </div>
+                <div class="nostr-value nostr-nsec">
+                  <code>{nsec}</code>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <p class="form-hint">
+                  私钥可用于在其他 Nostr 客户端（如 Damus、Amethyst）登录你的身份。
+                  泄露私钥将导致身份被盗用，且无法撤销。
+                </p>
+                <a
+                  href={`/user/${userId}/nostr/export?reveal=1`}
+                  class="btn-secondary"
+                  onclick="return confirm('显示私钥后请确保周围无人窥屏。私钥泄露将导致你的 Nostr 身份被盗用。确定要显示吗？')"
+                >
+                  显示私钥
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style="margin-top:20px;">
+          <a href={`/user/${userId}/nostr`} class="link">&larr; 返回 Nostr 设置</a>
+        </div>
+      </div>
+    </Layout>
+  )
 })
 
 export default user

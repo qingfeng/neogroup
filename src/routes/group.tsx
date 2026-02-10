@@ -3,9 +3,10 @@ import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { groups, groupMembers, topics, users, comments, authProviders, remoteGroups } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage } from '../lib/utils'
+import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage, stripHtml } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
 import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson, discoverRemoteGroup, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
+import { buildSignedEvent } from '../services/nostr'
 
 const group = new Hono<AppContext>()
 
@@ -1169,6 +1170,40 @@ group.post('/:id/topic/new', async (c) => {
           cc: [`${groupActorUrl}/followers`],
         }
         await announceToGroupFollowers(db, groupId, groupData[0].actorName, noteJson, baseUrl)
+      }
+    })())
+  }
+
+  // Nostr: broadcast topic as Kind 1 event
+  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+        const textContent = content?.trim() ? stripHtml(content.trim()) : ''
+        const noteContent = textContent
+          ? `${title.trim()}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${topicId}`
+          : `${title.trim()}\n\n🔗 ${baseUrl}/topic/${topicId}`
+
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 1,
+          content: noteContent,
+          tags: [
+            ['r', `${baseUrl}/topic/${topicId}`],
+            ['client', 'NeoGroup'],
+          ],
+        })
+
+        await db.update(topics)
+          .set({ nostrEventId: event.id })
+          .where(eq(topics.id, topicId))
+
+        await c.env.NOSTR_QUEUE.send({ events: [event] })
+        console.log('[Nostr] Queued topic event:', event.id)
+      } catch (e) {
+        console.error('[Nostr] Failed to publish topic:', e)
       }
     })())
   }
