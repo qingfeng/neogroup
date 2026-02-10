@@ -619,25 +619,33 @@ ap.post('/ap/users/:username/inbox', async (c) => {
 
   if (type === 'Accept') {
     // Handle Accept(Follow) — remote group accepted our follow
+    let targetActorUri: string | null = null
+
     const innerObject = typeof activity.object === 'object' ? activity.object : null
     if (innerObject?.type === 'Follow') {
-      const targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id
-      if (targetActorUri) {
-        const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
-          .from(remoteGroups)
-          .where(eq(remoteGroups.actorUri, targetActorUri))
-          .limit(1)
+      targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id || null
+    }
 
-        if (rg.length > 0) {
-          await db.update(groupMembers)
-            .set({ followStatus: 'accepted' })
-            .where(and(
-              eq(groupMembers.groupId, rg[0].localGroupId),
-              eq(groupMembers.userId, user.id),
-              eq(groupMembers.followStatus, 'pending')
-            ))
-          console.log('[AP Inbox] Accept(Follow) for remote group:', targetActorUri, 'user:', user.id)
-        }
+    // Fallback: if object is a string (Lemmy sends Accept with object as URL), use Accept actor as the group
+    if (!targetActorUri && activity.actor) {
+      targetActorUri = activity.actor
+    }
+
+    if (targetActorUri) {
+      const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
+        .from(remoteGroups)
+        .where(eq(remoteGroups.actorUri, targetActorUri))
+        .limit(1)
+
+      if (rg.length > 0) {
+        await db.update(groupMembers)
+          .set({ followStatus: 'accepted' })
+          .where(and(
+            eq(groupMembers.groupId, rg[0].localGroupId),
+            eq(groupMembers.userId, user.id),
+            eq(groupMembers.followStatus, 'pending')
+          ))
+        console.log('[AP Inbox] Accept(Follow) for remote group:', targetActorUri, 'user:', user.id)
       }
     }
     return c.json({ status: 'accepted' }, 202)
@@ -1446,23 +1454,33 @@ ap.post('/ap/inbox', async (c) => {
 
   if (type === 'Accept') {
     // Handle Accept(Follow) in shared inbox — remote group accepted our follow
+    let targetActorUri: string | null = null
+    let followActorUri: string | null = null
+
     const innerObject = typeof activity.object === 'object' ? activity.object : null
     if (innerObject?.type === 'Follow') {
-      const followActor = typeof innerObject.actor === 'string' ? innerObject.actor : null
-      const targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id
+      followActorUri = typeof innerObject.actor === 'string' ? innerObject.actor : null
+      targetActorUri = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id || null
+    }
 
-      if (followActor && targetActorUri) {
-        // Find the local user who sent the Follow
-        const userMatch = followActor.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
-        if (userMatch) {
-          const followUser = await findUserByApUsername(db, userMatch[1])
-          if (followUser) {
-            const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
-              .from(remoteGroups)
-              .where(eq(remoteGroups.actorUri, targetActorUri))
-              .limit(1)
+    // Fallback: if object is a string (Lemmy sends Accept with object as URL), use Accept actor as the group
+    if (!targetActorUri && activity.actor) {
+      targetActorUri = activity.actor
+    }
 
-            if (rg.length > 0) {
+    if (targetActorUri) {
+      const rg = await db.select({ localGroupId: remoteGroups.localGroupId })
+        .from(remoteGroups)
+        .where(eq(remoteGroups.actorUri, targetActorUri))
+        .limit(1)
+
+      if (rg.length > 0) {
+        if (followActorUri) {
+          // We know who sent the Follow — update that specific user
+          const userMatch = followActorUri.match(new RegExp(`^${baseUrl}/ap/users/([^/]+)$`))
+          if (userMatch) {
+            const followUser = await findUserByApUsername(db, userMatch[1])
+            if (followUser) {
               await db.update(groupMembers)
                 .set({ followStatus: 'accepted' })
                 .where(and(
@@ -1473,6 +1491,15 @@ ap.post('/ap/inbox', async (c) => {
               console.log('[AP SharedInbox] Accept(Follow) for remote group:', targetActorUri, 'user:', followUser.id)
             }
           }
+        } else {
+          // Don't know the specific user — accept all pending follows for this group
+          await db.update(groupMembers)
+            .set({ followStatus: 'accepted' })
+            .where(and(
+              eq(groupMembers.groupId, rg[0].localGroupId),
+              eq(groupMembers.followStatus, 'pending')
+            ))
+          console.log('[AP SharedInbox] Accept(Follow) for remote group (all pending):', targetActorUri)
         }
       }
     }

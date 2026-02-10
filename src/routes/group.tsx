@@ -162,6 +162,7 @@ group.get('/search', async (c) => {
   const user = c.get('user')
   if (!user) return c.redirect('/auth/login')
 
+  const db = c.get('db')
   const query = c.req.query('q') || ''
   let result: Awaited<ReturnType<typeof discoverRemoteGroup>> = null
   let error: string | null = null
@@ -173,7 +174,6 @@ group.get('/search', async (c) => {
       error = '未找到远程社区，请检查地址格式（如 @board@kyoto.neogrp.club）'
     } else {
       // Check if already mirrored
-      const db = c.get('db')
       const existing = await db.select({ localGroupId: remoteGroups.localGroupId })
         .from(remoteGroups)
         .where(eq(remoteGroups.actorUri, result.actorUri))
@@ -183,6 +183,19 @@ group.get('/search', async (c) => {
       }
     }
   }
+
+  // Fetch all existing remote groups
+  const existingRemoteGroups = await db.select({
+    localGroupId: remoteGroups.localGroupId,
+    domain: remoteGroups.domain,
+    actorUri: remoteGroups.actorUri,
+    groupName: groups.name,
+    groupIcon: groups.iconUrl,
+    groupDescription: groups.description,
+  })
+    .from(remoteGroups)
+    .innerJoin(groups, eq(remoteGroups.localGroupId, groups.id))
+    .orderBy(desc(remoteGroups.createdAt))
 
   return c.html(
     <Layout user={user} title="搜索远程社区" unreadCount={c.get('unreadNotificationCount')}>
@@ -226,6 +239,26 @@ group.get('/search', async (c) => {
                   <button type="submit" class="btn btn-primary">关注</button>
                 </form>
               )}
+            </div>
+          </div>
+        )}
+
+        {existingRemoteGroups.length > 0 && (
+          <div style="margin-top: 2rem;">
+            <h2 style="margin-bottom: 1rem;">已关注的远程社区</h2>
+            <div class="group-list">
+              {existingRemoteGroups.map(rg => (
+                <a href={`/group/${rg.localGroupId}`} class="group-card" key={rg.localGroupId}>
+                  <img src={rg.groupIcon || '/static/img/default-group.svg'} alt="" class="group-icon" />
+                  <div class="group-info">
+                    <h3>{rg.groupName}</h3>
+                    {rg.groupDescription && <p class="group-description">{rg.groupDescription}</p>}
+                    <span style="background: #e8f0fe; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                      {rg.domain}
+                    </span>
+                  </div>
+                </a>
+              ))}
             </div>
           </div>
         )}
