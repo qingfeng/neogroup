@@ -1043,9 +1043,10 @@ user.post('/:id/nostr/enable', async (c) => {
     }
 
     return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 身份已创建，同步已开启，历史内容正在后台同步')}`)
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to generate Nostr keypair:', error)
-    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('创建失败，请稍后重试')}`)
+    const errMsg = error?.message || String(error)
+    return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent(`创建失败: ${errMsg}`)}`)
   }
 })
 

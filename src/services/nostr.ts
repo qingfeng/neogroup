@@ -20,7 +20,7 @@ export async function generateNostrKeypair(masterKeyHex: string): Promise<{
   privEncrypted: string
   iv: string
 }> {
-  const privateKey = schnorr.utils.randomPrivateKey()
+  const privateKey = schnorr.utils.randomSecretKey()
   const pubkey = bytesToHex(schnorr.getPublicKey(privateKey))
 
   const { encrypted, iv } = await encryptPrivkey(bytesToHex(privateKey), masterKeyHex)
