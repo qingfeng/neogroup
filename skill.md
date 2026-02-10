@@ -18,6 +18,7 @@ NeoGroup 只依赖以下 Cloudflare 免费资源，**无需付费**：
 |------|------|-------------|
 | R2 | 图片上传 | 不能上传头像和图片，其他功能正常 |
 | Workers AI | Bot 长文自动生成标题 | 不用 Bot 功能则无影响 |
+| Queue | Nostr event 投递 | 不能同步内容到 Nostr 网络 |
 
 ## 前置条件
 
@@ -206,6 +207,183 @@ bucket_name = "neogroup-uploads"
 ```
 
 3. 重新部署：`npm run deploy`
+
+## 可选：启用 Nostr 集成
+
+Nostr 集成允许用户将发帖/评论同步到 Nostr 去中心化网络。需要一台 Mac Mini（或任意服务器）运行 broadcaster 服务。
+
+### Cloudflare 侧配置
+
+#### 1. 生成密钥
+
+```bash
+# AES-256 Master Key（用于加密用户 Nostr 私钥）
+openssl rand -hex 32
+
+# Bridge Token（Worker 和 Mac Mini 共享认证）
+openssl rand -hex 16
+```
+
+#### 2. 设置 Worker Secrets
+
+```bash
+npx wrangler secret put NOSTR_MASTER_KEY
+# 粘贴 64 位 hex Master Key
+
+npx wrangler secret put NOSTR_BRIDGE_TOKEN
+# 粘贴 Bridge Token
+
+npx wrangler secret put NOSTR_BRIDGE_URL
+# 输入 Mac Mini broadcaster 的 URL（如 https://bridge.your-domain.com）
+```
+
+#### 3. 创建 Queue
+
+```bash
+npx wrangler queues create nostr-events
+npx wrangler queues create nostr-events-dlq
+```
+
+#### 4. 启用 wrangler.toml 中的 Queue 配置
+
+取消 `wrangler.toml` 中 Nostr Queue 部分的注释：
+
+```toml
+[[queues.producers]]
+queue = "nostr-events"
+binding = "NOSTR_QUEUE"
+
+[[queues.consumers]]
+queue = "nostr-events"
+max_batch_size = 20
+max_retries = 5
+dead_letter_queue = "nostr-events-dlq"
+```
+
+#### 5. 可选：设置推荐 relay URL
+
+在 `wrangler.toml` 的 `[vars]` 中添加：
+
+```toml
+NOSTR_RELAY_URL = "wss://relay.your-domain.com"
+```
+
+此 URL 会出现在 NIP-05 响应中，告诉 Nostr 客户端从哪个 relay 拉取用户的历史内容。
+
+#### 6. 部署
+
+```bash
+npm run deploy
+```
+
+### Mac Mini 侧配置
+
+#### 1. 安装 broadcaster
+
+```bash
+cd broadcaster/
+npm install
+```
+
+#### 2. 创建配置
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`：
+
+```bash
+BRIDGE_TOKEN=<与 Worker NOSTR_BRIDGE_TOKEN 相同的值>
+RELAY_LIST=ws://localhost:8080,wss://relay.damus.io,wss://nos.lol,wss://relay.nostr.band
+PORT=3000
+```
+
+- `ws://localhost:8080` — 本地 nostr-rs-relay（档案馆，推荐）
+- 公共 relay — 用于内容分发，broadcaster 只推不拉，不占本地磁盘
+
+#### 3. 安装本地 relay（推荐）
+
+```bash
+# macOS
+brew install nostr-rs-relay
+
+# 或 cargo
+cargo install nostr-rs-relay
+```
+
+创建配置 `~/.nostr-rs-relay/config.toml`：
+
+```toml
+[info]
+name = "NeoGroup Archive"
+
+[network]
+port = 8080
+address = "127.0.0.1"
+```
+
+#### 4. 启动服务
+
+```bash
+# 启动本地 relay
+nostr-rs-relay --config ~/.nostr-rs-relay/config.toml
+
+# 启动 broadcaster
+cd broadcaster/
+node index.js
+```
+
+用 pm2 守护进程：
+
+```bash
+npm install -g pm2
+pm2 start nostr-rs-relay -- --config ~/.nostr-rs-relay/config.toml
+pm2 start broadcaster/index.js --name nostr-broadcaster
+pm2 save
+pm2 startup
+```
+
+#### 5. 通过 Cloudflare Tunnel 暴露
+
+```bash
+brew install cloudflared
+cloudflared tunnel login
+cloudflared tunnel create nostr-bridge
+cloudflared tunnel route dns nostr-bridge bridge.your-domain.com
+cloudflared tunnel route dns nostr-bridge relay.your-domain.com
+```
+
+配置 `~/.cloudflared/config.yml`：
+
+```yaml
+tunnel: <tunnel-id>
+credentials-file: ~/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: bridge.your-domain.com
+    service: http://localhost:3000
+  - hostname: relay.your-domain.com
+    service: http://localhost:8080
+  - service: http_status:404
+```
+
+```bash
+pm2 start cloudflared -- tunnel run nostr-bridge
+pm2 save
+```
+
+#### 6. 验证
+
+```bash
+# broadcaster 健康检查
+curl http://localhost:3000/health
+
+# 在网站上：编辑资料 → Nostr 设置 → 开启同步
+# 发一个帖子，检查 broadcaster 日志
+pm2 logs nostr-broadcaster
+
+# 在 Nostr 客户端搜索 username@your-domain.com 验证 NIP-05
+```
 
 ## Agent 自动化脚本
 

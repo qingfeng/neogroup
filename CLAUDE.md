@@ -17,6 +17,7 @@
 | AI | Cloudflare Workers AI（可选，用于 Bot 标题生成） |
 | 认证 | Mastodon OAuth2 |
 | 联邦协议 | ActivityPub |
+| Nostr 协议 | secp256k1 Schnorr 签名（@noble/curves）|
 | 模板引擎 | Hono JSX (SSR) |
 
 ## 项目结构
@@ -38,6 +39,7 @@ src/
 │   ├── mastodon.ts       # Mastodon OAuth 服务
 │   ├── mastodon-bot.ts   # Mastodon Bot（@机器人自动发帖）
 │   ├── mastodon-sync.ts  # Mastodon 回复同步
+│   ├── nostr.ts          # Nostr 密钥管理、签名、NIP-19
 │   └── session.ts        # 会话管理
 ├── routes/
 │   ├── activitypub.ts    # ActivityPub 路由 (WebFinger, Actor, Inbox, etc.)
@@ -53,7 +55,7 @@ src/
 
 | 表名 | 说明 |
 |-----|------|
-| user | 用户基本信息（含 AP 密钥对 `ap_public_key`/`ap_private_key`） |
+| user | 用户基本信息（含 AP 密钥对、Nostr 密钥 `nostr_pubkey`/`nostr_priv_encrypted`） |
 | auth_provider | 认证方式（Mastodon OAuth），`metadata` JSON 含 AP username |
 | group | 小组 |
 | group_member | 小组成员 |
@@ -210,6 +212,79 @@ src/
 
 - `src/services/mastodon-sync.ts` — `syncMastodonReplies()`, `syncCommentReplies()`
 - `src/routes/topic.tsx` — 评论发布逻辑、同步调用
+
+## Nostr 集成
+
+### 架构
+
+采用 Cloudflare Worker + Mac Mini 分离架构：
+
+- **Cloudflare Worker**（大脑）：密钥生成、AES-GCM 加密存储、解密签名、NIP-05 认证
+- **Cloudflare Queue**（管道）：可靠传递已签名 event 到 Mac Mini
+- **Mac Mini broadcaster**（广播塔）：通过 WebSocket 长连接池将 event 推送到 Nostr relay
+- **本地 nostr-rs-relay**（档案馆）：持久化存储所有 event
+
+Mac Mini 不接触任何私钥，只接收已签名的 event（公开数据）。
+
+### 密钥管理
+
+- 用户开启 Nostr 同步时，Worker 生成 secp256k1 密钥对（`@noble/curves`）
+- 私钥用 `NOSTR_MASTER_KEY`（AES-256-GCM，Web Crypto API）加密后存入 D1
+- 签名时短暂解密，签名后丢弃明文私钥
+- 用户表字段：`nostr_pubkey`（hex）、`nostr_priv_encrypted`（base64）、`nostr_priv_iv`（base64）、`nostr_key_version`、`nostr_sync_enabled`
+
+### Event 类型
+
+| Kind | 用途 | 触发时机 |
+|------|------|---------|
+| 0 | 用户 metadata（name, about, picture, nip05） | 开启同步时 / 编辑资料时 |
+| 1 | 文本 note（话题内容 + 链接） | 发帖时 |
+| 1 | 文本 note（评论内容 + 链接，含 `e` tag 线程） | 评论时 |
+
+### 回复线程
+
+评论通过 NIP-10 `e` tag 构建线程关系：
+- 话题的 `nostr_event_id` 作为 `root`
+- 父评论的 `nostr_event_id` 作为 `reply`
+
+### NIP-05 认证
+
+`GET /.well-known/nostr.json?name={username}` 返回开启了同步的用户的公钥和推荐 relay。
+
+### Worker 环境变量
+
+| 变量 | 类型 | 说明 |
+|------|------|------|
+| `NOSTR_MASTER_KEY` | Secret | AES-256 主密钥（64 位 hex） |
+| `NOSTR_BRIDGE_TOKEN` | Secret | Mac Mini 通信认证 token |
+| `NOSTR_BRIDGE_URL` | Secret | Mac Mini broadcaster URL |
+| `NOSTR_RELAY_URL` | Var | NIP-05 返回的推荐 relay URL |
+| `NOSTR_QUEUE` | Queue binding | Cloudflare Queue（`nostr-events`） |
+
+### 用户设置页
+
+- `GET /user/:id/nostr` — Nostr 设置页面（开启/关闭同步、查看 npub/NIP-05）
+- `POST /user/:id/nostr/enable` — 生成密钥对并开启同步
+- `POST /user/:id/nostr/disable` — 关闭同步（保留密钥，可重新激活）
+- `GET /user/:id/nostr/export` — 导出密钥（npub 公开显示，nsec 需确认后显示）
+
+### Mac Mini broadcaster
+
+独立 Node.js 服务，位于 `broadcaster/` 目录：
+- 接收 `POST /broadcast`（Bearer Token 认证）
+- 维护 Nostr relay WebSocket 连接池（断线自动重连）
+- 纯推不拉，不订阅任何数据
+- `GET /health` 返回连接状态
+
+### 相关代码
+
+- `src/services/nostr.ts` — 密钥生成、AES-GCM 加密/解密、event 签名、NIP-19 编码
+- `src/routes/activitypub.ts` — NIP-05 端点（`/.well-known/nostr.json`）
+- `src/routes/user.tsx` — Nostr 设置页面、开启/关闭/导出
+- `src/routes/group.tsx` — 发帖时 Nostr 同步（Kind 1）
+- `src/routes/topic.tsx` — 评论时 Nostr 同步（Kind 1 + e tag）
+- `src/index.ts` — Queue consumer（批量发送到 Mac Mini）
+- `broadcaster/index.js` — Mac Mini broadcaster 服务
 
 ## 常用命令
 
