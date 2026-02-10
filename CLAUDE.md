@@ -268,13 +268,23 @@ Mac Mini 不接触任何私钥，只接收已签名的 event（公开数据）�
 - `POST /user/:id/nostr/disable` — 关闭同步（保留密钥，可重新激活）
 - `GET /user/:id/nostr/export` — 导出密钥（npub 公开显示，nsec 需确认后显示）
 
-### Mac Mini broadcaster
+### Mac Mini 部署架构
 
-独立 Node.js 服务，位于 `broadcaster/` 目录：
-- 接收 `POST /broadcast`（Bearer Token 认证）
-- 维护 Nostr relay WebSocket 连接池（断线自动重连）
-- 纯推不拉，不订阅任何数据
-- `GET /health` 返回连接状态
+Mac Mini 运行三个服务：
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| broadcaster | 3000 | 接收 Worker 投递的已签名 event，推送到 relay |
+| nostr-rs-relay | 8080 | 本地档案 relay，纯本地不对外暴露 |
+| cloudflared tunnel | — | 只暴露 `bridge.neogrp.club` → localhost:3000 |
+
+- **broadcaster**（`broadcaster/` 目录）：Node.js + nostr-tools，接收 `POST /broadcast`（Bearer Token 认证），维护 WebSocket 长连接池，纯推不拉
+- **nostr-rs-relay**：本地 Rust relay，只监听 127.0.0.1，broadcaster 通过 `ws://localhost:8080` 写入，作为私人备份
+- **Cloudflare Tunnel**：只暴露 bridge 域名给 Worker 调用，relay 不对外暴露。NIP-05 中推荐的 relay 指向公共 relay（如 `wss://relay.damus.io`），Nostr 客户端从公共 relay 读取内容
+
+### 历史内容回填
+
+用户首次开启 Nostr 同步时，除了广播 Kind 0 metadata，还会在后台（`waitUntil`）将该用户所有历史话题签名并推送到 Queue。每条话题使用原始 `created_at` 时间戳，保持时间线顺序。每 10 条一批发送。
 
 ### 相关代码
 
