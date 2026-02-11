@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups, apFollowers } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
@@ -47,7 +47,7 @@ topic.get('/:id', async (c) => {
     })
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
-    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .leftJoin(groups, eq(topics.groupId, groups.id))
     .where(eq(topics.id, topicId))
     .limit(1)
 
@@ -57,6 +57,47 @@ topic.get('/:id', async (c) => {
 
   const topicData = topicResult[0]
   const groupId = topicData.groupId
+
+  // Group-related data (may be null for personal posts)
+  let memberCount = 0
+  let isMember = false
+  let latestTopics: any[] = []
+
+  if (groupId) {
+    // 获取小组成员数
+    const memberCountResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(groupMembers)
+      .where(eq(groupMembers.groupId, groupId))
+    memberCount = memberCountResult[0]?.count || 0
+
+    // 检查当前用户是否是成员
+    if (user) {
+      const membership = await db
+        .select()
+        .from(groupMembers)
+        .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+        .limit(1)
+      isMember = membership.length > 0
+    }
+
+    // 获取小组最新话题（排除当前话题）
+    latestTopics = await db
+      .select({
+        id: topics.id,
+        title: topics.title,
+        user: {
+          id: users.id,
+          username: users.username,
+          displayName: users.displayName,
+        },
+      })
+      .from(topics)
+      .innerJoin(users, eq(topics.userId, users.id))
+      .where(and(eq(topics.groupId, groupId), ne(topics.id, topicId)))
+      .orderBy(desc(topics.updatedAt))
+      .limit(5)
+  }
 
   // Sync Mastodon replies if applicable
   if (topicData.mastodonStatusId && topicData.mastodonDomain) {
@@ -81,24 +122,6 @@ topic.get('/:id', async (c) => {
         console.error('Failed to sync comment replies:', e)
       }
     }
-  }
-
-  // 获取小组成员数
-  const memberCountResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(groupMembers)
-    .where(eq(groupMembers.groupId, groupId))
-  const memberCount = memberCountResult[0]?.count || 0
-
-  // 检查当前用户是否是成员
-  let isMember = false
-  if (user) {
-    const membership = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
-      .limit(1)
-    isMember = membership.length > 0
   }
 
   // 获取话题喜欢数
@@ -158,23 +181,6 @@ topic.get('/:id', async (c) => {
     })
     hasMastodonAuth = !!(ap?.accessToken)
   }
-
-  // 获取小组最新话题（排除当前话题）
-  const latestTopics = await db
-    .select({
-      id: topics.id,
-      title: topics.title,
-      user: {
-        id: users.id,
-        username: users.username,
-        displayName: users.displayName,
-      },
-    })
-    .from(topics)
-    .innerJoin(users, eq(topics.userId, users.id))
-    .where(and(eq(topics.groupId, groupId), ne(topics.id, topicId)))
-    .orderBy(desc(topics.updatedAt))
-    .limit(5)
 
   // 分页参数
   const PAGE_SIZE = 50
@@ -262,15 +268,15 @@ topic.get('/:id', async (c) => {
   // 优先使用帖子图片，否则使用小组图标
   const ogImage = images.length > 0
     ? images[0]
-    : (topicData.group.iconUrl || `${baseUrl}/static/img/default-group.svg`)
+    : (topicData.group?.iconUrl || `${baseUrl}/static/img/default-group.svg`)
 
   const topicUrl = `${baseUrl}/topic/${topicId}`
 
   // JSON-LD 结构化数据
-  const jsonLd = {
+  const jsonLd: Record<string, any> = {
     '@context': 'https://schema.org',
     '@type': 'DiscussionForumPosting',
-    headline: topicData.title,
+    headline: topicData.title || description || 'Post',
     url: topicUrl,
     datePublished: topicData.createdAt.toISOString(),
     dateModified: topicData.updatedAt.toISOString(),
@@ -284,13 +290,15 @@ topic.get('/:id', async (c) => {
       interactionType: 'https://schema.org/CommentAction',
       userInteractionCount: commentList.length,
     },
-    isPartOf: {
+    ...(description ? { description } : {}),
+    ...(ogImage ? { image: ogImage } : {}),
+  }
+  if (topicData.group) {
+    jsonLd.isPartOf = {
       '@type': 'WebPage',
       name: topicData.group.name,
       url: `${baseUrl}/group/${topicData.group.id}`,
-    },
-    ...(description ? { description } : {}),
-    ...(ogImage ? { image: ogImage } : {}),
+    }
   }
 
   return c.html(
@@ -307,14 +315,16 @@ topic.get('/:id', async (c) => {
     >
       <div class="topic-page-layout">
         <div class="topic-detail">
-          <div class="topic-header">
-            <a href={`/group/${topicData.group.id}`} class="topic-group">
-              <img src={resizeImage(topicData.group.iconUrl, 40) || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
-              <span>{topicData.group.name}</span>
-            </a>
-          </div>
+          {topicData.group && (
+            <div class="topic-header">
+              <a href={`/group/${topicData.group.id}`} class="topic-group">
+                <img src={resizeImage(topicData.group.iconUrl, 40) || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
+                <span>{topicData.group.name}</span>
+              </a>
+            </div>
+          )}
 
-          <h1 class="topic-title">{topicData.title}</h1>
+          {topicData.title && <h1 class="topic-title">{topicData.title}</h1>}
 
           <div class="topic-meta">
             <a href={`/user/${topicData.user.username}`} class="topic-author">
@@ -584,49 +594,62 @@ topic.get('/:id', async (c) => {
 
         {/* 右侧边栏 */}
         <aside class="topic-sidebar">
-          {/* 小组信息卡片 */}
-          <div class="sidebar-group-card">
-            <div class="sidebar-group-header">
-              <img
-                src={resizeImage(topicData.group.iconUrl, 160) || '/static/img/default-group.svg'}
-                alt=""
-                class="sidebar-group-icon"
-              />
-              <div class="sidebar-group-info">
-                <a href={`/group/${groupId}`} class="sidebar-group-name">{topicData.group.name}</a>
-                {topicData.group.description && (
-                  <p class="sidebar-group-desc">{truncate(topicData.group.description, 50)}</p>
+          {topicData.group ? (
+            <>
+              {/* 小组信息卡片 */}
+              <div class="sidebar-group-card">
+                <div class="sidebar-group-header">
+                  <img
+                    src={resizeImage(topicData.group.iconUrl, 160) || '/static/img/default-group.svg'}
+                    alt=""
+                    class="sidebar-group-icon"
+                  />
+                  <div class="sidebar-group-info">
+                    <a href={`/group/${groupId}`} class="sidebar-group-name">{topicData.group.name}</a>
+                    {topicData.group.description && (
+                      <p class="sidebar-group-desc">{truncate(topicData.group.description, 50)}</p>
+                    )}
+                  </div>
+                </div>
+                <div class="sidebar-group-stats">
+                  <strong>{memberCount}</strong> 人聚集在这个小组
+                </div>
+                {user && !isMember && (
+                  <form action={`/group/${groupId}/join`} method="POST">
+                    <button type="submit" class="btn btn-primary sidebar-join-btn">加入小组</button>
+                  </form>
+                )}
+                {user && isMember && (
+                  <div class="sidebar-member-status">已加入</div>
                 )}
               </div>
-            </div>
-            <div class="sidebar-group-stats">
-              <strong>{memberCount}</strong> 人聚集在这个小组
-            </div>
-            {user && !isMember && (
-              <form action={`/group/${groupId}/join`} method="POST">
-                <button type="submit" class="btn btn-primary sidebar-join-btn">加入小组</button>
-              </form>
-            )}
-            {user && isMember && (
-              <div class="sidebar-member-status">已加入</div>
-            )}
-          </div>
 
-          {/* 最新讨论 */}
-          {latestTopics.length > 0 && (
-            <div class="sidebar-latest">
-              <div class="sidebar-latest-header">
-                <span>最新讨论</span>
-                <a href={`/group/${groupId}`} class="sidebar-more">（更多）</a>
+              {/* 最新讨论 */}
+              {latestTopics.length > 0 && (
+                <div class="sidebar-latest">
+                  <div class="sidebar-latest-header">
+                    <span>最新讨论</span>
+                    <a href={`/group/${groupId}`} class="sidebar-more">（更多）</a>
+                  </div>
+                  <ul class="sidebar-latest-list">
+                    {latestTopics.map((t) => (
+                      <li key={t.id}>
+                        <a href={`/topic/${t.id}`} class="sidebar-topic-title">{truncate(t.title, 25)}</a>
+                        <span class="sidebar-topic-author">（{t.user.displayName || t.user.username}）</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          ) : (
+            <div class="sidebar-group-card">
+              <div class="sidebar-group-info">
+                <span class="sidebar-group-name">个人动态</span>
+                <p class="sidebar-group-desc">
+                  <a href={`/user/${topicData.user.username}`}>查看作者主页</a>
+                </p>
               </div>
-              <ul class="sidebar-latest-list">
-                {latestTopics.map((t) => (
-                  <li key={t.id}>
-                    <a href={`/topic/${t.id}`} class="sidebar-topic-title">{truncate(t.title, 25)}</a>
-                    <span class="sidebar-topic-author">（{t.user.displayName || t.user.username}）</span>
-                  </li>
-                ))}
-              </ul>
             </div>
           )}
         </aside>
@@ -711,10 +734,12 @@ topic.post('/:id/comment', async (c) => {
   const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
 
   // Check if this topic belongs to a mirror group — deliver comment to remote group
-  const remoteGroupForComment = await db.select()
-    .from(remoteGroups)
-    .where(eq(remoteGroups.localGroupId, topicResult[0].groupId))
-    .limit(1)
+  const remoteGroupForComment = topicResult[0].groupId
+    ? await db.select()
+        .from(remoteGroups)
+        .where(eq(remoteGroups.localGroupId, topicResult[0].groupId))
+        .limit(1)
+    : []
 
   if (remoteGroupForComment.length > 0) {
     const rg = remoteGroupForComment[0]
@@ -1073,7 +1098,7 @@ topic.post('/:id/like', async (c) => {
     })
 
     // 提醒话题作者
-    const topicData = await db.select({ userId: topics.userId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+    const topicData = await db.select({ userId: topics.userId, nostrEventId: topics.nostrEventId, nostrAuthorPubkey: topics.nostrAuthorPubkey }).from(topics).where(eq(topics.id, topicId)).limit(1)
     if (topicData.length > 0) {
       await createNotification(db, {
         userId: topicData[0].userId,
@@ -1081,9 +1106,41 @@ topic.post('/:id/like', async (c) => {
         type: 'topic_like',
         topicId,
       })
+
+      // Nostr Kind 7 reaction
+      if (user.nostrSyncEnabled && user.nostrPrivEncrypted
+          && topicData[0].nostrEventId && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+        c.executionCtx.waitUntil((async () => {
+          try {
+            const tags: string[][] = [
+              ['e', topicData[0].nostrEventId!],
+            ]
+            if (topicData[0].nostrAuthorPubkey) {
+              tags.push(['p', topicData[0].nostrAuthorPubkey!])
+            }
+            const event = await buildSignedEvent({
+              privEncrypted: user.nostrPrivEncrypted!,
+              iv: user.nostrPrivIv!,
+              masterKey: c.env.NOSTR_MASTER_KEY!,
+              kind: 7,
+              content: '+',
+              tags,
+            })
+            await c.env.NOSTR_QUEUE!.send({ events: [event] })
+            console.log('[Nostr] Queued Kind 7 reaction for topic:', topicId)
+          } catch (e) {
+            console.error('[Nostr] Failed to send Kind 7 reaction:', e)
+          }
+        })())
+      }
     }
   }
 
+  // Redirect back: if came from timeline, go back there
+  const referer = c.req.header('Referer') || ''
+  if (referer.includes('/timeline')) {
+    return c.redirect('/timeline')
+  }
   return c.redirect(`/topic/${topicId}`)
 })
 
@@ -1294,6 +1351,29 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
       topicId,
       commentId,
     })
+
+    // Nostr Kind 7 reaction for comment
+    if (user.nostrSyncEnabled && user.nostrPrivEncrypted
+        && commentResult[0].nostrEventId && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const event = await buildSignedEvent({
+            privEncrypted: user.nostrPrivEncrypted!,
+            iv: user.nostrPrivIv!,
+            masterKey: c.env.NOSTR_MASTER_KEY!,
+            kind: 7,
+            content: '+',
+            tags: [
+              ['e', commentResult[0].nostrEventId!],
+              ['p', commentResult[0].userId],
+            ],
+          })
+          await c.env.NOSTR_QUEUE!.send({ events: [event] })
+        } catch (e) {
+          console.error('[Nostr] Failed to send Kind 7 reaction for comment:', e)
+        }
+      })())
+    }
   }
 
   return c.redirect(`/topic/${topicId}#comment-${commentId}`)
@@ -1480,7 +1560,72 @@ topic.post('/:id/delete', async (c) => {
     }
   }
 
-  // 超级管理员：级联删除评论点赞 → 评论 → 话题点赞 → 话题
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  // AP Delete: send Delete activity to all followers
+  if (topicResult[0].userId === user.id) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const apUsername = await getApUsername(db, user.id)
+        if (!apUsername) return
+
+        const { privateKeyPem } = await ensureKeyPair(db, user.id)
+        const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+        const noteId = `${baseUrl}/ap/notes/${topicId}`
+
+        const followers = await db.select().from(apFollowers).where(eq(apFollowers.userId, user.id))
+        if (followers.length === 0) return
+
+        const activity = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: `${noteId}/delete`,
+          type: 'Delete',
+          actor: actorUrl,
+          to: ['https://www.w3.org/ns/activitystreams#Public'],
+          cc: [`${actorUrl}/followers`],
+          object: noteId,
+        }
+
+        const inboxes = new Set<string>()
+        for (const f of followers) {
+          const inbox = f.sharedInboxUrl || f.inboxUrl
+          if (inbox) inboxes.add(inbox)
+        }
+
+        for (const inbox of inboxes) {
+          try {
+            await signAndDeliver(actorUrl, privateKeyPem, inbox, activity)
+          } catch (e) {
+            console.error(`AP topic delete deliver to ${inbox} failed:`, e)
+          }
+        }
+      } catch (e) {
+        console.error('[AP] Failed to deliver topic Delete:', e)
+      }
+    })())
+  }
+
+  // Nostr Kind 5: deletion event
+  if (topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 5,
+          content: '',
+          tags: [['e', topicResult[0].nostrEventId!]],
+        })
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
+        console.log('[Nostr] Queued Kind 5 deletion for topic:', topicId)
+      } catch (e) {
+        console.error('[Nostr] Failed to send Kind 5 deletion:', e)
+      }
+    })())
+  }
+
+  // 级联删除评论点赞 → 评论 → 话题点赞 → 话题
   const topicComments = await db.select({ id: comments.id }).from(comments).where(eq(comments.topicId, topicId))
   for (const comment of topicComments) {
     await db.delete(commentLikes).where(eq(commentLikes.commentId, comment.id))
@@ -1491,7 +1636,7 @@ topic.post('/:id/delete', async (c) => {
   await db.delete(topicReposts).where(eq(topicReposts.topicId, topicId))
   await db.delete(topics).where(eq(topics.id, topicId))
 
-  return c.redirect(`/group/${groupId}`)
+  return c.redirect(groupId ? `/group/${groupId}` : '/timeline')
 })
 
 // 编辑话题页面
@@ -1517,7 +1662,7 @@ topic.get('/:id/edit', async (c) => {
       },
     })
     .from(topics)
-    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .leftJoin(groups, eq(topics.groupId, groups.id))
     .where(eq(topics.id, topicId))
     .limit(1)
 
@@ -1538,8 +1683,9 @@ topic.get('/:id/edit', async (c) => {
         <div class="page-header">
           <h1>编辑话题</h1>
           <p class="page-subtitle">
-            <a href={`/group/${topicData.groupId}`}>{topicData.group.name}</a>
-            {' · '}
+            {topicData.group && (
+              <><a href={`/group/${topicData.groupId}`}>{topicData.group.name}</a>{' · '}</>
+            )}
             <a href={`/topic/${topicId}`}>返回话题</a>
           </p>
         </div>

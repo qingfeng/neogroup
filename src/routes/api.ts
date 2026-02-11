@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
-import { eq, desc, and, sql } from 'drizzle-orm'
+import { eq, desc, and, or, sql } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, authProviders, groups, groupMembers, topics, comments } from '../db/schema'
+import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers } from '../db/schema'
 import { generateId, generateApiKey, ensureUniqueUsername, stripHtml } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
-import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFollowers } from '../services/activitypub'
+import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { generateNostrKeypair, buildSignedEvent } from '../services/nostr'
 
 const api = new Hono<AppContext>()
@@ -85,6 +85,7 @@ api.post('/auth/register', async (c) => {
             about: '',
             picture: '',
             nip05: `${username}@${host}`,
+            ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
           }),
           tags: [],
         })
@@ -146,6 +147,7 @@ api.put('/me', requireApiAuth, async (c) => {
           about: body.bio !== undefined ? stripHtml(body.bio.slice(0, 500)) : (user.bio ? stripHtml(user.bio) : ''),
           picture: user.avatarUrl || '',
           nip05: `${user.username}@${host}`,
+          ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
         }),
         tags: [],
       })
@@ -512,6 +514,306 @@ api.post('/topics/:id/comments', requireApiAuth, async (c) => {
     id: commentId,
     url: `${baseUrl}/topic/${topicId}#comment-${commentId}`,
   }, 201)
+})
+
+// ─── Timeline: 个人动态 ───
+
+// POST /api/posts — 发布个人动态
+api.post('/posts', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const body = await c.req.json().catch(() => ({})) as { content?: string }
+  const content = body.content?.trim()
+
+  if (!content || content.length < 1 || content.length > 5000) {
+    return c.json({ error: 'content is required (1-5000 chars)' }, 400)
+  }
+
+  const topicId = generateId()
+  const now = new Date()
+  const htmlContent = `<p>${content.replace(/\n/g, '</p><p>')}</p>`
+
+  await db.insert(topics).values({
+    id: topicId,
+    groupId: null,
+    userId: user.id,
+    title: '',
+    content: htmlContent,
+    type: 0,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  // AP: deliver to followers
+  c.executionCtx.waitUntil(
+    deliverTopicToFollowers(db, baseUrl, user.id, topicId, '', htmlContent)
+  )
+
+  // Nostr: broadcast Kind 1
+  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const textContent = stripHtml(htmlContent).trim()
+        const noteContent = textContent
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 1,
+          content: noteContent,
+          tags: [
+            ['client', c.env.APP_NAME || 'NeoGroup'],
+          ],
+        })
+        await db.update(topics).set({ nostrEventId: event.id }).where(eq(topics.id, topicId))
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
+      } catch (e) {
+        console.error('[API/Nostr] Failed to publish personal post:', e)
+      }
+    })())
+  }
+
+  return c.json({
+    id: topicId,
+    url: `${baseUrl}/topic/${topicId}`,
+  }, 201)
+})
+
+// POST /api/topics/:id/like — 点赞话题
+api.post('/topics/:id/like', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const topicId = c.req.param('id')
+
+  const existing = await db.select({ id: topicLikes.id })
+    .from(topicLikes)
+    .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+    .limit(1)
+
+  if (existing.length > 0) {
+    // Unlike
+    await db.delete(topicLikes)
+      .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+    return c.json({ liked: false })
+  }
+
+  await db.insert(topicLikes).values({
+    id: generateId(),
+    topicId,
+    userId: user.id,
+    createdAt: new Date(),
+  })
+
+  // Notification
+  const topicData = await db.select({ userId: topics.userId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+  if (topicData.length > 0) {
+    await createNotification(db, {
+      userId: topicData[0].userId,
+      actorId: user.id,
+      type: 'topic_like',
+      topicId,
+    })
+  }
+
+  return c.json({ liked: true })
+})
+
+// DELETE /api/topics/:id/like — 取消点赞
+api.delete('/topics/:id/like', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const topicId = c.req.param('id')
+
+  await db.delete(topicLikes)
+    .where(and(eq(topicLikes.topicId, topicId), eq(topicLikes.userId, user.id)))
+
+  return c.json({ liked: false })
+})
+
+// DELETE /api/topics/:id — 删除话题
+api.delete('/topics/:id', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const topicId = c.req.param('id')
+
+  const topicResult = await db.select().from(topics).where(eq(topics.id, topicId)).limit(1)
+  if (topicResult.length === 0) return c.json({ error: 'Topic not found' }, 404)
+
+  if (topicResult[0].userId !== user.id) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+
+  // AP Delete: send Delete activity to all followers
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const apUsername = await getApUsername(db, user.id)
+      if (!apUsername) return
+
+      const { privateKeyPem } = await ensureKeyPair(db, user.id)
+      const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+      const noteId = `${baseUrl}/ap/notes/${topicId}`
+
+      const followers = await db.select().from(apFollowers).where(eq(apFollowers.userId, user.id))
+      if (followers.length === 0) return
+
+      const activity = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${noteId}/delete`,
+        type: 'Delete',
+        actor: actorUrl,
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        cc: [`${actorUrl}/followers`],
+        object: noteId,
+      }
+
+      const inboxes = new Set<string>()
+      for (const f of followers) {
+        const inbox = f.sharedInboxUrl || f.inboxUrl
+        if (inbox) inboxes.add(inbox)
+      }
+
+      for (const inbox of inboxes) {
+        try {
+          await signAndDeliver(actorUrl, privateKeyPem, inbox, activity)
+        } catch (e) {
+          console.error(`AP topic delete deliver to ${inbox} failed:`, e)
+        }
+      }
+    } catch (e) {
+      console.error('[AP] Failed to deliver topic Delete:', e)
+    }
+  })())
+
+  // Nostr Kind 5: deletion event
+  if (topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 5,
+          content: '',
+          tags: [['e', topicResult[0].nostrEventId!]],
+        })
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
+      } catch (e) {
+        console.error('[API/Nostr] Failed to send Kind 5 deletion:', e)
+      }
+    })())
+  }
+
+  // 级联删除
+  const topicComments = await db.select({ id: comments.id }).from(comments).where(eq(comments.topicId, topicId))
+  for (const comment of topicComments) {
+    await db.delete(commentLikes).where(eq(commentLikes.commentId, comment.id))
+    await db.delete(commentReposts).where(eq(commentReposts.commentId, comment.id))
+  }
+  await db.delete(comments).where(eq(comments.topicId, topicId))
+  await db.delete(topicLikes).where(eq(topicLikes.topicId, topicId))
+  await db.delete(topicReposts).where(eq(topicReposts.topicId, topicId))
+  await db.delete(topics).where(eq(topics.id, topicId))
+
+  return c.json({ success: true })
+})
+
+// ─── Nostr Follow ───
+
+// POST /api/nostr/follow
+api.post('/nostr/follow', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const { pubkeyToNpub, npubToPubkey } = await import('../services/nostr')
+  const { getOrCreateNostrUser } = await import('../services/nostr-community')
+
+  const body = await c.req.json().catch(() => ({})) as { pubkey?: string }
+  const target = body.pubkey?.trim()
+  if (!target) return c.json({ error: 'pubkey is required' }, 400)
+
+  let pubkey: string | null = null
+  let npub: string | null = null
+
+  if (target.startsWith('npub1')) {
+    pubkey = npubToPubkey(target)
+    npub = target
+  } else if (/^[0-9a-f]{64}$/i.test(target)) {
+    pubkey = target.toLowerCase()
+    npub = pubkeyToNpub(pubkey)
+  }
+
+  if (!pubkey) return c.json({ error: 'Invalid pubkey or npub' }, 400)
+
+  const existing = await db.select({ id: nostrFollows.id })
+    .from(nostrFollows)
+    .where(and(eq(nostrFollows.userId, user.id), eq(nostrFollows.targetPubkey, pubkey)))
+    .limit(1)
+
+  if (existing.length > 0) return c.json({ ok: true, already_following: true })
+
+  await db.insert(nostrFollows).values({
+    id: generateId(),
+    userId: user.id,
+    targetPubkey: pubkey,
+    targetNpub: npub,
+    createdAt: new Date(),
+  })
+
+  // Create shadow user + user_follow
+  try {
+    const shadowUser = await getOrCreateNostrUser(db, pubkey)
+    const existingFollow = await db.select({ id: userFollows.id })
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, user.id), eq(userFollows.followeeId, shadowUser.id)))
+      .limit(1)
+    if (existingFollow.length === 0) {
+      await db.insert(userFollows).values({
+        id: generateId(),
+        followerId: user.id,
+        followeeId: shadowUser.id,
+        createdAt: new Date(),
+      })
+    }
+  } catch (e) {
+    console.error('[API] Failed to create shadow user for Nostr follow:', e)
+  }
+
+  return c.json({ ok: true })
+})
+
+// DELETE /api/nostr/follow/:pubkey
+api.delete('/nostr/follow/:pubkey', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const pubkey = c.req.param('pubkey')
+
+  await db.delete(nostrFollows)
+    .where(and(eq(nostrFollows.userId, user.id), eq(nostrFollows.targetPubkey, pubkey)))
+
+  return c.json({ ok: true })
+})
+
+// GET /api/nostr/following
+api.get('/nostr/following', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const list = await db.select({
+    id: nostrFollows.id,
+    target_pubkey: nostrFollows.targetPubkey,
+    target_npub: nostrFollows.targetNpub,
+    target_display_name: nostrFollows.targetDisplayName,
+    created_at: nostrFollows.createdAt,
+  })
+    .from(nostrFollows)
+    .where(eq(nostrFollows.userId, user.id))
+    .orderBy(desc(nostrFollows.createdAt))
+
+  return c.json({ following: list })
 })
 
 export default api

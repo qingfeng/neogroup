@@ -16,6 +16,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
       <div class="navbar-menu">
         {user ? (
           <>
+            <a href="/timeline">Timeline</a>
             <a href="/group/create">创建小组</a>
             <a href="/group/search">远程社区</a>
             <a href="https://neodb.social/" target="_blank" rel="noopener">书影音</a>

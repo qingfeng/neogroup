@@ -44,7 +44,7 @@ home.get('/', async (c) => {
     })
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
-    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .leftJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(desc(topics.updatedAt))
     .limit(30)
 
@@ -68,7 +68,7 @@ home.get('/', async (c) => {
     })
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
-    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .leftJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(sql`RANDOM()`)
     .limit(5)
 
@@ -96,7 +96,7 @@ home.get('/', async (c) => {
     .from(comments)
     .innerJoin(users, eq(comments.userId, users.id))
     .innerJoin(topics, eq(comments.topicId, topics.id))
-    .innerJoin(groups, eq(topics.groupId, groups.id))
+    .leftJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(sql`RANDOM()`)
     .limit(5)
 

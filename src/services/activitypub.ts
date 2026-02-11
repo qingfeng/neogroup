@@ -502,12 +502,17 @@ export async function deliverTopicToFollowers(
     const topicUrl = `${baseUrl}/topic/${topicId}`
     const published = new Date().toISOString()
 
-    // Build note content: title as bold, then content
-    let noteContent = `<p><b>${escapeHtml(title)}</b></p>`
+    // Build note content: title as bold (if present), then content
+    let noteContent = ''
+    if (title) {
+      noteContent += `<p><b>${escapeHtml(title)}</b></p>`
+    }
     if (content) {
       noteContent += content
     }
-    noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
+    if (title) {
+      noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
+    }
 
     const note = {
       id: noteId,
@@ -582,11 +587,16 @@ export async function getNoteJson(
   const noteId = `${baseUrl}/ap/notes/${topicId}`
   const topicUrl = `${baseUrl}/topic/${topicId}`
 
-  let noteContent = `<p><b>${escapeHtml(topic.title)}</b></p>`
+  let noteContent = ''
+  if (topic.title) {
+    noteContent += `<p><b>${escapeHtml(topic.title)}</b></p>`
+  }
   if (topic.content) {
     noteContent += topic.content
   }
-  noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
+  if (topic.title) {
+    noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
+  }
 
   return {
     '@context': 'https://www.w3.org/ns/activitystreams',

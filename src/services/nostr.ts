@@ -104,6 +104,17 @@ export function pubkeyToNpub(hex: string): string {
   return bech32.encode('npub', words, 90)
 }
 
+export function npubToPubkey(npub: string): string | null {
+  try {
+    const { prefix, words } = bech32.decode(npub, 90)
+    if (prefix !== 'npub') return null
+    const bytes = bech32.fromWords(words)
+    return bytesToHex(new Uint8Array(bytes))
+  } catch {
+    return null
+  }
+}
+
 export function privkeyToNsec(hex: string): string {
   const bytes = hexToBytes(hex)
   const words = bech32.toWords(Array.from(bytes))

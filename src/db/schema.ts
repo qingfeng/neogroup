@@ -74,7 +74,7 @@ export const groupMembers = sqliteTable('group_member', {
 // 话题表
 export const topics = sqliteTable('topic', {
   id: text('id').primaryKey(),
-  groupId: text('group_id').notNull().references(() => groups.id),
+  groupId: text('group_id').references(() => groups.id),
   userId: text('user_id').notNull().references(() => users.id),
   title: text('title').notNull(),
   content: text('content'),
@@ -214,6 +214,31 @@ export const remoteGroups = sqliteTable('remote_group', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// Nostr 关注表
+export const nostrFollows = sqliteTable('nostr_follow', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  targetPubkey: text('target_pubkey').notNull(),
+  targetNpub: text('target_npub'),
+  targetDisplayName: text('target_display_name'),
+  targetAvatarUrl: text('target_avatar_url'),
+  lastPollAt: integer('last_poll_at'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Nostr 社区关注表
+export const nostrCommunityFollows = sqliteTable('nostr_community_follow', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  communityPubkey: text('community_pubkey').notNull(),
+  communityDTag: text('community_d_tag').notNull(),
+  communityRelay: text('community_relay'),
+  communityName: text('community_name'),
+  localGroupId: text('local_group_id').references(() => groups.id),
+  lastPollAt: integer('last_poll_at'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -233,3 +258,5 @@ export type ApFollower = typeof apFollowers.$inferSelect
 export type GroupFollower = typeof groupFollowers.$inferSelect
 export type UserFollow = typeof userFollows.$inferSelect
 export type RemoteGroup = typeof remoteGroups.$inferSelect
+export type NostrFollow = typeof nostrFollows.$inferSelect
+export type NostrCommunityFollow = typeof nostrCommunityFollows.$inferSelect

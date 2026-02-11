@@ -12,7 +12,7 @@ interface FeedItem {
   title?: string
   createdAt: Date
   user: { id: string; username: string; displayName: string | null; avatarUrl: string | null }
-  group: { id: string; name: string }
+  group: { id: string; name: string } | null
   topic?: { id: string; title: string }
 }
 
@@ -91,7 +91,11 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
                       </div>
                     )}
                     <div class="feed-item-meta">
-                      <a href={`/group/${item.group.id}`}>{item.group.name}</a>
+                      {item.group ? (
+                        <a href={`/group/${item.group.id}`}>{item.group.name}</a>
+                      ) : (
+                        <span>个人动态</span>
+                      )}
                     </div>
                   </div>
                 </div>

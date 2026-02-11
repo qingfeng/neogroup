@@ -1,0 +1,41 @@
+name = "neogroup-relay"
+main = "src/index.ts"
+compatibility_date = "2025-01-04"
+
+# Custom domain
+routes = [{ pattern = "relay.example.com", custom_domain = true }]
+workers_dev = true
+
+# Durable Objects
+[[durable_objects.bindings]]
+name = "RELAY_DO"
+class_name = "RelayDO"
+
+# D1 Database (create with: wrangler d1 create nostr-relay)
+[[d1_databases]]
+binding = "DB"
+database_name = "nostr-relay"
+database_id = "your-relay-db-id-here"
+
+# NeoGroup DB (shared, for pubkey allowlist check)
+[[d1_databases]]
+binding = "NEOGROUP_DB"
+database_name = "neogroup"
+database_id = "your-neogroup-db-id-here"
+
+# Durable Object migration
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayDO"]
+
+# Daily maintenance cron
+[triggers]
+crons = ["0 0 * * *"]
+
+[vars]
+RELAY_NAME = "NeoGroup Relay"
+RELAY_DESCRIPTION = "Self-hosted Nostr relay for NeoGroup"
+RELAY_CONTACT = "example.com"
+# NEOGROUP_WEBHOOK_URL = "https://example.com/api/nostr/relay-event"
+# NEOGROUP_WEBHOOK_SECRET = ""
+# ALLOWED_PUBKEYS loaded from D1 or set as JSON array

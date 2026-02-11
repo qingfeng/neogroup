@@ -278,6 +278,7 @@ auth.get('/callback', async (c) => {
                 picture: userRow.avatarUrl || '',
                 nip05: `${username}@${host}`,
                 ...((userRow as any).lightningAddress ? { lud16: `${username}@${host}` } : {}),
+                ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
               }),
               tags: [],
             })

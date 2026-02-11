@@ -2289,3 +2289,251 @@ button.ql-neodb:hover::after {
 .nostr-enable-link a:hover {
   color: #6c3483;
 }
+
+/* Timeline Page */
+.timeline-page {
+  display: flex;
+  gap: 20px;
+}
+
+.timeline-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.timeline-sidebar {
+  width: 270px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .timeline-page {
+    flex-direction: column;
+  }
+
+  .timeline-sidebar {
+    width: 100%;
+  }
+}
+
+/* Timeline Composer */
+.timeline-composer {
+  padding: 0 !important;
+}
+
+.timeline-post-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-composer-header {
+  display: flex;
+  gap: 12px;
+  padding: 15px 15px 0;
+  align-items: flex-start;
+}
+
+.timeline-composer-header .avatar-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.timeline-composer-header textarea {
+  flex: 1;
+  min-height: 70px;
+  padding: 10px 12px;
+  border: 1px solid #e8e8e8;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  font-family: inherit;
+  background: #faf9f5;
+}
+
+.timeline-composer-header textarea:focus {
+  border-color: #9bc07d;
+  outline: none;
+  background: #fff;
+}
+
+.timeline-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 15px 12px;
+}
+
+/* Timeline Items */
+.timeline-item {
+  padding: 0 !important;
+}
+
+.timeline-item-header {
+  display: flex;
+  gap: 10px;
+  padding: 12px 15px 0;
+  align-items: flex-start;
+}
+
+.timeline-item-header .avatar-sm {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.timeline-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.timeline-item-author {
+  color: #37a;
+  font-weight: bold;
+  font-size: 13px;
+}
+
+.timeline-item-author:hover {
+  text-decoration: none;
+  color: #072;
+}
+
+.timeline-item-time {
+  color: #bbb;
+  font-size: 12px;
+}
+
+.timeline-item-group {
+  color: #999;
+  font-size: 12px;
+}
+
+.timeline-item-group a {
+  color: #37a;
+}
+
+.timeline-item-body {
+  padding: 6px 15px 0 61px;
+}
+
+.timeline-item-title {
+  font-size: 15px;
+  font-weight: normal;
+  margin-bottom: 4px;
+}
+
+.timeline-item-title a {
+  color: #37a;
+}
+
+.timeline-item-title a:hover {
+  color: #072;
+}
+
+.timeline-item-content {
+  margin-top: 2px;
+}
+
+.timeline-item-preview {
+  color: #555;
+  font-size: 14px;
+  line-height: 1.7;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.timeline-item-preview:hover {
+  text-decoration: none;
+  color: #333;
+}
+
+.timeline-item-actions {
+  display: flex;
+  gap: 16px;
+  padding: 8px 15px 12px 61px;
+  margin-top: 4px;
+  border-top: none;
+}
+
+.timeline-item-actions .comment-action-btn {
+  font-size: 12px;
+  color: #999;
+}
+
+.timeline-item-actions .comment-action-btn:hover {
+  color: #37a;
+}
+
+.timeline-item-actions .comment-action-btn.liked {
+  color: #e09015;
+}
+
+/* Nostr Follow sidebar */
+.timeline-sidebar .card h3 {
+  font-size: 14px;
+  font-weight: bold;
+  color: #072;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.nostr-follow-form {
+  margin-bottom: 12px;
+}
+
+.nostr-follow-form input[type="text"] {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #ccc;
+  font-size: 13px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+}
+
+.nostr-follow-form input[type="text"]:focus {
+  border-color: #9bc07d;
+  outline: none;
+}
+
+.nostr-follow-form .btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.nostr-follow-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nostr-follow-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dotted #e8e8e8;
+  font-size: 12px;
+}
+
+.nostr-follow-item:last-child {
+  border-bottom: none;
+}
+
+.nostr-follow-name {
+  color: #37a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  margin-right: 8px;
+}

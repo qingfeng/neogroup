@@ -8,6 +8,7 @@ migrate.sql
 
 # 本地配置（包含真实的数据库ID等）
 wrangler.toml
+relay/wrangler.toml
 
 # plans
 docs/plans/

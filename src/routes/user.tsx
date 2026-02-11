@@ -208,6 +208,7 @@ user.get('/:id', async (c) => {
       .select({
         id: topics.id,
         title: topics.title,
+        content: topics.content,
         createdAt: topics.createdAt,
         group: {
           id: groups.id,
@@ -215,7 +216,7 @@ user.get('/:id', async (c) => {
         },
       })
       .from(topics)
-      .innerJoin(groups, eq(topics.groupId, groups.id))
+      .leftJoin(groups, eq(topics.groupId, groups.id))
       .where(eq(topics.userId, userId))
       .orderBy(desc(topics.createdAt)),
     20
@@ -246,6 +247,7 @@ user.get('/:id', async (c) => {
       .select({
         id: topics.id,
         title: topics.title,
+        content: topics.content,
         likedAt: topicLikes.createdAt,
         group: {
           id: groups.id,
@@ -254,7 +256,7 @@ user.get('/:id', async (c) => {
       })
       .from(topicLikes)
       .innerJoin(topics, eq(topicLikes.topicId, topics.id))
-      .innerJoin(groups, eq(topics.groupId, groups.id))
+      .leftJoin(groups, eq(topics.groupId, groups.id))
       .where(eq(topicLikes.userId, userId))
       .orderBy(desc(topicLikes.createdAt)),
     20
@@ -393,10 +395,12 @@ user.get('/:id', async (c) => {
               <ul class="topic-simple-list">
                 {userTopics.map((topic) => (
                   <li key={topic.id}>
-                    <a href={`/topic/${topic.id}`}>{topic.title}</a>
+                    <a href={`/topic/${topic.id}`}>{topic.title || truncate(stripHtml(topic.content || ''), 50) || '个人动态'}</a>
                     <span class="meta">
-                      <a href={`/group/${topic.group.id}`}>{topic.group.name}</a>
-                      · {formatDate(topic.createdAt)}
+                      {topic.group ? (
+                        <><a href={`/group/${topic.group.id}`}>{topic.group.name}</a> · </>
+                      ) : null}
+                      {formatDate(topic.createdAt)}
                     </span>
                   </li>
                 ))}
@@ -431,10 +435,12 @@ user.get('/:id', async (c) => {
               <ul class="topic-simple-list">
                 {likedTopics.map((topic) => (
                   <li key={topic.id}>
-                    <a href={`/topic/${topic.id}`}>{topic.title}</a>
+                    <a href={`/topic/${topic.id}`}>{topic.title || truncate(stripHtml(topic.content || ''), 50) || '个人动态'}</a>
                     <span class="meta">
-                      <a href={`/group/${topic.group.id}`}>{topic.group.name}</a>
-                      · {formatDate(topic.likedAt)}
+                      {topic.group ? (
+                        <><a href={`/group/${topic.group.id}`}>{topic.group.name}</a> · </>
+                      ) : null}
+                      {formatDate(topic.likedAt)}
                     </span>
                   </li>
                 ))}
@@ -806,6 +812,7 @@ user.post('/:id/edit', async (c) => {
           picture: u.avatarUrl || '',
           nip05: `${u.username}@${host}`,
           ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
+          ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
         }),
         tags: [],
       })
@@ -964,6 +971,7 @@ user.post('/:id/nostr/enable', async (c) => {
           picture: profileUser.avatarUrl || '',
           nip05: `${profileUser.username}@${host}`,
           ...(profileUser.lightningAddress ? { lud16: `${profileUser.username}@${host}` } : {}),
+          ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
         }),
         tags: [],
       })

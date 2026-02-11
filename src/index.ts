@@ -12,6 +12,7 @@ import userRoutes from './routes/user'
 import notificationRoutes from './routes/notification'
 import activitypubRoutes from './routes/activitypub'
 import apiRoutes from './routes/api'
+import timelineRoutes from './routes/timeline'
 import type { AppContext, Bindings } from './types'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
 
@@ -367,6 +368,7 @@ app.get('/api/toot-preview', async (c) => {
 app.route('/api', apiRoutes)
 app.route('/', activitypubRoutes)
 app.route('/auth', authRoutes)
+app.route('/timeline', timelineRoutes)
 app.route('/topic', topicRoutes)
 app.route('/group', groupRoutes)
 app.route('/user', userRoutes)
@@ -425,6 +427,7 @@ app.post('/admin/nostr-enable-all', async (c) => {
             name: u.displayName || u.username, about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
             picture: u.avatarUrl || '', nip05: `${u.username}@${host}`,
             ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
+            ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
           }), tags: [],
         })
         await c.env.NOSTR_QUEUE.send({ events: [metaEvent] })
@@ -467,7 +470,7 @@ app.post('/admin/nostr-enable-all', async (c) => {
 
 export default {
   fetch: app.fetch,
-  // Cron: NIP-72 poll + auto-enable Nostr for users without keys
+  // Cron: NIP-72 community poll + Nostr follow sync
   scheduled: async (_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) => {
     const { createDb } = await import('./db')
     const db = createDb(env.DB)
@@ -480,130 +483,32 @@ export default {
       console.error('[Cron] NIP-72 poll failed:', e)
     }
 
-    // Auto-enable Nostr for users without keys (batch, max 5 per cron to stay within CPU limits)
-    if (env.NOSTR_MASTER_KEY && env.NOSTR_QUEUE) {
-      try {
-        const { users: usersTable, topics: topicsTable, groups: groupsTable } = await import('./db/schema')
-        const { isNull } = await import('drizzle-orm')
-        const { generateNostrKeypair, buildSignedEvent } = await import('./services/nostr')
-        const { stripHtml } = await import('./lib/utils')
-
-        const usersWithoutNostr = await db.select({ id: usersTable.id, username: usersTable.username, displayName: usersTable.displayName, bio: usersTable.bio, avatarUrl: usersTable.avatarUrl, lightningAddress: usersTable.lightningAddress })
-          .from(usersTable).where(isNull(usersTable.nostrPubkey)).limit(5)
-
-        if (usersWithoutNostr.length > 0) {
-          const baseUrl = env.APP_URL || 'https://neogrp.club'
-          const host = new URL(baseUrl).host
-          const nostrGroups = await db.select({ id: groupsTable.id, nostrSyncEnabled: groupsTable.nostrSyncEnabled, nostrPubkey: groupsTable.nostrPubkey, actorName: groupsTable.actorName })
-            .from(groupsTable).where(eq(groupsTable.nostrSyncEnabled, 1))
-          const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
-          const relayUrl = (env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
-
-          for (const u of usersWithoutNostr) {
-            try {
-              const { pubkey, privEncrypted, iv } = await generateNostrKeypair(env.NOSTR_MASTER_KEY)
-              await db.update(usersTable).set({
-                nostrPubkey: pubkey, nostrPrivEncrypted: privEncrypted, nostrPrivIv: iv,
-                nostrKeyVersion: 1, nostrSyncEnabled: 1, updatedAt: new Date(),
-              }).where(eq(usersTable.id, u.id))
-
-              // Kind 0
-              const metaEvent = await buildSignedEvent({
-                privEncrypted, iv, masterKey: env.NOSTR_MASTER_KEY,
-                kind: 0, content: JSON.stringify({
-                  name: u.displayName || u.username, about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
-                  picture: u.avatarUrl || '', nip05: `${u.username}@${host}`,
-                }), tags: [],
-              })
-              await env.NOSTR_QUEUE.send({ events: [metaEvent] })
-
-              // 回填帖子
-              const userTopics = await db.select({ id: topicsTable.id, title: topicsTable.title, content: topicsTable.content, groupId: topicsTable.groupId, createdAt: topicsTable.createdAt, nostrEventId: topicsTable.nostrEventId })
-                .from(topicsTable).where(eq(topicsTable.userId, u.id)).orderBy(topicsTable.createdAt)
-              const BATCH_SIZE = 10
-              for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
-                const batch = userTopics.slice(i, i + BATCH_SIZE)
-                const events = []
-                for (const t of batch) {
-                  if (t.nostrEventId) continue
-                  const textContent = t.content ? stripHtml(t.content).trim() : ''
-                  const noteContent = textContent
-                    ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
-                    : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
-                  const nostrTags: string[][] = [['r', `${baseUrl}/topic/${t.id}`], ['client', env.APP_NAME || 'NeoGroup']]
-                  const g = groupMap.get(t.groupId)
-                  if (g && g.nostrPubkey && g.actorName) {
-                    nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
-                  }
-                  const event = await buildSignedEvent({ privEncrypted, iv, masterKey: env.NOSTR_MASTER_KEY!, kind: 1, content: noteContent, tags: nostrTags, createdAt: Math.floor(t.createdAt.getTime() / 1000) })
-                  await db.update(topicsTable).set({ nostrEventId: event.id }).where(eq(topicsTable.id, t.id))
-                  events.push(event)
-                }
-                if (events.length > 0) await env.NOSTR_QUEUE.send({ events })
-              }
-              console.log(`[Cron] Auto-enabled Nostr for user ${u.username}`)
-            } catch (e) {
-              console.error(`[Cron] Failed to auto-enable Nostr for ${u.username}:`, e)
-            }
-          }
-          console.log(`[Cron] Auto-enabled Nostr for ${usersWithoutNostr.length} users`)
-        }
-
-        // Auto-enable Nostr for groups without keys (max 5 per cron)
-        const { buildCommunityDefinitionEvent } = await import('./services/nostr')
-        const groupsWithoutNostr = await db.select({
-          id: groupsTable.id, name: groupsTable.name, actorName: groupsTable.actorName,
-          description: groupsTable.description, iconUrl: groupsTable.iconUrl, creatorId: groupsTable.creatorId,
-        }).from(groupsTable).where(isNull(groupsTable.nostrPubkey)).limit(5)
-
-        for (const g of groupsWithoutNostr) {
-          try {
-            const keypair = await generateNostrKeypair(env.NOSTR_MASTER_KEY)
-
-            // Ensure actorName
-            let actorName = g.actorName
-            if (!actorName) {
-              actorName = g.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 20)
-              if (!actorName) actorName = 'group_' + g.id.slice(0, 12)
-              const dup = await db.select({ id: groupsTable.id }).from(groupsTable).where(eq(groupsTable.actorName, actorName)).limit(1)
-              if (dup.length > 0) actorName = actorName.slice(0, 16) + '_' + Math.random().toString(36).slice(2, 5)
-            }
-
-            await db.update(groupsTable).set({
-              nostrPubkey: keypair.pubkey, nostrPrivEncrypted: keypair.privEncrypted, nostrPrivIv: keypair.iv,
-              nostrSyncEnabled: 1, nostrLastPollAt: Math.floor(Date.now() / 1000), actorName,
-            }).where(eq(groupsTable.id, g.id))
-
-            // Publish Kind 0 (profile) + Kind 34550 (community definition)
-            const relayUrl = (env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
-            const metaEvent = await buildSignedEvent({
-              privEncrypted: keypair.privEncrypted, iv: keypair.iv, masterKey: env.NOSTR_MASTER_KEY!,
-              kind: 0, content: JSON.stringify({
-                name: g.name, about: g.description ? g.description.replace(/<[^>]*>/g, '').slice(0, 500) : '',
-                picture: g.iconUrl || '', nip05: `${actorName}@${host}`,
-                website: `${baseUrl}/group/${g.id}`,
-              }), tags: [],
-            })
-            const creator = await db.select({ nostrPubkey: usersTable.nostrPubkey }).from(usersTable).where(eq(usersTable.id, g.creatorId)).limit(1)
-            const moderatorPubkeys = creator[0]?.nostrPubkey ? [creator[0].nostrPubkey] : []
-            const communityEvent = await buildCommunityDefinitionEvent({
-              privEncrypted: keypair.privEncrypted, iv: keypair.iv, masterKey: env.NOSTR_MASTER_KEY!,
-              dTag: actorName, name: g.name, description: g.description, image: g.iconUrl, moderatorPubkeys, relayUrl,
-            })
-            await db.update(groupsTable).set({ nostrCommunityEventId: communityEvent.id }).where(eq(groupsTable.id, g.id))
-            await env.NOSTR_QUEUE.send({ events: [metaEvent, communityEvent] })
-            console.log(`[Cron] Auto-enabled Nostr for group ${g.name} (${actorName})`)
-          } catch (e) {
-            console.error(`[Cron] Failed to auto-enable Nostr for group ${g.name}:`, e)
-          }
-        }
-        if (groupsWithoutNostr.length > 0) {
-          console.log(`[Cron] Auto-enabled Nostr for ${groupsWithoutNostr.length} groups`)
-        }
-      } catch (e) {
-        console.error('[Cron] Nostr auto-enable failed:', e)
-      }
+    // Poll followed Nostr users
+    try {
+      const { pollFollowedUsers } = await import('./services/nostr-community')
+      await pollFollowedUsers(env, db)
+    } catch (e) {
+      console.error('[Cron] Nostr follow poll failed:', e)
     }
+
+    // Poll followed Nostr communities
+    try {
+      const { pollFollowedCommunities } = await import('./services/nostr-community')
+      await pollFollowedCommunities(env, db)
+    } catch (e) {
+      console.error('[Cron] Nostr community follow poll failed:', e)
+    }
+
+    // Sync Kind 3 contact lists from relay
+    try {
+      const { syncContactListsFromRelay } = await import('./services/nostr-community')
+      await syncContactListsFromRelay(env, db)
+    } catch (e) {
+      console.error('[Cron] Nostr contact list sync failed:', e)
+    }
+
+    // Note: Nostr auto-enable for users/groups has completed (all 286 users + 55 groups done).
+    // Code removed since it's no longer needed.
   },
   // Nostr Queue consumer: publish signed events directly to relays via WebSocket
   async queue(batch: MessageBatch, env: Bindings) {

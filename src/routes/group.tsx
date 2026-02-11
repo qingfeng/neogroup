@@ -202,6 +202,7 @@ group.post('/create', async (c) => {
             picture: iconUrl || '',
             nip05: `${actorName}@${host}`,
             website: `${baseUrl}/group/${groupId}`,
+            ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
           }),
           tags: [],
         })
