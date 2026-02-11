@@ -11,6 +11,7 @@ import groupRoutes from './routes/group'
 import userRoutes from './routes/user'
 import notificationRoutes from './routes/notification'
 import activitypubRoutes from './routes/activitypub'
+import apiRoutes from './routes/api'
 import type { AppContext, Bindings } from './types'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
 
@@ -363,6 +364,7 @@ app.get('/api/toot-preview', async (c) => {
 })
 
 // 路由
+app.route('/api', apiRoutes)
 app.route('/', activitypubRoutes)
 app.route('/auth', authRoutes)
 app.route('/topic', topicRoutes)

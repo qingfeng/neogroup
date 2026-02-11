@@ -7,6 +7,23 @@ export function generateId(): string {
   return nanoid(12)
 }
 
+// API Key 生成：neogrp_ + 32位 hex（128 bit 熵）
+export async function generateApiKey(): Promise<{ key: string; hash: string; keyId: string }> {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+  const key = `neogrp_${hex}`
+  const hash = await hashApiKey(key)
+  const keyId = nanoid(12)
+  return { key, hash, keyId }
+}
+
+// SHA-256 哈希（存储用，原始 key 不落盘）
+export async function hashApiKey(key: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function isSuperAdmin(user: { role?: string | null } | null): boolean {
   return user?.role === 'admin'
 }
