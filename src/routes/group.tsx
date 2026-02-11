@@ -136,6 +136,29 @@ group.post('/create', async (c) => {
     }
   }
 
+  // 生成 actorName（用于 AP 联邦和 Nostr d-tag）
+  let actorName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 20)
+  if (!actorName) actorName = 'group_' + groupId.slice(0, 12)
+  const existingActor = await db.select({ id: groups.id }).from(groups).where(eq(groups.actorName, actorName)).limit(1)
+  if (existingActor.length > 0) {
+    actorName = actorName.slice(0, 16) + '_' + Math.random().toString(36).slice(2, 5)
+  }
+
+  // 自动生成 Nostr 密钥对
+  let nostrPubkey: string | null = null
+  let nostrPrivEncrypted: string | null = null
+  let nostrPrivIv: string | null = null
+  if (c.env.NOSTR_MASTER_KEY) {
+    try {
+      const keypair = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
+      nostrPubkey = keypair.pubkey
+      nostrPrivEncrypted = keypair.privEncrypted
+      nostrPrivIv = keypair.iv
+    } catch (e) {
+      console.error('[NIP-72] Failed to generate group keypair:', e)
+    }
+  }
+
   await db.insert(groups).values({
     id: groupId,
     creatorId: user.id,
@@ -143,6 +166,12 @@ group.post('/create', async (c) => {
     description,
     tags,
     iconUrl,
+    actorName,
+    nostrPubkey,
+    nostrPrivEncrypted,
+    nostrPrivIv,
+    nostrSyncEnabled: nostrPubkey ? 1 : 0,
+    nostrLastPollAt: nostrPubkey ? Math.floor(Date.now() / 1000) : null,
     createdAt: timestamp,
     updatedAt: timestamp,
   })
@@ -154,6 +183,45 @@ group.post('/create', async (c) => {
     userId: user.id,
     createdAt: timestamp,
   })
+
+  // 发布 Kind 0 (group profile) + Kind 34550 社区定义事件
+  if (nostrPubkey && nostrPrivEncrypted && nostrPrivIv && c.env.NOSTR_QUEUE && c.env.NOSTR_MASTER_KEY) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+        const host = new URL(baseUrl).host
+        const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+
+        // Kind 0: group profile metadata
+        const metaEvent = await buildSignedEvent({
+          privEncrypted: nostrPrivEncrypted!, iv: nostrPrivIv!, masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 0,
+          content: JSON.stringify({
+            name,
+            about: description ? stripHtml(description).slice(0, 500) : '',
+            picture: iconUrl || '',
+            nip05: `${actorName}@${host}`,
+            website: `${baseUrl}/group/${groupId}`,
+          }),
+          tags: [],
+        })
+
+        // Kind 34550: community definition
+        const moderatorPubkeys: string[] = []
+        if (user.nostrPubkey) moderatorPubkeys.push(user.nostrPubkey)
+        const communityEvent = await buildCommunityDefinitionEvent({
+          privEncrypted: nostrPrivEncrypted!, iv: nostrPrivIv!, masterKey: c.env.NOSTR_MASTER_KEY!,
+          dTag: actorName, name, description, image: iconUrl, moderatorPubkeys, relayUrl,
+        })
+
+        await db.update(groups).set({ nostrCommunityEventId: communityEvent.id }).where(eq(groups.id, groupId))
+        await c.env.NOSTR_QUEUE!.send({ events: [metaEvent, communityEvent] })
+        console.log('[NIP-72] Auto-published Kind 0 + community definition for new group:', actorName)
+      } catch (e) {
+        console.error('[NIP-72] Failed to publish community definition:', e)
+      }
+    })())
+  }
 
   return c.redirect(`/group/${groupId}`)
 })
@@ -1463,7 +1531,7 @@ group.get('/:id/nostr', async (c) => {
           </div>
         )}
 
-        {groupData.nostrSyncEnabled === 1 && groupData.nostrPubkey ? (
+        {groupData.nostrPubkey ? (
           <div>
             <div class="nostr-identity-card">
               <h2><span class="nostr-status-on">Nostr 社区已开启</span></h2>
@@ -1497,36 +1565,10 @@ group.get('/:id/nostr', async (c) => {
                 <li>本站用户在本小组发帖自动带社区 a-tag</li>
               </ul>
             </div>
-
-            <div class="nostr-actions">
-              <form action={`/group/${groupId}/nostr/disable`} method="POST">
-                <button type="submit" class="btn" onclick="return confirm('确定要关闭 Nostr 社区吗？密钥会保留，可以重新开启。')">关闭 Nostr 社区</button>
-              </form>
-            </div>
           </div>
         ) : (
-          <div>
-            <div class="nostr-info-box">
-              <h2>什么是 NIP-72 社区？</h2>
-              <p>将本小组发布为 Nostr 上的 NIP-72 moderated community。开启后：</p>
-              <ul>
-                <li>为小组生成 Nostr 密钥对</li>
-                <li>发布 Kind 34550 社区定义事件到 relay</li>
-                <li>外部 Nostr 用户可通过 a-tag 向社区投稿</li>
-                <li>Cron 定时轮询 relay 导入新帖子（需满足 PoW）</li>
-                <li>本站用户发帖自动带社区 a-tag</li>
-              </ul>
-            </div>
-
-            {hasNostrMasterKey ? (
-              <div class="nostr-actions">
-                <form action={`/group/${groupId}/nostr/enable`} method="POST">
-                  <button type="submit" class="btn btn-primary">开启 Nostr 社区</button>
-                </form>
-              </div>
-            ) : (
-              <p style="color: #999;">请先配置 Nostr 环境变量后再开启。</p>
-            )}
+          <div class="nostr-info-box">
+            <p>Nostr 社区将在下次 Cron 周期自动开启。</p>
           </div>
         )}
       </div>
@@ -1628,26 +1670,6 @@ group.post('/:id/nostr/enable', async (c) => {
       }
     })())
   }
-
-  return c.redirect(`/group/${groupId}/nostr`)
-})
-
-// 关闭 Nostr 社区
-group.post('/:id/nostr/disable', async (c) => {
-  const db = c.get('db')
-  const user = c.get('user')
-  const groupId = c.req.param('id')
-
-  if (!user) return c.redirect('/auth/login')
-
-  const groupResult = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1)
-  if (groupResult.length === 0) return c.notFound()
-
-  if (groupResult[0].creatorId !== user.id) return c.redirect(`/group/${groupId}`)
-
-  await db.update(groups).set({
-    nostrSyncEnabled: 0,
-  }).where(eq(groups.id, groupId))
 
   return c.redirect(`/group/${groupId}/nostr`)
 })

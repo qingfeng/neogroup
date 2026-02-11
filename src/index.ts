@@ -546,6 +546,58 @@ export default {
           }
           console.log(`[Cron] Auto-enabled Nostr for ${usersWithoutNostr.length} users`)
         }
+
+        // Auto-enable Nostr for groups without keys (max 5 per cron)
+        const { buildCommunityDefinitionEvent } = await import('./services/nostr')
+        const groupsWithoutNostr = await db.select({
+          id: groupsTable.id, name: groupsTable.name, actorName: groupsTable.actorName,
+          description: groupsTable.description, iconUrl: groupsTable.iconUrl, creatorId: groupsTable.creatorId,
+        }).from(groupsTable).where(isNull(groupsTable.nostrPubkey)).limit(5)
+
+        for (const g of groupsWithoutNostr) {
+          try {
+            const keypair = await generateNostrKeypair(env.NOSTR_MASTER_KEY)
+
+            // Ensure actorName
+            let actorName = g.actorName
+            if (!actorName) {
+              actorName = g.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 20)
+              if (!actorName) actorName = 'group_' + g.id.slice(0, 12)
+              const dup = await db.select({ id: groupsTable.id }).from(groupsTable).where(eq(groupsTable.actorName, actorName)).limit(1)
+              if (dup.length > 0) actorName = actorName.slice(0, 16) + '_' + Math.random().toString(36).slice(2, 5)
+            }
+
+            await db.update(groupsTable).set({
+              nostrPubkey: keypair.pubkey, nostrPrivEncrypted: keypair.privEncrypted, nostrPrivIv: keypair.iv,
+              nostrSyncEnabled: 1, nostrLastPollAt: Math.floor(Date.now() / 1000), actorName,
+            }).where(eq(groupsTable.id, g.id))
+
+            // Publish Kind 0 (profile) + Kind 34550 (community definition)
+            const relayUrl = (env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+            const metaEvent = await buildSignedEvent({
+              privEncrypted: keypair.privEncrypted, iv: keypair.iv, masterKey: env.NOSTR_MASTER_KEY!,
+              kind: 0, content: JSON.stringify({
+                name: g.name, about: g.description ? g.description.replace(/<[^>]*>/g, '').slice(0, 500) : '',
+                picture: g.iconUrl || '', nip05: `${actorName}@${host}`,
+                website: `${baseUrl}/group/${g.id}`,
+              }), tags: [],
+            })
+            const creator = await db.select({ nostrPubkey: usersTable.nostrPubkey }).from(usersTable).where(eq(usersTable.id, g.creatorId)).limit(1)
+            const moderatorPubkeys = creator[0]?.nostrPubkey ? [creator[0].nostrPubkey] : []
+            const communityEvent = await buildCommunityDefinitionEvent({
+              privEncrypted: keypair.privEncrypted, iv: keypair.iv, masterKey: env.NOSTR_MASTER_KEY!,
+              dTag: actorName, name: g.name, description: g.description, image: g.iconUrl, moderatorPubkeys, relayUrl,
+            })
+            await db.update(groupsTable).set({ nostrCommunityEventId: communityEvent.id }).where(eq(groupsTable.id, g.id))
+            await env.NOSTR_QUEUE.send({ events: [metaEvent, communityEvent] })
+            console.log(`[Cron] Auto-enabled Nostr for group ${g.name} (${actorName})`)
+          } catch (e) {
+            console.error(`[Cron] Failed to auto-enable Nostr for group ${g.name}:`, e)
+          }
+        }
+        if (groupsWithoutNostr.length > 0) {
+          console.log(`[Cron] Auto-enabled Nostr for ${groupsWithoutNostr.length} groups`)
+        }
       } catch (e) {
         console.error('[Cron] Nostr auto-enable failed:', e)
       }
