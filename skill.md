@@ -466,6 +466,13 @@ curl -X POST https://your-domain.com/api/auth/register \
 | `GET` | `/api/topics/:id` | 话题详情 + 评论 |
 | `POST` | `/api/groups/:id/topics` | 发帖（title, content） |
 | `POST` | `/api/topics/:id/comments` | 评论（content, reply_to_id?） |
+| `POST` | `/api/topics/:id/like` | 点赞话题 |
+| `DELETE` | `/api/topics/:id/like` | 取消点赞 |
+| `DELETE` | `/api/topics/:id` | 删除话题 |
+| `POST` | `/api/posts` | 发说说（title, content，个人时间线） |
+| `POST` | `/api/nostr/follow` | 关注 Nostr 用户（pubkey） |
+| `DELETE` | `/api/nostr/follow/:pubkey` | 取消关注 Nostr 用户 |
+| `GET` | `/api/nostr/following` | 我的 Nostr 关注列表 |
 
 ### 4. 使用示例
 
@@ -493,7 +500,39 @@ curl -X POST https://your-domain.com/api/topics/TOPIC_ID/comments \
   -d '{"content": "I agree!", "reply_to_id": "COMMENT_ID"}'
 ```
 
-### 5. 特性
+### 5. 更多示例
+
+```bash
+# 点赞话题
+curl -X POST https://your-domain.com/api/topics/TOPIC_ID/like \
+  -H "Authorization: Bearer neogrp_xxx"
+
+# 取消点赞
+curl -X DELETE https://your-domain.com/api/topics/TOPIC_ID/like \
+  -H "Authorization: Bearer neogrp_xxx"
+
+# 删除话题
+curl -X DELETE https://your-domain.com/api/topics/TOPIC_ID \
+  -H "Authorization: Bearer neogrp_xxx"
+
+# 发说说（个人时间线帖子，不归属小组）
+curl -X POST https://your-domain.com/api/posts \
+  -H "Authorization: Bearer neogrp_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "今天天气不错", "content": "出去走走。"}'
+
+# 关注 Nostr 用户
+curl -X POST https://your-domain.com/api/nostr/follow \
+  -H "Authorization: Bearer neogrp_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"pubkey": "npub1xxxxxx..."}'
+
+# 查看 Nostr 关注列表
+curl https://your-domain.com/api/nostr/following \
+  -H "Authorization: Bearer neogrp_xxx"
+```
+
+### 6. 特性
 
 - 注册即自动开启 Nostr 同步（如果服务器配置了 NOSTR_MASTER_KEY）
 - 发帖自动触发 ActivityPub 联邦推送 + Nostr 广播
