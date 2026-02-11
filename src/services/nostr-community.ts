@@ -13,6 +13,7 @@ import {
 } from './nostr'
 import { generateId, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
+import { deliverTopicToFollowers } from './activitypub'
 
 // --- Cron entry point ---
 
@@ -1124,6 +1125,131 @@ export async function pollNostrReplies(env: Bindings, db: Database) {
       }
     } catch (e) {
       console.error(`[Nostr Replies] Fetch failed for batch:`, e)
+    }
+  }
+
+  if (env.KV && maxCreatedAt > since) {
+    await env.KV.put(KV_KEY, String(maxCreatedAt + 1))
+  }
+}
+
+// --- Poll own user posts from external Nostr clients (e.g. Damus) ---
+
+export async function pollOwnUserPosts(env: Bindings, db: Database) {
+  const relayUrls = (env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (relayUrls.length === 0) return
+
+  const relayUrl = relayUrls[0]
+  const KV_KEY = 'nostr_own_posts_last_poll'
+
+  // Get last poll timestamp from KV
+  let since = Math.floor(Date.now() / 1000) - 3600 // Default: last hour
+  if (env.KV) {
+    const stored = await env.KV.get(KV_KEY)
+    if (stored) since = parseInt(stored, 10)
+  }
+
+  // Get all local users with Nostr sync enabled
+  const nostrUsers = await db
+    .select({ id: users.id, nostrPubkey: users.nostrPubkey })
+    .from(users)
+    .where(and(eq(users.nostrSyncEnabled, 1), isNotNull(users.nostrPubkey)))
+
+  if (nostrUsers.length === 0) return
+
+  // Build pubkey → user map for fast lookup
+  const pubkeyToUser = new Map<string, { id: string }>()
+  for (const u of nostrUsers) {
+    if (u.nostrPubkey) pubkeyToUser.set(u.nostrPubkey, { id: u.id })
+  }
+
+  const BATCH_SIZE = 50
+  let maxCreatedAt = since
+  const baseUrl = env.APP_URL
+
+  for (let i = 0; i < nostrUsers.length; i += BATCH_SIZE) {
+    const batch = nostrUsers.slice(i, i + BATCH_SIZE)
+    const pubkeys = batch.map(u => u.nostrPubkey!).filter(Boolean)
+
+    try {
+      const events = await fetchEventsFromRelay(relayUrl, {
+        kinds: [1],
+        authors: pubkeys,
+        since,
+      })
+
+      console.log(`[Nostr OwnPosts] Fetched ${events.length} events from ${pubkeys.length} own users since ${since}`)
+
+      for (const event of events) {
+        try {
+          if (!verifyEvent(event)) continue
+
+          // Dedup: skip if already imported (covers posts created from NeoGroup)
+          const existing = await db.select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.nostrEventId, event.id))
+            .limit(1)
+          if (existing.length > 0) continue
+
+          // Skip NIP-72 community posts (handled by pollCommunityPosts)
+          const hasATag = event.tags.some(t => t[0] === 'a' && t[1]?.startsWith('34550:'))
+          if (hasATag) continue
+
+          // Skip replies (handled by pollNostrReplies)
+          const hasETag = event.tags.some(t => t[0] === 'e')
+          if (hasETag) continue
+
+          // Reject future timestamps
+          const nowSec = Math.floor(Date.now() / 1000)
+          if (event.created_at > nowSec + 600) continue
+
+          // Find the local user (not shadow user)
+          const localUser = pubkeyToUser.get(event.pubkey)
+          if (!localUser) continue
+
+          // HTML escape + format
+          const escaped = event.content
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+          const htmlContent = escaped
+            ? '<p>' + escaped.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
+            : null
+
+          const topicId = generateId()
+          const topicNow = new Date(event.created_at * 1000)
+
+          await db.insert(topics).values({
+            id: topicId,
+            groupId: null,
+            userId: localUser.id,
+            title: '',
+            content: htmlContent,
+            type: 0,
+            nostrEventId: event.id,
+            createdAt: topicNow,
+            updatedAt: topicNow,
+          })
+
+          console.log(`[Nostr OwnPosts] Imported post ${topicId} from own user ${event.pubkey.slice(0, 8)}...`)
+
+          // AP federation: deliver to followers
+          try {
+            console.log(`[Nostr OwnPosts] Starting AP delivery for ${topicId}, user ${localUser.id}, baseUrl ${baseUrl}`)
+            await deliverTopicToFollowers(db, baseUrl, localUser.id, topicId, '', htmlContent)
+            console.log(`[Nostr OwnPosts] AP delivery completed for ${topicId}`)
+          } catch (e) {
+            console.error(`[Nostr OwnPosts] AP delivery failed for ${topicId}:`, e)
+          }
+        } catch (e) {
+          console.error(`[Nostr OwnPosts] Failed to process event ${event.id}:`, e)
+        }
+
+        if (event.created_at > maxCreatedAt) maxCreatedAt = event.created_at
+      }
+    } catch (e) {
+      console.error('[Nostr OwnPosts] Poll failed:', e)
     }
   }
 

@@ -556,6 +556,14 @@ export default {
       console.error('[Cron] Nostr follow poll failed:', e)
     }
 
+    // Poll own user posts from external Nostr clients (e.g. Damus)
+    try {
+      const { pollOwnUserPosts } = await import('./services/nostr-community')
+      await pollOwnUserPosts(env, db)
+    } catch (e) {
+      console.error('[Cron] Own Nostr posts poll failed:', e)
+    }
+
     // Poll followed Nostr communities
     try {
       const { pollFollowedCommunities } = await import('./services/nostr-community')
