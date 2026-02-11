@@ -284,6 +284,49 @@ npm run deploy
 4. 在 Nostr 客户端（Damus / Amethyst）搜索 `username@your-domain.com` 验证 NIP-05
 5. 确认帖子出现在 relay 上
 
+## 可选：启用 NIP-72 Nostr 社区
+
+NIP-72 让小组成为 Nostr 上的 moderated community，外部 Nostr 用户可以向社区投稿。**前提：先完成 Nostr 基础集成。**
+
+### 1. 执行数据库迁移
+
+```bash
+npx wrangler d1 execute neogroup --remote --file="drizzle/0018_nostr_community.sql"
+```
+
+### 2. 启用 Cron Trigger
+
+在 `wrangler.toml` 中添加：
+
+```toml
+[triggers]
+crons = ["*/5 * * * *"]
+```
+
+可选：设置最低 PoW 难度（默认 20 bits）：
+
+```toml
+[vars]
+NOSTR_MIN_POW = "20"
+```
+
+### 3. 部署
+
+```bash
+npm run deploy
+```
+
+### 4. 在小组中开启
+
+1. 进入小组设置页
+2. 点击 "NIP-72 社区设置"
+3. 点击 "开启 Nostr 社区"
+
+开启后系统会自动：
+- 为小组生成 Nostr 密钥对
+- 发布 Kind 34550 社区定义事件到 relay
+- 每 5 分钟轮询 relay 导入新帖子（需满足 PoW）
+
 ## Agent 自动化脚本
 
 如果你是 AI Agent，可以按以下流程自动执行。每一步都有预期输出，用于验证是否成功。

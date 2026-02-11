@@ -2,7 +2,9 @@ import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
-import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername } from '../lib/utils'
+import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername, stripHtml } from '../lib/utils'
+import { generateNostrKeypair, buildSignedEvent } from '../services/nostr'
+import { topics } from '../db/schema'
 import {
   getOrCreateApp,
   getAuthorizationUrl,
@@ -242,6 +244,114 @@ auth.get('/callback', async (c) => {
         metadata: JSON.stringify(account),
         createdAt: now(),
       })
+    }
+
+    // 自动开启 Nostr：如果用户还没有 Nostr 密钥，则生成并启用
+    if (c.env.NOSTR_MASTER_KEY) {
+      const userRow = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+      })
+      if (userRow && !userRow.nostrPubkey) {
+        try {
+          const { pubkey, privEncrypted, iv } = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
+          const username = userRow.username
+          await db.update(users).set({
+            nostrPubkey: pubkey,
+            nostrPrivEncrypted: privEncrypted,
+            nostrPrivIv: iv,
+            nostrKeyVersion: 1,
+            nostrSyncEnabled: 1,
+            updatedAt: now(),
+          }).where(eq(users.id, userId))
+
+          // 广播 Kind 0 + 回填历史帖子（后台）
+          if (c.env.NOSTR_QUEUE) {
+            const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+            const host = new URL(baseUrl).host
+            const metadataEvent = await buildSignedEvent({
+              privEncrypted, iv,
+              masterKey: c.env.NOSTR_MASTER_KEY,
+              kind: 0,
+              content: JSON.stringify({
+                name: userRow.displayName || username,
+                about: userRow.bio ? userRow.bio.replace(/<[^>]*>/g, '') : '',
+                picture: userRow.avatarUrl || '',
+                nip05: `${username}@${host}`,
+                ...((userRow as any).lightningAddress ? { lud16: `${username}@${host}` } : {}),
+              }),
+              tags: [],
+            })
+            await c.env.NOSTR_QUEUE.send({ events: [metadataEvent] })
+
+            // 回填历史帖子（后台执行）
+            c.executionCtx.waitUntil((async () => {
+              try {
+                const { groups } = await import('../db/schema')
+                const userTopics = await db
+                  .select({
+                    id: topics.id,
+                    title: topics.title,
+                    content: topics.content,
+                    groupId: topics.groupId,
+                    createdAt: topics.createdAt,
+                    nostrEventId: topics.nostrEventId,
+                  })
+                  .from(topics)
+                  .where(eq(topics.userId, userId))
+                  .orderBy(topics.createdAt)
+
+                // 预加载所有 NIP-72 小组信息
+                const nostrGroups = await db.select({
+                  id: groups.id,
+                  nostrSyncEnabled: groups.nostrSyncEnabled,
+                  nostrPubkey: groups.nostrPubkey,
+                  actorName: groups.actorName,
+                }).from(groups).where(eq(groups.nostrSyncEnabled, 1))
+                const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
+                const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+
+                const BATCH_SIZE = 10
+                for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
+                  const batch = userTopics.slice(i, i + BATCH_SIZE)
+                  const events = []
+                  for (const t of batch) {
+                    if (t.nostrEventId) continue
+                    const textContent = t.content ? stripHtml(t.content).trim() : ''
+                    const noteContent = textContent
+                      ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
+                      : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
+                    const nostrTags: string[][] = [
+                      ['r', `${baseUrl}/topic/${t.id}`],
+                      ['client', c.env.APP_NAME || 'NeoGroup'],
+                    ]
+                    const g = groupMap.get(t.groupId)
+                    if (g && g.nostrPubkey && g.actorName) {
+                      nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
+                    }
+                    const event = await buildSignedEvent({
+                      privEncrypted, iv,
+                      masterKey: c.env.NOSTR_MASTER_KEY!,
+                      kind: 1, content: noteContent, tags: nostrTags,
+                      createdAt: Math.floor(t.createdAt.getTime() / 1000),
+                    })
+                    await db.update(topics).set({ nostrEventId: event.id }).where(eq(topics.id, t.id))
+                    events.push(event)
+                  }
+                  if (events.length > 0) {
+                    await c.env.NOSTR_QUEUE!.send({ events })
+                  }
+                }
+                console.log(`[Nostr] Auto-enabled + backfilled for user ${userId}`)
+              } catch (e) {
+                console.error('[Nostr] Auto-enable backfill failed:', e)
+              }
+            })())
+          }
+          console.log(`[Nostr] Auto-generated keypair for user ${userId}`)
+        } catch (e) {
+          console.error('[Nostr] Auto-generate keypair failed:', e)
+        }
+      }
     }
 
     // 创建 session

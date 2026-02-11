@@ -48,6 +48,14 @@ id = "your-kv-namespace-id-here"  # 运行 wrangler kv namespace create KV 获�
 # max_retries = 5
 # dead_letter_queue = "nostr-events-dlq"
 
+# NIP-72: Nostr 社区轮询（可选，每 5 分钟从 relay 拉取社区帖子）
+# 需要先完成 Nostr 基础集成（NOSTR_MASTER_KEY、NOSTR_RELAYS、Queue）
+# [triggers]
+# crons = ["*/5 * * * *"]
+
+# [vars] 中添加（可选，最低 PoW 难度，默认 20）：
+# NOSTR_MIN_POW = "20"
+
 # 自定义域名（可选）
 # [[routes]]
 # pattern = "your-domain.com"

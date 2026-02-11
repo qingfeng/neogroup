@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { serveStatic } from 'hono/cloudflare-workers'
-import { desc } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import { createDb } from './db'
 import { groups as groupsTable, topics as topicsTable } from './db/schema'
 import { loadUser } from './middleware/auth'
@@ -371,10 +371,186 @@ app.route('/user', userRoutes)
 app.route('/notifications', notificationRoutes)
 app.route('/', homeRoutes)
 
+// 管理端点：为所有无 Nostr 密钥的用户批量生成密钥并开启同步
+// 支持两种认证：session 登录站长 或 Bearer NOSTR_MASTER_KEY
+app.post('/admin/nostr-enable-all', async (c) => {
+  const db = c.get('db')
+  if (!c.env.NOSTR_MASTER_KEY) return c.json({ error: 'NOSTR_MASTER_KEY not configured' }, 400)
+
+  // 认证：Bearer token = NOSTR_MASTER_KEY，或站长 session
+  const authHeader = c.req.header('Authorization') || ''
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  if (bearerToken) {
+    if (bearerToken !== c.env.NOSTR_MASTER_KEY) return c.json({ error: 'Invalid token' }, 403)
+  } else {
+    const user = c.get('user')
+    if (!user) return c.json({ error: 'Unauthorized' }, 401)
+    const firstUser = await db.query.users.findFirst({ orderBy: (u, { asc }) => [asc(u.createdAt)] })
+    if (!firstUser || firstUser.id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const { generateNostrKeypair, buildSignedEvent } = await import('./services/nostr')
+  const { users: usersTable, topics: topicsTable, groups: groupsTable } = await import('./db/schema')
+  const { isNull } = await import('drizzle-orm')
+  const { stripHtml } = await import('./lib/utils')
+
+  const usersWithoutNostr = await db.select({ id: usersTable.id, username: usersTable.username, displayName: usersTable.displayName, bio: usersTable.bio, avatarUrl: usersTable.avatarUrl, lightningAddress: usersTable.lightningAddress })
+    .from(usersTable).where(isNull(usersTable.nostrPubkey))
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+  let count = 0
+
+  // 预加载 NIP-72 小组
+  const nostrGroups = await db.select({ id: groupsTable.id, nostrSyncEnabled: groupsTable.nostrSyncEnabled, nostrPubkey: groupsTable.nostrPubkey, actorName: groupsTable.actorName })
+    .from(groupsTable).where(eq(groupsTable.nostrSyncEnabled, 1))
+  const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
+  const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+
+  for (const u of usersWithoutNostr) {
+    try {
+      const { pubkey, privEncrypted, iv } = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
+      await db.update(usersTable).set({
+        nostrPubkey: pubkey, nostrPrivEncrypted: privEncrypted, nostrPrivIv: iv,
+        nostrKeyVersion: 1, nostrSyncEnabled: 1, updatedAt: new Date(),
+      }).where(eq(usersTable.id, u.id))
+
+      if (c.env.NOSTR_QUEUE) {
+        // Kind 0 metadata
+        const metaEvent = await buildSignedEvent({
+          privEncrypted, iv, masterKey: c.env.NOSTR_MASTER_KEY,
+          kind: 0, content: JSON.stringify({
+            name: u.displayName || u.username, about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
+            picture: u.avatarUrl || '', nip05: `${u.username}@${host}`,
+            ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
+          }), tags: [],
+        })
+        await c.env.NOSTR_QUEUE.send({ events: [metaEvent] })
+
+        // 回填帖子
+        const userTopics = await db.select({ id: topicsTable.id, title: topicsTable.title, content: topicsTable.content, groupId: topicsTable.groupId, createdAt: topicsTable.createdAt, nostrEventId: topicsTable.nostrEventId })
+          .from(topicsTable).where(eq(topicsTable.userId, u.id)).orderBy(topicsTable.createdAt)
+
+        const BATCH_SIZE = 10
+        for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
+          const batch = userTopics.slice(i, i + BATCH_SIZE)
+          const events = []
+          for (const t of batch) {
+            if (t.nostrEventId) continue
+            const textContent = t.content ? stripHtml(t.content).trim() : ''
+            const noteContent = textContent
+              ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
+              : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
+            const nostrTags: string[][] = [['r', `${baseUrl}/topic/${t.id}`], ['client', c.env.APP_NAME || 'NeoGroup']]
+            const g = groupMap.get(t.groupId)
+            if (g && g.nostrPubkey && g.actorName) {
+              nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
+            }
+            const event = await buildSignedEvent({ privEncrypted, iv, masterKey: c.env.NOSTR_MASTER_KEY!, kind: 1, content: noteContent, tags: nostrTags, createdAt: Math.floor(t.createdAt.getTime() / 1000) })
+            await db.update(topicsTable).set({ nostrEventId: event.id }).where(eq(topicsTable.id, t.id))
+            events.push(event)
+          }
+          if (events.length > 0) await c.env.NOSTR_QUEUE.send({ events })
+        }
+      }
+      count++
+      console.log(`[Nostr] Batch-enabled user ${u.username} (${count}/${usersWithoutNostr.length})`)
+    } catch (e) {
+      console.error(`[Nostr] Failed to enable user ${u.username}:`, e)
+    }
+  }
+
+  return c.json({ ok: true, enabled: count, total: usersWithoutNostr.length })
+})
+
 export default {
   fetch: app.fetch,
-  // No cron triggers configured (legacy polling removed)
-  scheduled: async (_event: ScheduledEvent, _env: Bindings, _ctx: ExecutionContext) => {},
+  // Cron: NIP-72 poll + auto-enable Nostr for users without keys
+  scheduled: async (_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) => {
+    const { createDb } = await import('./db')
+    const db = createDb(env.DB)
+
+    // NIP-72: poll Nostr relays for community posts
+    try {
+      const { pollCommunityPosts } = await import('./services/nostr-community')
+      await pollCommunityPosts(env, db)
+    } catch (e) {
+      console.error('[Cron] NIP-72 poll failed:', e)
+    }
+
+    // Auto-enable Nostr for users without keys (batch, max 5 per cron to stay within CPU limits)
+    if (env.NOSTR_MASTER_KEY && env.NOSTR_QUEUE) {
+      try {
+        const { users: usersTable, topics: topicsTable, groups: groupsTable } = await import('./db/schema')
+        const { isNull } = await import('drizzle-orm')
+        const { generateNostrKeypair, buildSignedEvent } = await import('./services/nostr')
+        const { stripHtml } = await import('./lib/utils')
+
+        const usersWithoutNostr = await db.select({ id: usersTable.id, username: usersTable.username, displayName: usersTable.displayName, bio: usersTable.bio, avatarUrl: usersTable.avatarUrl, lightningAddress: usersTable.lightningAddress })
+          .from(usersTable).where(isNull(usersTable.nostrPubkey)).limit(5)
+
+        if (usersWithoutNostr.length > 0) {
+          const baseUrl = env.APP_URL || 'https://neogrp.club'
+          const host = new URL(baseUrl).host
+          const nostrGroups = await db.select({ id: groupsTable.id, nostrSyncEnabled: groupsTable.nostrSyncEnabled, nostrPubkey: groupsTable.nostrPubkey, actorName: groupsTable.actorName })
+            .from(groupsTable).where(eq(groupsTable.nostrSyncEnabled, 1))
+          const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
+          const relayUrl = (env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+
+          for (const u of usersWithoutNostr) {
+            try {
+              const { pubkey, privEncrypted, iv } = await generateNostrKeypair(env.NOSTR_MASTER_KEY)
+              await db.update(usersTable).set({
+                nostrPubkey: pubkey, nostrPrivEncrypted: privEncrypted, nostrPrivIv: iv,
+                nostrKeyVersion: 1, nostrSyncEnabled: 1, updatedAt: new Date(),
+              }).where(eq(usersTable.id, u.id))
+
+              // Kind 0
+              const metaEvent = await buildSignedEvent({
+                privEncrypted, iv, masterKey: env.NOSTR_MASTER_KEY,
+                kind: 0, content: JSON.stringify({
+                  name: u.displayName || u.username, about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
+                  picture: u.avatarUrl || '', nip05: `${u.username}@${host}`,
+                }), tags: [],
+              })
+              await env.NOSTR_QUEUE.send({ events: [metaEvent] })
+
+              // 回填帖子
+              const userTopics = await db.select({ id: topicsTable.id, title: topicsTable.title, content: topicsTable.content, groupId: topicsTable.groupId, createdAt: topicsTable.createdAt, nostrEventId: topicsTable.nostrEventId })
+                .from(topicsTable).where(eq(topicsTable.userId, u.id)).orderBy(topicsTable.createdAt)
+              const BATCH_SIZE = 10
+              for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
+                const batch = userTopics.slice(i, i + BATCH_SIZE)
+                const events = []
+                for (const t of batch) {
+                  if (t.nostrEventId) continue
+                  const textContent = t.content ? stripHtml(t.content).trim() : ''
+                  const noteContent = textContent
+                    ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
+                    : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
+                  const nostrTags: string[][] = [['r', `${baseUrl}/topic/${t.id}`], ['client', env.APP_NAME || 'NeoGroup']]
+                  const g = groupMap.get(t.groupId)
+                  if (g && g.nostrPubkey && g.actorName) {
+                    nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
+                  }
+                  const event = await buildSignedEvent({ privEncrypted, iv, masterKey: env.NOSTR_MASTER_KEY!, kind: 1, content: noteContent, tags: nostrTags, createdAt: Math.floor(t.createdAt.getTime() / 1000) })
+                  await db.update(topicsTable).set({ nostrEventId: event.id }).where(eq(topicsTable.id, t.id))
+                  events.push(event)
+                }
+                if (events.length > 0) await env.NOSTR_QUEUE.send({ events })
+              }
+              console.log(`[Cron] Auto-enabled Nostr for user ${u.username}`)
+            } catch (e) {
+              console.error(`[Cron] Failed to auto-enable Nostr for ${u.username}:`, e)
+            }
+          }
+          console.log(`[Cron] Auto-enabled Nostr for ${usersWithoutNostr.length} users`)
+        }
+      } catch (e) {
+        console.error('[Cron] Nostr auto-enable failed:', e)
+      }
+    }
+  },
   // Nostr Queue consumer: publish signed events directly to relays via WebSocket
   async queue(batch: MessageBatch, env: Bindings) {
     const events: any[] = []

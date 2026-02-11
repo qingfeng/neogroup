@@ -117,19 +117,76 @@ ap.get('/.well-known/nostr.json', async (c) => {
     .where(and(eq(users.username, name), eq(users.nostrSyncEnabled, 1)))
     .limit(1)
 
-  if (user.length === 0 || !user[0].nostrPubkey) {
-    return c.json({ names: {}, relays: {} }, 200, {
+  const relayUrl = c.env.NOSTR_RELAY_URL || 'wss://relay.damus.io'
+
+  if (user.length > 0 && user[0].nostrPubkey) {
+    return c.json({
+      names: { [name]: user[0].nostrPubkey },
+      relays: { [user[0].nostrPubkey]: [relayUrl] },
+    }, 200, {
       'Access-Control-Allow-Origin': '*',
     })
   }
 
-  const relayUrl = c.env.NOSTR_RELAY_URL || 'wss://relay.damus.io'
-  return c.json({
-    names: { [name]: user[0].nostrPubkey },
-    relays: { [user[0].nostrPubkey]: [relayUrl] },
-  }, 200, {
+  // Fallback: check if name matches a group with Nostr enabled
+  const groupResult = await db.select({ nostrPubkey: groups.nostrPubkey })
+    .from(groups)
+    .where(and(eq(groups.actorName, name), eq(groups.nostrSyncEnabled, 1)))
+    .limit(1)
+
+  if (groupResult.length > 0 && groupResult[0].nostrPubkey) {
+    return c.json({
+      names: { [name]: groupResult[0].nostrPubkey },
+      relays: { [groupResult[0].nostrPubkey]: [relayUrl] },
+    }, 200, {
+      'Access-Control-Allow-Origin': '*',
+    })
+  }
+
+  return c.json({ names: {}, relays: {} }, 200, {
     'Access-Control-Allow-Origin': '*',
   })
+})
+
+// --- LNURL-pay proxy (Lightning Address: username@this-domain) ---
+ap.get('/.well-known/lnurlp/:username', async (c) => {
+  const username = c.req.param('username')
+  const db = c.get('db')
+
+  const user = await db.select({ lightningAddress: users.lightningAddress })
+    .from(users)
+    .where(eq(users.username, username))
+    .limit(1)
+
+  if (!user.length || !user[0].lightningAddress) {
+    return c.json({ status: 'ERROR', reason: 'User not found or no Lightning Address configured' }, 404)
+  }
+
+  // Parse user's real Lightning Address: name@domain
+  const lnAddr = user[0].lightningAddress
+  const atIndex = lnAddr.lastIndexOf('@')
+  if (atIndex < 1) {
+    return c.json({ status: 'ERROR', reason: 'Invalid Lightning Address' }, 400)
+  }
+  const lnName = lnAddr.slice(0, atIndex)
+  const lnDomain = lnAddr.slice(atIndex + 1)
+
+  // Proxy to upstream LNURL-pay endpoint
+  try {
+    const upstream = await fetch(`https://${lnDomain}/.well-known/lnurlp/${lnName}`, {
+      headers: { Accept: 'application/json' },
+    })
+    const body = await upstream.text()
+    return new Response(body, {
+      status: upstream.status,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (e) {
+    return c.json({ status: 'ERROR', reason: 'Failed to reach upstream Lightning service' }, 502)
+  }
 })
 
 // --- Group Actor (FEP-1b12) ---

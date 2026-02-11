@@ -6,7 +6,7 @@ import { Layout } from '../components/Layout'
 import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage, stripHtml } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
 import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson, discoverRemoteGroup, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
-import { buildSignedEvent } from '../services/nostr'
+import { buildSignedEvent, generateNostrKeypair, pubkeyToNpub, buildCommunityDefinitionEvent } from '../services/nostr'
 
 const group = new Hono<AppContext>()
 
@@ -393,6 +393,13 @@ group.get('/:id', async (c) => {
 
   const groupData = groupResult[0]
 
+  // Fetch Nostr community info for this group
+  const groupNostrResult = await db.select({
+    nostrSyncEnabled: groups.nostrSyncEnabled,
+    nostrPubkey: groups.nostrPubkey,
+  }).from(groups).where(eq(groups.id, groupId)).limit(1)
+  const groupNostr = groupNostrResult[0] || null
+
   // 获取成员数
   const memberCountResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -503,6 +510,19 @@ group.get('/:id', async (c) => {
                 <span style="margin-left: 8px;">Mastodon 用户可以关注</span>
               </div>
             )}
+            {!isRemoteGroup && groupNostr?.nostrSyncEnabled === 1 && groupNostr?.nostrPubkey && (() => {
+              const npub = pubkeyToNpub(groupNostr.nostrPubkey!)
+              return (
+              <div class="group-nostr-badge" style="margin-top: 8px; font-size: 13px;">
+                <span class="nostr-label">NOSTR</span>
+                <span style="margin-left: 6px; color: #666;">NIP-72 社区</span>
+                <code class="npub-code" title={npub} onclick={`navigator.clipboard.writeText('${npub}');this.textContent='已复制!';setTimeout(()=>this.textContent='${npub.slice(0, 16)}…',1000)`} style="margin-left: 8px; cursor: pointer; font-size: 12px; background: #f3f0ff; padding: 2px 6px; border-radius: 4px; color: #8e44ad;">{npub.slice(0, 16)}…</code>
+                {isCreator && (
+                  <a href={`/group/${groupId}/nostr`} style="margin-left: 8px; color: #8e44ad; font-size: 12px;">设置</a>
+                )}
+              </div>
+              )
+            })()}
           </div>
           <div class="group-actions">
             {user && !isMember && (
@@ -1187,23 +1207,37 @@ group.post('/:id/topic/new', async (c) => {
           ? `${title.trim()}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${topicId}`
           : `${title.trim()}\n\n🔗 ${baseUrl}/topic/${topicId}`
 
+        const nostrTags: string[][] = [
+          ['r', `${baseUrl}/topic/${topicId}`],
+          ['client', c.env.APP_NAME || 'NeoGroup'],
+        ]
+
+        // Add NIP-72 community a-tag if the group has Nostr enabled
+        const groupNostrInfo = await db.select({
+          nostrSyncEnabled: groups.nostrSyncEnabled,
+          nostrPubkey: groups.nostrPubkey,
+          actorName: groups.actorName,
+        }).from(groups).where(eq(groups.id, groupId)).limit(1)
+
+        if (groupNostrInfo.length > 0 && groupNostrInfo[0].nostrSyncEnabled === 1 && groupNostrInfo[0].nostrPubkey && groupNostrInfo[0].actorName) {
+          const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+          nostrTags.push(['a', `34550:${groupNostrInfo[0].nostrPubkey}:${groupNostrInfo[0].actorName}`, relayUrl])
+        }
+
         const event = await buildSignedEvent({
           privEncrypted: user.nostrPrivEncrypted!,
           iv: user.nostrPrivIv!,
           masterKey: c.env.NOSTR_MASTER_KEY!,
           kind: 1,
           content: noteContent,
-          tags: [
-            ['r', `${baseUrl}/topic/${topicId}`],
-            ['client', c.env.APP_NAME || 'NeoGroup'],
-          ],
+          tags: nostrTags,
         })
 
         await db.update(topics)
           .set({ nostrEventId: event.id })
           .where(eq(topics.id, topicId))
 
-        await c.env.NOSTR_QUEUE.send({ events: [event] })
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
         console.log('[Nostr] Queued topic event:', event.id)
       } catch (e) {
         console.error('[Nostr] Failed to publish topic:', e)
@@ -1295,6 +1329,15 @@ group.get('/:id/settings', async (c) => {
             <a href={`/group/${groupId}`} class="btn">取消</a>
           </div>
         </form>
+
+        {c.env.NOSTR_MASTER_KEY && (
+          <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">
+            <a href={`/group/${groupId}/nostr`} style="color: #8e44ad;">
+              <span class="nostr-label">NOSTR</span>
+              <span style="margin-left: 6px;">NIP-72 社区设置</span>
+            </a>
+          </div>
+        )}
       </div>
     </Layout>
   )
@@ -1380,6 +1423,233 @@ group.post('/:id/settings', async (c) => {
     .where(eq(groups.id, groupId))
 
   return c.redirect(`/group/${groupId}`)
+})
+
+// --- Nostr 社区设置 ---
+
+// Nostr 设置页面
+group.get('/:id/nostr', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) return c.redirect('/auth/login')
+
+  const groupResult = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1)
+  if (groupResult.length === 0) return c.notFound()
+
+  const groupData = groupResult[0]
+  if (groupData.creatorId !== user.id) return c.redirect(`/group/${groupId}`)
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+  const hasNostrMasterKey = !!c.env.NOSTR_MASTER_KEY
+  const npub = groupData.nostrPubkey ? pubkeyToNpub(groupData.nostrPubkey) : null
+  const aTag = groupData.nostrPubkey && groupData.actorName
+    ? `34550:${groupData.nostrPubkey}:${groupData.actorName}`
+    : null
+
+  return c.html(
+    <Layout user={user} title={`Nostr 设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+      <div class="new-topic-page">
+        <div class="page-header">
+          <h1>Nostr 社区设置</h1>
+          <p class="page-subtitle"><a href={`/group/${groupId}`}>{groupData.name}</a> / <a href={`/group/${groupId}/settings`}>小组设置</a></p>
+        </div>
+
+        {!hasNostrMasterKey && (
+          <div class="nostr-warning">
+            Nostr 功能未配置。请在 Worker 环境变量中设置 NOSTR_MASTER_KEY、NOSTR_RELAYS 和 NOSTR_QUEUE。
+          </div>
+        )}
+
+        {groupData.nostrSyncEnabled === 1 && groupData.nostrPubkey ? (
+          <div>
+            <div class="nostr-identity-card">
+              <h2><span class="nostr-status-on">Nostr 社区已开启</span></h2>
+
+              <div class="nostr-field">
+                <label>社区公钥 (npub)</label>
+                <div class="nostr-value"><code>{npub}</code></div>
+              </div>
+
+              {groupData.actorName && (
+                <div class="nostr-field">
+                  <label>NIP-05 地址</label>
+                  <div class="nostr-value"><code>{groupData.actorName}@{host}</code></div>
+                </div>
+              )}
+
+              {aTag && (
+                <div class="nostr-field">
+                  <label>社区 a-tag 引用</label>
+                  <div class="nostr-value"><code>{aTag}</code></div>
+                </div>
+              )}
+            </div>
+
+            <div class="nostr-info-box">
+              <h2>如何使用</h2>
+              <p>外部 Nostr 用户发帖时在 tags 中添加上述 <code>a</code> tag，帖子将通过 Cron 轮询导入到本小组。</p>
+              <ul>
+                <li>帖子需满足 PoW 难度要求（默认 20 bits）</li>
+                <li>系统每 5 分钟轮询一次 relay</li>
+                <li>本站用户在本小组发帖自动带社区 a-tag</li>
+              </ul>
+            </div>
+
+            <div class="nostr-actions">
+              <form action={`/group/${groupId}/nostr/disable`} method="POST">
+                <button type="submit" class="btn" onclick="return confirm('确定要关闭 Nostr 社区吗？密钥会保留，可以重新开启。')">关闭 Nostr 社区</button>
+              </form>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div class="nostr-info-box">
+              <h2>什么是 NIP-72 社区？</h2>
+              <p>将本小组发布为 Nostr 上的 NIP-72 moderated community。开启后：</p>
+              <ul>
+                <li>为小组生成 Nostr 密钥对</li>
+                <li>发布 Kind 34550 社区定义事件到 relay</li>
+                <li>外部 Nostr 用户可通过 a-tag 向社区投稿</li>
+                <li>Cron 定时轮询 relay 导入新帖子（需满足 PoW）</li>
+                <li>本站用户发帖自动带社区 a-tag</li>
+              </ul>
+            </div>
+
+            {hasNostrMasterKey ? (
+              <div class="nostr-actions">
+                <form action={`/group/${groupId}/nostr/enable`} method="POST">
+                  <button type="submit" class="btn btn-primary">开启 Nostr 社区</button>
+                </form>
+              </div>
+            ) : (
+              <p style="color: #999;">请先配置 Nostr 环境变量后再开启。</p>
+            )}
+          </div>
+        )}
+      </div>
+    </Layout>
+  )
+})
+
+// 开启 Nostr 社区
+group.post('/:id/nostr/enable', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) return c.redirect('/auth/login')
+
+  const groupResult = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1)
+  if (groupResult.length === 0) return c.notFound()
+
+  const groupData = groupResult[0]
+  if (groupData.creatorId !== user.id) return c.redirect(`/group/${groupId}`)
+
+  if (!c.env.NOSTR_MASTER_KEY) {
+    return c.redirect(`/group/${groupId}/nostr`)
+  }
+
+  // Generate keypair if not exists
+  let nostrPubkey = groupData.nostrPubkey
+  let nostrPrivEncrypted = groupData.nostrPrivEncrypted
+  let nostrPrivIv = groupData.nostrPrivIv
+
+  if (!nostrPubkey || !nostrPrivEncrypted || !nostrPrivIv) {
+    const keypair = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
+    nostrPubkey = keypair.pubkey
+    nostrPrivEncrypted = keypair.privEncrypted
+    nostrPrivIv = keypair.iv
+  }
+
+  // Ensure actorName exists (needed for d-tag)
+  let actorName = groupData.actorName
+  if (!actorName) {
+    actorName = groupData.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 20)
+    // Fallback for CJK or non-Latin group names
+    if (!actorName) {
+      actorName = 'group_' + groupData.id.slice(0, 12)
+    }
+    // Ensure uniqueness by appending random suffix if needed
+    const existingActor = await db.select({ id: groups.id })
+      .from(groups)
+      .where(eq(groups.actorName, actorName))
+      .limit(1)
+    if (existingActor.length > 0) {
+      actorName = actorName.slice(0, 16) + '_' + Math.random().toString(36).slice(2, 5)
+    }
+  }
+
+  const nowTs = Math.floor(Date.now() / 1000)
+
+  await db.update(groups).set({
+    nostrPubkey,
+    nostrPrivEncrypted,
+    nostrPrivIv,
+    nostrSyncEnabled: 1,
+    nostrLastPollAt: nowTs,
+    actorName,
+  }).where(eq(groups.id, groupId))
+
+  // Build and send Kind 34550 community definition event
+  if (c.env.NOSTR_QUEUE && nostrPrivEncrypted && nostrPrivIv) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
+
+        // Collect moderator pubkeys
+        const moderatorPubkeys: string[] = []
+        if (user.nostrPubkey) {
+          moderatorPubkeys.push(user.nostrPubkey)
+        }
+
+        const event = await buildCommunityDefinitionEvent({
+          privEncrypted: nostrPrivEncrypted!,
+          iv: nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          dTag: actorName!,
+          name: groupData.name,
+          description: groupData.description,
+          image: groupData.iconUrl,
+          moderatorPubkeys,
+          relayUrl,
+        })
+
+        await db.update(groups)
+          .set({ nostrCommunityEventId: event.id })
+          .where(eq(groups.id, groupId))
+
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
+        console.log('[NIP-72] Queued community definition event:', event.id)
+      } catch (e) {
+        console.error('[NIP-72] Failed to build community definition:', e)
+      }
+    })())
+  }
+
+  return c.redirect(`/group/${groupId}/nostr`)
+})
+
+// 关闭 Nostr 社区
+group.post('/:id/nostr/disable', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+  const groupId = c.req.param('id')
+
+  if (!user) return c.redirect('/auth/login')
+
+  const groupResult = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1)
+  if (groupResult.length === 0) return c.notFound()
+
+  if (groupResult[0].creatorId !== user.id) return c.redirect(`/group/${groupId}`)
+
+  await db.update(groups).set({
+    nostrSyncEnabled: 0,
+  }).where(eq(groups.id, groupId))
+
+  return c.redirect(`/group/${groupId}/nostr`)
 })
 
 // 从文件名或 MIME 类型获取扩展名

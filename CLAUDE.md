@@ -39,7 +39,8 @@ src/
 │   ├── mastodon.ts       # Mastodon OAuth 服务
 │   ├── mastodon-bot.ts   # Mastodon Bot（@机器人自动发帖）
 │   ├── mastodon-sync.ts  # Mastodon 回复同步
-│   ├── nostr.ts          # Nostr 密钥管理、签名、NIP-19
+│   ├── nostr.ts          # Nostr 密钥管理、签名、NIP-19、NIP-72 事件构建
+│   ├── nostr-community.ts # NIP-72 社区轮询、事件处理、影子用户
 │   └── session.ts        # 会话管理
 ├── routes/
 │   ├── activitypub.ts    # ActivityPub 路由 (WebFinger, Actor, Inbox, etc.)
@@ -57,9 +58,9 @@ src/
 |-----|------|
 | user | 用户基本信息（含 AP 密钥对、Nostr 密钥 `nostr_pubkey`/`nostr_priv_encrypted`） |
 | auth_provider | 认证方式（Mastodon OAuth），`metadata` JSON 含 AP username |
-| group | 小组 |
+| group | 小组（含 Nostr 社区密钥 `nostr_pubkey`/`nostr_priv_encrypted`、`nostr_sync_enabled`） |
 | group_member | 小组成员 |
-| topic | 话题/帖子 |
+| topic | 话题/帖子（含 `nostr_author_pubkey` 标记 Nostr 来源） |
 | comment | 评论 |
 | comment_like | 评论点赞 |
 | comment_repost | 评论转发记录 |
@@ -288,12 +289,52 @@ Queue Consumer 在 Worker 内运行（`src/index.ts`），接收一批 event 后
 
 ### 相关代码
 
-- `src/services/nostr.ts` — 密钥生成、AES-GCM 加密/解密、event 签名、NIP-19 编码
-- `src/routes/activitypub.ts` — NIP-05 端点（`/.well-known/nostr.json`）
+- `src/services/nostr.ts` — 密钥生成、AES-GCM 加密/解密、event 签名、NIP-19 编码、NIP-72 事件构建
+- `src/services/nostr-community.ts` — NIP-72 社区轮询、事件处理、影子用户创建
+- `src/routes/activitypub.ts` — NIP-05 端点（`/.well-known/nostr.json`，支持用户和小组）
 - `src/routes/user.tsx` — Nostr 设置页面、开启/关闭/导出
-- `src/routes/group.tsx` — 发帖时 Nostr 同步（Kind 1）
+- `src/routes/group.tsx` — 发帖时 Nostr 同步（Kind 1）、NIP-72 社区设置页
 - `src/routes/topic.tsx` — 评论时 Nostr 同步（Kind 1 + e tag）
-- `src/index.ts` — Queue consumer（WebSocket 直连 relay 发布）
+- `src/index.ts` — Queue consumer（WebSocket 直连 relay 发布）、Cron handler（NIP-72 轮询）
+
+## NIP-72 Moderated Communities
+
+### 架构
+
+让小组成为 Nostr 上的 NIP-72 社区，外部 Nostr 用户可以通过 `a` tag 向社区发帖：
+
+```
+Cron Trigger（每 5 分钟）→ Worker → WebSocket 连接 relay → REQ 订阅 → 导入帖子
+```
+
+### 工作流程
+
+1. **小组管理员开启**：生成 Nostr 密钥对，发布 Kind 34550 社区定义事件
+2. **外部用户发帖**：在 Kind 1 事件中添加 `["a", "34550:<pubkey>:<d-tag>", relay]` tag
+3. **Cron 轮询**：每 5 分钟从 relay 拉取带有对应 `a` tag 的新事件
+4. **验证导入**：验签 + PoW 检查（默认 20 bits） → 创建影子用户 → 创建话题
+5. **审批事件**：成功导入后发送 Kind 4550 approval 事件到 relay
+6. **本站用户发帖**：自动在 Nostr 事件中添加社区 `a` tag
+
+### 数据库字段
+
+**groups 表新增**：`nostr_pubkey`、`nostr_priv_encrypted`、`nostr_priv_iv`、`nostr_sync_enabled`、`nostr_community_event_id`、`nostr_last_poll_at`
+
+**topics 表新增**：`nostr_author_pubkey`（标记来自 Nostr 的帖子）
+
+### Worker 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `NOSTR_MIN_POW` | 最低 PoW 难度（默认 20 bits） |
+| `[triggers] crons` | Cron 触发器配置（如 `*/5 * * * *`） |
+
+### 相关代码
+
+- `src/services/nostr.ts` — `countLeadingZeroBits()`、`verifyEvent()`、`buildCommunityDefinitionEvent()`、`buildApprovalEvent()`
+- `src/services/nostr-community.ts` — `pollCommunityPosts()`、`fetchEventsFromRelay()`、`processIncomingPost()`、`getOrCreateNostrUser()`
+- `src/routes/group.tsx` — Nostr 社区设置页（`GET/POST /:id/nostr/*`）
+- `src/index.ts` — `scheduled` handler
 
 ## 常用命令
 

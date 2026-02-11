@@ -110,6 +110,115 @@ export function privkeyToNsec(hex: string): string {
   return bech32.encode('nsec', words, 90)
 }
 
+// --- NIP-13 PoW Verification ---
+
+export function countLeadingZeroBits(hex: string): number {
+  let count = 0
+  for (const ch of hex) {
+    const nibble = parseInt(ch, 16)
+    if (nibble === 0) {
+      count += 4
+    } else {
+      // Count leading zero bits in this nibble
+      if (nibble < 2) count += 3
+      else if (nibble < 4) count += 2
+      else if (nibble < 8) count += 1
+      break
+    }
+  }
+  return count
+}
+
+// --- Event Verification ---
+
+export function verifyEvent(event: NostrEvent): boolean {
+  try {
+    // Recompute event ID
+    const serialized = JSON.stringify([
+      0,
+      event.pubkey,
+      event.created_at,
+      event.kind,
+      event.tags,
+      event.content,
+    ])
+    const expectedId = bytesToHex(sha256(new TextEncoder().encode(serialized)))
+    if (expectedId !== event.id) return false
+
+    // Verify Schnorr signature
+    return schnorr.verify(hexToBytes(event.sig), hexToBytes(event.id), hexToBytes(event.pubkey))
+  } catch {
+    return false
+  }
+}
+
+// --- NIP-72 Community Events ---
+
+export async function buildCommunityDefinitionEvent(params: {
+  privEncrypted: string
+  iv: string
+  masterKey: string
+  dTag: string
+  name: string
+  description?: string | null
+  image?: string | null
+  moderatorPubkeys?: string[]
+  relayUrl?: string
+}): Promise<NostrEvent> {
+  const tags: string[][] = [
+    ['d', params.dTag],
+    ['name', params.name],
+  ]
+  if (params.description) {
+    tags.push(['description', params.description])
+  }
+  if (params.image) {
+    tags.push(['image', params.image])
+  }
+  const relay = params.relayUrl || ''
+  if (params.moderatorPubkeys) {
+    for (const pk of params.moderatorPubkeys) {
+      tags.push(['p', pk, relay, 'moderator'])
+    }
+  }
+
+  return buildSignedEvent({
+    privEncrypted: params.privEncrypted,
+    iv: params.iv,
+    masterKey: params.masterKey,
+    kind: 34550,
+    content: '',
+    tags,
+  })
+}
+
+export async function buildApprovalEvent(params: {
+  privEncrypted: string
+  iv: string
+  masterKey: string
+  communityPubkey: string
+  dTag: string
+  approvedEvent: NostrEvent
+  relayUrl?: string
+}): Promise<NostrEvent> {
+  const relay = params.relayUrl || ''
+  const tags: string[][] = [
+    ['a', `34550:${params.communityPubkey}:${params.dTag}`, relay],
+    ['e', params.approvedEvent.id, relay],
+    ['p', params.approvedEvent.pubkey],
+    ['k', String(params.approvedEvent.kind)],
+  ]
+
+  return buildSignedEvent({
+    privEncrypted: params.privEncrypted,
+    iv: params.iv,
+    masterKey: params.masterKey,
+    kind: 4550,
+    content: JSON.stringify(params.approvedEvent),
+    tags,
+  })
+}
+
 // --- Helpers ---
 
 function bufferToBase64(buf: ArrayBuffer): string {

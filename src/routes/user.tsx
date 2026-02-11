@@ -323,16 +323,22 @@ user.get('/:id', async (c) => {
           />
           <div class="profile-info">
             <h1>{profileUser.displayName || profileUser.username}</h1>
-            {mastodonHandle && mastodonUrl ? (
-              <div class="profile-username">
-                <a href={mastodonUrl} target="_blank" rel="noopener">{mastodonHandle}</a>
-              </div>
-            ) : (
-              <div class="profile-username">@{profileUser.username}</div>
-            )}
             <div class="profile-username ap-handle">
-              @{profileUser.username}@{new URL(baseUrl).host}
+              <code>@{profileUser.username}@{host}</code>
+              <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('@${profileUser.username}@${host}')`} title="复制">📋</button>
             </div>
+            {mastodonHandle && mastodonUrl && (
+              <div class="profile-mastodon">
+                via <a href={mastodonUrl} target="_blank" rel="noopener">{mastodonHandle}</a>
+              </div>
+            )}
+            {profileUser.nostrPubkey && (
+              <div class="profile-nostr">
+                <span class="nostr-label">Nostr</span>
+                <code>{pubkeyToNpub(profileUser.nostrPubkey).slice(0, 20)}...</code>
+                <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${pubkeyToNpub(profileUser.nostrPubkey)}')`} title="复制 npub">📋</button>
+              </div>
+            )}
             {profileUser.bio && (
               <SafeHtml html={profileUser.bio} className="profile-bio" />
             )}
@@ -668,6 +674,19 @@ user.get('/:id/edit', async (c) => {
             <p class="form-hint">最多 500 字</p>
           </div>
 
+          <div class="form-group">
+            <label for="lightningAddress">Lightning Address</label>
+            <input
+              type="text"
+              name="lightningAddress"
+              id="lightningAddress"
+              value={profileUser.lightningAddress || ''}
+              placeholder="you@getalby.com"
+              maxLength={100}
+            />
+            <p class="form-hint">用于 Nostr 闪电打赏（Zap），可在 Alby、Wallet of Satoshi 等服务免费获取</p>
+          </div>
+
           <div class="form-actions">
             <a href={`/user/${userId}`} class="btn-secondary">取消</a>
             <button type="submit" class="btn-primary">保存</button>
@@ -712,6 +731,7 @@ user.post('/:id/edit', async (c) => {
   const formData = await c.req.formData()
   const displayName = (formData.get('displayName') as string || '').trim().slice(0, 50)
   const bioText = (formData.get('bio') as string || '').trim().slice(0, 500)
+  const lightningAddress = (formData.get('lightningAddress') as string || '').trim().slice(0, 100) || null
   const avatarFile = formData.get('avatar') as File | null
 
   // 处理 bio：将纯文本转换为 HTML 段落（先转义特殊字符）
@@ -755,6 +775,7 @@ user.post('/:id/edit', async (c) => {
   const updateData: Record<string, unknown> = {
     displayName: displayName || null,
     bio,
+    lightningAddress,
     updatedAt: new Date(),
   }
 
@@ -784,6 +805,7 @@ user.post('/:id/edit', async (c) => {
           about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
           picture: u.avatarUrl || '',
           nip05: `${u.username}@${host}`,
+          ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
         }),
         tags: [],
       })
@@ -841,7 +863,7 @@ user.get('/:id/nostr', async (c) => {
           <div class="nostr-info-box">
             <p>Nostr 功能尚未配置。管理员需要设置 NOSTR_MASTER_KEY 后才能启用。</p>
           </div>
-        ) : profileUser.nostrSyncEnabled && profileUser.nostrPubkey ? (
+        ) : profileUser.nostrPubkey ? (
           <div>
             <div class="nostr-identity-card">
               <h2>Nostr 身份</h2>
@@ -867,54 +889,11 @@ user.get('/:id/nostr', async (c) => {
 
             <div class="nostr-actions">
               <a href={`/user/${userId}/nostr/export`} class="btn-secondary">导出密钥</a>
-              <form action={`/user/${userId}/nostr/disable`} method="POST" style="display:inline;">
-                <button type="submit" class="btn-secondary btn-muted" onclick="return confirm('确定要关闭 Nostr 同步吗？关闭后新发的内容将不再同步到 Nostr 网络。你的 Nostr 身份和已发布的内容不会被删除。')">
-                  关闭同步
-                </button>
-              </form>
-            </div>
-          </div>
-        ) : profileUser.nostrPubkey ? (
-          <div>
-            <div class="nostr-identity-card">
-              <h2>Nostr 身份</h2>
-              <div class="nostr-field">
-                <label>公钥 (npub)</label>
-                <div class="nostr-value">
-                  <code>{npub}</code>
-                </div>
-              </div>
-              <div class="nostr-field">
-                <label>同步状态</label>
-                <div class="nostr-status-off">已关闭</div>
-                <p class="form-hint">你已有 Nostr 身份，但同步已关闭</p>
-              </div>
-            </div>
-
-            <div class="nostr-actions">
-              <form action={`/user/${userId}/nostr/enable`} method="POST">
-                <input type="hidden" name="reactivate" value="1" />
-                <button type="submit" class="btn-primary">重新开启同步</button>
-              </form>
-              <a href={`/user/${userId}/nostr/export`} class="btn-secondary" style="margin-left:8px;">导出密钥</a>
             </div>
           </div>
         ) : (
-          <div>
-            <div class="nostr-info-box">
-              <h2>连接到 Nostr 网络</h2>
-              <p>开启后，你在本站发布的话题和评论将自动同步到 Nostr 去中心化网络。</p>
-              <ul>
-                <li>系统会为你生成一个 Nostr 身份（公私钥对）</li>
-                <li>你的用户名将获得 NIP-05 认证：<strong>{profileUser.username}@{host}</strong></li>
-                <li>发布到 Nostr 的内容无法删除，请知悉</li>
-              </ul>
-            </div>
-            <form action={`/user/${userId}/nostr/enable`} method="POST" class="nostr-actions">
-              <button type="submit" class="btn-primary" onclick="return confirm('开启 Nostr 同步后，你发布的内容将同步到去中心化的 Nostr 网络。发布到 Nostr 的内容无法删除。确定要开启吗？')">
-                开启 Nostr 同步
-              </button>
-            </form>
+          <div class="nostr-info-box">
+            <p>Nostr 身份将在下次登录时自动生成。</p>
           </div>
         )}
 
@@ -984,6 +963,7 @@ user.post('/:id/nostr/enable', async (c) => {
           about: profileUser.bio ? profileUser.bio.replace(/<[^>]*>/g, '') : '',
           picture: profileUser.avatarUrl || '',
           nip05: `${profileUser.username}@${host}`,
+          ...(profileUser.lightningAddress ? { lud16: `${profileUser.username}@${host}` } : {}),
         }),
         tags: [],
       })
@@ -997,12 +977,23 @@ user.post('/:id/nostr/enable', async (c) => {
               id: topics.id,
               title: topics.title,
               content: topics.content,
+              groupId: topics.groupId,
               createdAt: topics.createdAt,
               nostrEventId: topics.nostrEventId,
             })
             .from(topics)
             .where(eq(topics.userId, userId))
             .orderBy(topics.createdAt)
+
+          // 预加载所有 NIP-72 小组信息
+          const nostrGroups = await db.select({
+            id: groups.id,
+            nostrSyncEnabled: groups.nostrSyncEnabled,
+            nostrPubkey: groups.nostrPubkey,
+            actorName: groups.actorName,
+          }).from(groups).where(eq(groups.nostrSyncEnabled, 1))
+          const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
+          const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
 
           const BATCH_SIZE = 10
           for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
@@ -1017,16 +1008,23 @@ user.post('/:id/nostr/enable', async (c) => {
                 ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
                 : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
 
+              const nostrTags: string[][] = [
+                ['r', `${baseUrl}/topic/${t.id}`],
+                ['client', c.env.APP_NAME || 'NeoGroup'],
+              ]
+              // NIP-72: 如果帖子所属小组启用了 Nostr 社区，加 a tag
+              const g = groupMap.get(t.groupId)
+              if (g && g.nostrPubkey && g.actorName) {
+                nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
+              }
+
               const event = await buildSignedEvent({
                 privEncrypted,
                 iv,
                 masterKey: c.env.NOSTR_MASTER_KEY!,
                 kind: 1,
                 content: noteContent,
-                tags: [
-                  ['r', `${baseUrl}/topic/${t.id}`],
-                  ['client', c.env.APP_NAME || 'NeoGroup'],
-                ],
+                tags: nostrTags,
                 createdAt: Math.floor(t.createdAt.getTime() / 1000),
               })
 
@@ -1054,23 +1052,6 @@ user.post('/:id/nostr/enable', async (c) => {
     const errMsg = error?.message || String(error)
     return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent(`创建失败: ${errMsg}`)}`)
   }
-})
-
-// 关闭 Nostr 同步
-user.post('/:id/nostr/disable', async (c) => {
-  const db = c.get('db')
-  const currentUser = c.get('user')
-  const userId = c.req.param('id')
-
-  if (!currentUser || currentUser.id !== userId) {
-    return c.redirect(`/user/${userId}`)
-  }
-
-  await db.update(users)
-    .set({ nostrSyncEnabled: 0, updatedAt: new Date() })
-    .where(eq(users.id, userId))
-
-  return c.redirect(`/user/${userId}/nostr?msg=${encodeURIComponent('Nostr 同步已关闭')}`)
 })
 
 // 导出 Nostr 密钥

@@ -14,6 +14,7 @@ export type Bindings = {
   NOSTR_MASTER_KEY?: string
   NOSTR_RELAYS?: string
   NOSTR_RELAY_URL?: string
+  NOSTR_MIN_POW?: string
 }
 
 export type Variables = {

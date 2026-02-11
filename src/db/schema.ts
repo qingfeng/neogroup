@@ -15,6 +15,7 @@ export const users = sqliteTable('user', {
   nostrPrivIv: text('nostr_priv_iv'),
   nostrKeyVersion: integer('nostr_key_version').default(1),
   nostrSyncEnabled: integer('nostr_sync_enabled').default(0),
+  lightningAddress: text('lightning_address'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -42,6 +43,12 @@ export const groups = sqliteTable('group', {
   iconUrl: text('icon_url'),
   apPublicKey: text('ap_public_key'),
   apPrivateKey: text('ap_private_key'),
+  nostrPubkey: text('nostr_pubkey'),
+  nostrPrivEncrypted: text('nostr_priv_encrypted'),
+  nostrPrivIv: text('nostr_priv_iv'),
+  nostrSyncEnabled: integer('nostr_sync_enabled').default(0),
+  nostrCommunityEventId: text('nostr_community_event_id'),
+  nostrLastPollAt: integer('nostr_last_poll_at'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
@@ -77,6 +84,7 @@ export const topics = sqliteTable('topic', {
   mastodonDomain: text('mastodon_domain'),
   mastodonSyncedAt: integer('mastodon_synced_at', { mode: 'timestamp' }),
   nostrEventId: text('nostr_event_id'),
+  nostrAuthorPubkey: text('nostr_author_pubkey'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
