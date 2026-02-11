@@ -16,7 +16,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
       <div class="navbar-menu">
         {user ? (
           <>
-            <a href="/timeline">Timeline</a>
+            <a href="/timeline">说说</a>
             <a href="/group/create">创建小组</a>
             <a href="/group/search">远程社区</a>
             <a href="https://neodb.social/" target="_blank" rel="noopener">书影音</a>
@@ -28,7 +28,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
             <a href="/auth/logout">登出</a>
           </>
         ) : (
-          <a href="/auth/login">用 Mastodon 登录</a>
+          <a href="/auth/login">登录</a>
         )}
       </div>
     </nav>

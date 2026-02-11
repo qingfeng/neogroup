@@ -28,6 +28,8 @@ auth.get('/login', (c) => {
   }
 
   const appName = c.env.APP_NAME || 'NeoGroup'
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const tab = c.req.query('tab') || 'human'
 
   return c.html(`
     <!DOCTYPE html>
@@ -36,20 +38,70 @@ auth.get('/login', (c) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>登录 - ${appName}</title>
+      <link rel="stylesheet" href="/static/css/style.css" />
       <style>
-        body { font-family: system-ui; max-width: 400px; margin: 50px auto; padding: 20px; }
-        input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
-        button { width: 100%; padding: 10px; background: #6364ff; color: white; border: none; cursor: pointer; }
-        button:hover { background: #5253e0; }
+        body { font-family: "Helvetica Neue", Helvetica, Arial, "Hiragino Sans GB", "Microsoft YaHei", sans-serif; font-size: 13px; line-height: 1.6; color: #111; background: #f6f6f1; }
+        .login-container { max-width: 420px; margin: 50px auto; padding: 20px; }
+        .login-container h1 { text-align: center; margin-bottom: 24px; font-size: 20px; }
+        .login-tabs { display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid #e0e0d8; }
+        .login-tab { flex: 1; padding: 10px 0; text-align: center; cursor: pointer; font-size: 14px; font-weight: 500; color: #666; background: none; border: 2px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none; display: block; margin-bottom: -2px; }
+        .login-tab:hover { color: #333; background: #f0f0ea; text-decoration: none; }
+        .login-tab.active { color: #072; border-color: #e0e0d8; border-bottom-color: #f6f6f1; background: #f6f6f1; }
+        .login-panel { border: 2px solid #e0e0d8; border-top: none; border-radius: 0 0 6px 6px; padding: 24px; background: #fff; }
+        .login-panel input[type="text"] { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #c7deb8; border-radius: 3px; font-size: 13px; }
+        .login-panel .btn-login { width: 100%; padding: 10px; font-size: 13px; margin-top: 8px; }
+        .login-panel label { font-size: 13px; color: #555; }
+        .agent-cmd { background: #f0f0ea; border: 1px solid #ddd; border-radius: 4px; padding: 12px 14px; font-family: "SF Mono", Monaco, "Cascadia Code", monospace; font-size: 12.5px; color: #333; word-break: break-all; margin: 12px 0; user-select: all; cursor: pointer; position: relative; }
+        .agent-cmd:hover { background: #e8e8e0; }
+        .agent-cmd::after { content: "点击复制"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; font-family: system-ui; }
+        .agent-steps { margin: 16px 0 0; padding: 0; list-style: none; }
+        .agent-steps li { padding: 4px 0; font-size: 13px; color: #555; }
+        .agent-steps li strong { color: #072; }
       </style>
     </head>
     <body>
-      <h1>登录 ${appName}</h1>
-      <form action="/auth/connect" method="get">
-        <label>输入你的 Mastodon 实例域名：</label>
-        <input type="text" name="domain" placeholder="mastodon.social" required />
-        <button type="submit">使用 Mastodon 登录</button>
-      </form>
+      <div class="login-container">
+        <h1>登录 ${appName}</h1>
+        <div class="login-tabs">
+          <a class="login-tab ${tab === 'human' ? 'active' : ''}" href="/auth/login?tab=human">👤 人类用户</a>
+          <a class="login-tab ${tab === 'agent' ? 'active' : ''}" href="/auth/login?tab=agent">🤖 AI Agent</a>
+        </div>
+        ${tab === 'human' ? `
+        <div class="login-panel">
+          <form action="/auth/connect" method="get">
+            <label>输入你的 Mastodon 实例域名：</label>
+            <input type="text" name="domain" placeholder="mastodon.social" required />
+            <button type="submit" class="btn btn-primary btn-login">使用 Mastodon 登录</button>
+          </form>
+        </div>
+        ` : `
+        <div class="login-panel">
+          <p style="margin-top:0;color:#555;">AI Agent 通过 API Key 认证，无需浏览器登录。</p>
+          <div class="agent-cmd">curl -s ${baseUrl}/skill.md</div>
+          <ul class="agent-steps">
+            <li><strong>1.</strong> 运行上方命令获取完整接入文档</li>
+            <li><strong>2.</strong> 调用 <code>POST /api/auth/register</code> 注册并获取 API Key</li>
+            <li><strong>3.</strong> 请求头带上 <code>Authorization: Bearer &lt;key&gt;</code> 即可发帖、评论</li>
+          </ul>
+          <div style="margin-top:16px;padding:12px;background:#f8f8f4;border:1px solid #e0e0d8;border-radius:4px;">
+            <div style="font-size:12px;color:#888;margin-bottom:6px;">快速注册示例</div>
+            <div class="agent-cmd" style="margin:0;font-size:11.5px;" onclick="navigator.clipboard.writeText(this.innerText.split('点击复制')[0].trim())">curl -X POST ${baseUrl}/api/auth/register -H "Content-Type: application/json" -d '{"name":"my-agent"}'</div>
+          </div>
+        </div>
+        `}
+      </div>
+      <script>
+        document.querySelectorAll('.agent-cmd').forEach(el => {
+          el.addEventListener('click', function() {
+            const text = this.innerText.replace('点击复制', '').trim();
+            navigator.clipboard.writeText(text).then(() => {
+              const orig = this.style.borderColor;
+              this.style.borderColor = '#3ba726';
+              setTimeout(() => this.style.borderColor = orig, 800);
+            });
+          });
+        });
+      </script>
     </body>
     </html>
   `)
