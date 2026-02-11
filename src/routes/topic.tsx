@@ -181,6 +181,7 @@ topic.get('/:id', async (c) => {
     })
     hasMastodonAuth = !!(ap?.accessToken)
   }
+  const canRepost = hasMastodonAuth || !!(user?.nostrSyncEnabled)
 
   // 分页参数
   const PAGE_SIZE = 50
@@ -373,21 +374,21 @@ topic.get('/:id', async (c) => {
                 喜欢{topicLikeCount > 0 ? ` (${topicLikeCount})` : ''}
               </span>
             )}
-            {hasMastodonAuth && !isReposted && (
+            {canRepost && !isReposted && (
               <form action={`/topic/${topicId}/repost`} method="POST" style="display: inline;">
                 <button type="submit" class={`topic-like-btn`} onclick="this.disabled=true;this.form.submit();">
                   转发{repostCount > 0 ? ` (${repostCount})` : ''}
                 </button>
               </form>
             )}
-            {hasMastodonAuth && isReposted && (
+            {canRepost && isReposted && (
               <form action={`/topic/${topicId}/unrepost`} method="POST" style="display: inline;">
                 <button type="submit" class="topic-like-btn reposted" onclick="this.disabled=true;this.form.submit();">
                   已转发（撤销）{repostCount > 0 ? ` (${repostCount})` : ''}
                 </button>
               </form>
             )}
-            {!hasMastodonAuth && repostCount > 0 && (
+            {!canRepost && repostCount > 0 && (
               <span class="topic-like-btn disabled">
                 转发 ({repostCount})
               </span>
@@ -531,14 +532,14 @@ topic.get('/:id', async (c) => {
                               回复
                             </button>
                           )}
-                          {hasMastodonAuth && !isCommentReposted && (
+                          {canRepost && !isCommentReposted && (
                             <form action={`/topic/${topicId}/comment/${comment.id}/repost`} method="POST" style="display: inline;">
                               <button type="submit" class="comment-action-btn" onclick="this.disabled=true;this.form.submit();">
                                 转发{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
                               </button>
                             </form>
                           )}
-                          {hasMastodonAuth && isCommentReposted && (
+                          {canRepost && isCommentReposted && (
                             <form action={`/topic/${topicId}/comment/${comment.id}/unrepost`} method="POST" style="display: inline;">
                               <button type="submit" class="comment-action-btn reposted" onclick="this.disabled=true;this.form.submit();">
                                 已转发（撤销）{comment.repostCount > 0 ? ` (${comment.repostCount})` : ''}
@@ -961,7 +962,7 @@ topic.post('/:id/comment', async (c) => {
   return c.redirect(`/topic/${topicId}`)
 })
 
-// 转发话题到 Mastodon
+// 转发话题（Mastodon + Nostr）
 topic.post('/:id/repost', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
@@ -971,59 +972,104 @@ topic.post('/:id/repost', async (c) => {
     return c.redirect('/auth/login')
   }
 
+  // 查用户 auth 能力
   const authProvider = await db.query.authProviders.findFirst({
     where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
   })
+  const hasMastodonAuth = !!(authProvider?.accessToken)
+  const hasNostr = !!(user.nostrSyncEnabled && user.nostrPrivEncrypted)
 
-  if (!authProvider?.accessToken) {
+  if (!hasMastodonAuth && !hasNostr) {
     return c.redirect(`/topic/${topicId}`)
   }
 
-  const userDomain = authProvider.providerId.split('@')[1]
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-  const noteUrl = `${baseUrl}/ap/notes/${topicId}`
 
-  try {
-    const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
-    if (!localStatusId) {
-      console.error('Failed to resolve AP Note for repost:', noteUrl)
-      return c.redirect(`/topic/${topicId}`)
-    }
-    await reblogStatus(userDomain, authProvider.accessToken, localStatusId)
-
-    // 记录转发（避免重复）
-    const existingRepost = await db
-      .select()
-      .from(topicReposts)
-      .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
-      .limit(1)
-    if (existingRepost.length === 0) {
-      await db.insert(topicReposts).values({
-        id: generateId(),
-        topicId,
-        userId: user.id,
-        createdAt: new Date(),
-      })
-
-      // 提醒话题作者
-      const topicData = await db
-        .select({ userId: topics.userId })
-        .from(topics)
-        .where(eq(topics.id, topicId))
-        .limit(1)
-      if (topicData.length > 0) {
-        await createNotification(db, {
-          userId: topicData[0].userId,
-          actorId: user.id,
-          type: 'topic_repost',
-          topicId,
-        })
+  // Mastodon boost
+  if (hasMastodonAuth) {
+    try {
+      const userDomain = authProvider!.providerId.split('@')[1]
+      const noteUrl = `${baseUrl}/ap/notes/${topicId}`
+      const localStatusId = await resolveStatusByUrl(userDomain, authProvider!.accessToken!, noteUrl)
+      if (localStatusId) {
+        await reblogStatus(userDomain, authProvider!.accessToken!, localStatusId)
+      } else {
+        console.error('Failed to resolve AP Note for repost:', noteUrl)
       }
+    } catch (e) {
+      console.error('Failed to repost topic to Mastodon:', e)
     }
-  } catch (e) {
-    console.error('Failed to repost topic to Mastodon:', e)
   }
 
+  // Nostr Kind 6 repost
+  if (hasNostr && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    const topicData = await db
+      .select({ nostrEventId: topics.nostrEventId, nostrAuthorPubkey: topics.nostrAuthorPubkey })
+      .from(topics)
+      .where(eq(topics.id, topicId))
+      .limit(1)
+
+    if (topicData.length > 0 && topicData[0].nostrEventId) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const tags: string[][] = [
+            ['e', topicData[0].nostrEventId!, '', 'mention'],
+          ]
+          if (topicData[0].nostrAuthorPubkey) {
+            tags.push(['p', topicData[0].nostrAuthorPubkey!])
+          }
+          const event = await buildSignedEvent({
+            privEncrypted: user.nostrPrivEncrypted!,
+            iv: user.nostrPrivIv!,
+            masterKey: c.env.NOSTR_MASTER_KEY!,
+            kind: 6,
+            content: '',
+            tags,
+          })
+          await c.env.NOSTR_QUEUE!.send({ events: [event] })
+          console.log('[Nostr] Queued Kind 6 repost for topic:', topicId)
+        } catch (e) {
+          console.error('[Nostr] Failed to send Kind 6 repost:', e)
+        }
+      })())
+    }
+  }
+
+  // 记录转发（避免重复）
+  const existingRepost = await db
+    .select()
+    .from(topicReposts)
+    .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
+    .limit(1)
+  if (existingRepost.length === 0) {
+    await db.insert(topicReposts).values({
+      id: generateId(),
+      topicId,
+      userId: user.id,
+      createdAt: new Date(),
+    })
+
+    // 提醒话题作者
+    const topicAuthor = await db
+      .select({ userId: topics.userId })
+      .from(topics)
+      .where(eq(topics.id, topicId))
+      .limit(1)
+    if (topicAuthor.length > 0) {
+      await createNotification(db, {
+        userId: topicAuthor[0].userId,
+        actorId: user.id,
+        type: 'topic_repost',
+        topicId,
+      })
+    }
+  }
+
+  // Redirect back: if came from timeline, go back there
+  const referer = c.req.header('Referer') || ''
+  if (referer.includes('/timeline')) {
+    return c.redirect('/timeline')
+  }
   return c.redirect(`/topic/${topicId}`)
 })
 
@@ -1037,34 +1083,36 @@ topic.post('/:id/unrepost', async (c) => {
     return c.redirect('/auth/login')
   }
 
+  // Mastodon unrepost (if user has Mastodon auth)
   const authProvider = await db.query.authProviders.findFirst({
     where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
   })
 
-  if (!authProvider?.accessToken) {
-    return c.redirect(`/topic/${topicId}`)
-  }
+  if (authProvider?.accessToken) {
+    const userDomain = authProvider.providerId.split('@')[1]
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    const noteUrl = `${baseUrl}/ap/notes/${topicId}`
 
-  const userDomain = authProvider.providerId.split('@')[1]
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-  const noteUrl = `${baseUrl}/ap/notes/${topicId}`
-
-  try {
-    const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
-    if (!localStatusId) {
-      console.error('Failed to resolve AP Note for unrepost:', noteUrl)
-      return c.redirect(`/topic/${topicId}`)
+    try {
+      const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
+      if (localStatusId) {
+        await unreblogStatus(userDomain, authProvider.accessToken, localStatusId)
+      }
+    } catch (e) {
+      console.error('Failed to unrepost topic on Mastodon:', e)
     }
-
-    await unreblogStatus(userDomain, authProvider.accessToken, localStatusId)
-
-    await db
-      .delete(topicReposts)
-      .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
-  } catch (e) {
-    console.error('Failed to unrepost topic to Mastodon:', e)
   }
 
+  // Delete DB record (works for both Mastodon and Nostr users)
+  await db
+    .delete(topicReposts)
+    .where(and(eq(topicReposts.topicId, topicId), eq(topicReposts.userId, user.id)))
+
+  // Redirect back: if came from timeline, go back there
+  const referer = c.req.header('Referer') || ''
+  if (referer.includes('/timeline')) {
+    return c.redirect('/timeline')
+  }
   return c.redirect(`/topic/${topicId}`)
 })
 

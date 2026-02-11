@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, desc, sql, and, or, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import type { User } from '../db/schema'
-import { topics, users, groups, comments, topicLikes, groupMembers, userFollows, nostrFollows } from '../db/schema'
+import { topics, users, groups, comments, topicLikes, topicReposts, groupMembers, userFollows, nostrFollows, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, resizeImage, processContentImages } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
@@ -39,6 +39,7 @@ timeline.get('/', async (c) => {
       updatedAt: topics.updatedAt,
       replyCount: sql<number>`(SELECT COUNT(*) FROM comment WHERE comment.topic_id = ${topics.id})`.as('reply_count'),
       likeCount: sql<number>`(SELECT COUNT(*) FROM topic_like WHERE topic_like.topic_id = ${topics.id})`.as('like_count'),
+      repostCount: sql<number>`(SELECT COUNT(*) FROM topic_repost WHERE topic_repost.topic_id = ${topics.id})`.as('repost_count'),
       user: {
         id: users.id,
         username: users.username,
@@ -74,6 +75,24 @@ timeline.get('/', async (c) => {
       .from(topicLikes)
       .where(and(eq(topicLikes.userId, user.id), inArray(topicLikes.topicId, topicIds)))
     userLikedTopicIds = new Set(userLikes.map(l => l.topicId))
+  }
+
+  // 检查用户的转发能力
+  let hasMastodonAuth = false
+  const ap = await db.query.authProviders.findFirst({
+    where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+  })
+  hasMastodonAuth = !!(ap?.accessToken)
+  const canRepost = hasMastodonAuth || !!user.nostrSyncEnabled
+
+  // 检查当前用户是否已转发这些话题
+  let userRepostedTopicIds = new Set<string>()
+  if (topicIds.length > 0 && canRepost) {
+    const userReposts = await db
+      .select({ topicId: topicReposts.topicId })
+      .from(topicReposts)
+      .where(and(eq(topicReposts.userId, user.id), inArray(topicReposts.topicId, topicIds)))
+    userRepostedTopicIds = new Set(userReposts.map(r => r.topicId))
   }
 
   // 获取统一关注列表（本地 + AP shadow + Nostr shadow 用户）
@@ -186,6 +205,23 @@ timeline.get('/', async (c) => {
                     <a href={`/topic/${item.id}`} class="comment-action-btn">
                       评论{item.replyCount > 0 ? ` (${item.replyCount})` : ''}
                     </a>
+                    {canRepost && !userRepostedTopicIds.has(item.id) && (
+                      <form action={`/topic/${item.id}/repost`} method="POST" style="display: inline;">
+                        <button type="submit" class="comment-action-btn" onclick="this.disabled=true;this.form.submit();">
+                          转发{item.repostCount > 0 ? ` (${item.repostCount})` : ''}
+                        </button>
+                      </form>
+                    )}
+                    {canRepost && userRepostedTopicIds.has(item.id) && (
+                      <form action={`/topic/${item.id}/unrepost`} method="POST" style="display: inline;">
+                        <button type="submit" class="comment-action-btn reposted" onclick="this.disabled=true;this.form.submit();">
+                          已转发{item.repostCount > 0 ? ` (${item.repostCount})` : ''}
+                        </button>
+                      </form>
+                    )}
+                    {!canRepost && item.repostCount > 0 && (
+                      <span class="comment-action-btn disabled">转发 ({item.repostCount})</span>
+                    )}
                     {item.user.id === user.id && (
                       <form action={`/topic/${item.id}/delete`} method="POST" style="display: inline;" onsubmit="return confirm('确定删除？')">
                         <button type="submit" class="comment-action-btn" style="color: #c00;">删除</button>
