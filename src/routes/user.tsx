@@ -107,6 +107,17 @@ user.post('/:id/unfollow', async (c) => {
 
   await db.delete(userFollows).where(and(eq(userFollows.followerId, currentUser.id), eq(userFollows.followeeId, followeeId)))
 
+  // Redirect back to referer if it's /timeline or /following, otherwise to user profile
+  const referer = c.req.header('Referer') || ''
+  if (referer.includes('/timeline')) {
+    return c.redirect('/timeline')
+  }
+  if (referer.includes('/following')) {
+    try {
+      const refUrl = new URL(referer)
+      return c.redirect(refUrl.pathname)
+    } catch {}
+  }
   return c.redirect(`/user/${target[0].username}`)
 })
 
@@ -456,6 +467,7 @@ user.get('/:id', async (c) => {
 // 关注列表
 user.get('/:id/following', async (c) => {
   const db = c.get('db')
+  const currentUser = c.get('user')
   const rawId = c.req.param('id')
 
   const target = await applyLimit(
@@ -464,6 +476,7 @@ user.get('/:id/following', async (c) => {
   )
   if (target.length === 0) return c.notFound()
   const profileUser = target[0]
+  const isOwnProfile = currentUser?.id === profileUser.id
 
   const following = await applyLimit(
     db
@@ -481,7 +494,7 @@ user.get('/:id/following', async (c) => {
   )
 
   return c.html(
-    <Layout user={c.get('user')} title={`关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={currentUser} title={`关注 - ${profileUser.username}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="profile-list-page">
         <h1>@{profileUser.username} 关注了 ({following.length})</h1>
         {following.length === 0 ? (
@@ -489,14 +502,19 @@ user.get('/:id/following', async (c) => {
         ) : (
           <ul class="people-grid">
             {following.map(u => (
-              <li key={u.id}>
-                <a href={`/user/${u.username}`} class="people-card">
+              <li key={u.id} style="display:flex;align-items:center;justify-content:space-between;">
+                <a href={`/user/${u.username}`} class="people-card" style="flex:1;min-width:0;">
                   <img src={u.avatarUrl || '/static/img/default-avatar.svg'} alt="" class="avatar-sm" />
                   <div class="person-meta">
                     <span class="person-name">{u.displayName || u.username}</span>
                     <span class="person-handle">@{u.username}</span>
                   </div>
                 </a>
+                {isOwnProfile && (
+                  <form action={`/user/${u.username}/unfollow`} method="POST" style="display:inline;flex-shrink:0;">
+                    <button type="submit" class="comment-action-btn" style="color:#c00;">取消关注</button>
+                  </form>
+                )}
               </li>
             ))}
           </ul>

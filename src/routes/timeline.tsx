@@ -6,9 +6,9 @@ import { topics, users, groups, comments, topicLikes, groupMembers, userFollows,
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, resizeImage, processContentImages } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
-import { deliverTopicToFollowers } from '../services/activitypub'
+import { deliverTopicToFollowers, discoverRemoteUser, getOrCreateRemoteUser, fetchActor } from '../services/activitypub'
 import { buildSignedEvent, pubkeyToNpub, npubToPubkey } from '../services/nostr'
-import { getOrCreateNostrUser } from '../services/nostr-community'
+import { getOrCreateNostrUser, fetchAndUpdateNostrProfile, backfillNostrUserPosts } from '../services/nostr-community'
 
 const timeline = new Hono<AppContext>()
 
@@ -76,18 +76,18 @@ timeline.get('/', async (c) => {
     userLikedTopicIds = new Set(userLikes.map(l => l.topicId))
   }
 
-  // 获取 Nostr 关注列表
-  const nostrFollowList = await db
+  // 获取统一关注列表（本地 + AP shadow + Nostr shadow 用户）
+  const followingList = await db
     .select({
-      id: nostrFollows.id,
-      targetPubkey: nostrFollows.targetPubkey,
-      targetNpub: nostrFollows.targetNpub,
-      targetDisplayName: nostrFollows.targetDisplayName,
-      createdAt: nostrFollows.createdAt,
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      avatarUrl: users.avatarUrl,
     })
-    .from(nostrFollows)
-    .where(eq(nostrFollows.userId, user.id))
-    .orderBy(desc(nostrFollows.createdAt))
+    .from(userFollows)
+    .innerJoin(users, eq(userFollows.followeeId, users.id))
+    .where(eq(userFollows.followerId, user.id))
+    .orderBy(desc(userFollows.createdAt))
     .limit(20)
 
   const formatDate = (date: Date) => {
@@ -211,28 +211,27 @@ timeline.get('/', async (c) => {
 
         {/* 右侧边栏 */}
         <aside class="timeline-sidebar">
-          {/* Nostr 关注 */}
           <div class="card">
-            <h3>Nostr 关注</h3>
-            <form action="/timeline/nostr-follow" method="POST" class="nostr-follow-form">
+            <h3>关注用户</h3>
+            <form action="/timeline/follow" method="POST" class="nostr-follow-form">
               <input
                 type="text"
                 name="target"
-                placeholder="输入 npub 或 hex pubkey"
+                placeholder="@user@mastodon.social 或 npub..."
                 required
                 style="width:100%;margin-bottom:8px;"
               />
               <button type="submit" class="btn btn-primary btn-sm">关注</button>
             </form>
-            {nostrFollowList.length > 0 && (
+            {followingList.length > 0 && (
               <ul class="nostr-follow-list">
-                {nostrFollowList.map((f) => (
-                  <li key={f.id} class="nostr-follow-item">
-                    <span class="nostr-follow-name">
-                      {f.targetDisplayName || (f.targetNpub ? f.targetNpub.slice(0, 16) + '...' : f.targetPubkey.slice(0, 12) + '...')}
-                    </span>
-                    <form action="/timeline/nostr-unfollow" method="POST" style="display:inline;">
-                      <input type="hidden" name="pubkey" value={f.targetPubkey} />
+                {followingList.map((u) => (
+                  <li key={u.id} class="nostr-follow-item">
+                    <a href={`/user/${u.username}`} style="display:flex;align-items:center;gap:6px;text-decoration:none;color:inherit;flex:1;min-width:0;">
+                      <img src={resizeImage(u.avatarUrl, 32) || '/static/img/default-avatar.svg'} alt="" style="width:24px;height:24px;border-radius:50%;" />
+                      <span class="nostr-follow-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{u.displayName || u.username}</span>
+                    </a>
+                    <form action={`/user/${u.username}/unfollow`} method="POST" style="display:inline;flex-shrink:0;">
                       <button type="submit" class="comment-action-btn" style="color:#c00;">取消</button>
                     </form>
                   </li>
@@ -314,6 +313,171 @@ timeline.post('/post', async (c) => {
   return c.redirect('/timeline')
 })
 
+// 统一关注入口：自动检测 AP handle 或 Nostr npub/hex
+timeline.post('/follow', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const body = await c.req.parseBody()
+  const target = (body.target as string || '').trim()
+
+  if (!target) {
+    return c.redirect('/timeline')
+  }
+
+  // Detect format: npub / hex pubkey → Nostr; otherwise → AP
+  if (target.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(target)) {
+    // Nostr follow flow
+    let pubkey: string | null = null
+    let npub: string | null = null
+
+    if (target.startsWith('npub1')) {
+      pubkey = npubToPubkey(target)
+      npub = target
+    } else {
+      pubkey = target.toLowerCase()
+      npub = pubkeyToNpub(pubkey)
+    }
+
+    if (!pubkey) {
+      return c.redirect('/timeline')
+    }
+
+    // Insert nostr_follow record for NIP-02 contact list
+    const existingNostr = await db
+      .select({ id: nostrFollows.id })
+      .from(nostrFollows)
+      .where(and(eq(nostrFollows.userId, user.id), eq(nostrFollows.targetPubkey, pubkey)))
+      .limit(1)
+
+    if (existingNostr.length === 0) {
+      await db.insert(nostrFollows).values({
+        id: generateId(),
+        userId: user.id,
+        targetPubkey: pubkey,
+        targetNpub: npub,
+        createdAt: new Date(),
+      })
+    }
+
+    // Create shadow user and user_follow
+    try {
+      const shadowUser = await getOrCreateNostrUser(db, pubkey)
+      const existingFollow = await db
+        .select({ id: userFollows.id })
+        .from(userFollows)
+        .where(and(eq(userFollows.followerId, user.id), eq(userFollows.followeeId, shadowUser.id)))
+        .limit(1)
+
+      if (existingFollow.length === 0) {
+        await db.insert(userFollows).values({
+          id: generateId(),
+          followerId: user.id,
+          followeeId: shadowUser.id,
+          createdAt: new Date(),
+        })
+      }
+
+      // Fetch Kind 0 profile + backfill recent posts from relay in background
+      const relayUrls = (c.env.NOSTR_RELAYS || '').split(',').map((r: string) => r.trim()).filter(Boolean)
+      if (relayUrls.length > 0) {
+        c.executionCtx.waitUntil(fetchAndUpdateNostrProfile(db, shadowUser.id, pubkey, relayUrls))
+        c.executionCtx.waitUntil(backfillNostrUserPosts(db, shadowUser.id, pubkey, relayUrls))
+      }
+    } catch (e) {
+      console.error('[Nostr Follow] Failed to create shadow user:', e)
+    }
+
+    // Publish NIP-02 Kind 3 contact list
+    if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+      c.executionCtx.waitUntil(publishContactList(db, user, c.env))
+    }
+  } else {
+    // AP follow flow
+    const handle = target
+    const remoteUser = await discoverRemoteUser(handle)
+    if (!remoteUser) {
+      return c.redirect('/timeline')
+    }
+
+    const actorData = await fetchActor(remoteUser.actorUri)
+    const shadowUser = await getOrCreateRemoteUser(db, remoteUser.actorUri, actorData)
+    if (!shadowUser) {
+      return c.redirect('/timeline')
+    }
+
+    const existing = await db
+      .select({ id: userFollows.id })
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, user.id), eq(userFollows.followeeId, shadowUser.id)))
+      .limit(1)
+
+    if (existing.length === 0) {
+      await db.insert(userFollows).values({
+        id: generateId(),
+        followerId: user.id,
+        followeeId: shadowUser.id,
+        createdAt: new Date(),
+      })
+    }
+  }
+
+  return c.redirect('/timeline')
+})
+
+// 关注 AP 用户（向后兼容）
+timeline.post('/ap-follow', async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')
+
+  if (!user) {
+    return c.redirect('/auth/login')
+  }
+
+  const body = await c.req.parseBody()
+  const handle = (body.handle as string || '').trim()
+
+  if (!handle) {
+    return c.redirect('/timeline')
+  }
+
+  const remoteUser = await discoverRemoteUser(handle)
+  if (!remoteUser) {
+    return c.redirect('/timeline')
+  }
+
+  // Fetch full actor data for shadow user creation
+  const actorData = await fetchActor(remoteUser.actorUri)
+
+  // Get or create shadow user for the remote actor
+  const shadowUser = await getOrCreateRemoteUser(db, remoteUser.actorUri, actorData)
+  if (!shadowUser) {
+    return c.redirect('/timeline')
+  }
+
+  // Insert user_follow if not already following
+  const existing = await db
+    .select({ id: userFollows.id })
+    .from(userFollows)
+    .where(and(eq(userFollows.followerId, user.id), eq(userFollows.followeeId, shadowUser.id)))
+    .limit(1)
+
+  if (existing.length === 0) {
+    await db.insert(userFollows).values({
+      id: generateId(),
+      followerId: user.id,
+      followeeId: shadowUser.id,
+      createdAt: new Date(),
+    })
+  }
+
+  return c.redirect('/timeline')
+})
+
 // 关注 Nostr 用户
 timeline.post('/nostr-follow', async (c) => {
   const db = c.get('db')
@@ -384,6 +548,13 @@ timeline.post('/nostr-follow', async (c) => {
         followeeId: shadowUser.id,
         createdAt: new Date(),
       })
+    }
+
+    // Fetch Kind 0 profile + backfill recent posts from relay in background
+    const relayUrls = (c.env.NOSTR_RELAYS || '').split(',').map((r: string) => r.trim()).filter(Boolean)
+    if (relayUrls.length > 0) {
+      c.executionCtx.waitUntil(fetchAndUpdateNostrProfile(db, shadowUser.id, pubkey, relayUrls))
+      c.executionCtx.waitUntil(backfillNostrUserPosts(db, shadowUser.id, pubkey, relayUrls))
     }
   } catch (e) {
     console.error('[Nostr Follow] Failed to create shadow user:', e)

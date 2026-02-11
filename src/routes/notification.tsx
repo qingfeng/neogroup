@@ -93,6 +93,10 @@ notification.get('/', async (c) => {
   }
 
   const getLink = (n: typeof notificationList[0]) => {
+    if (n.type === 'follow') {
+      if (n.actor?.id) return `/user/${n.actor.username}`
+      return n.actorUrl || '#'
+    }
     if (n.type === 'mention') {
       try {
         if (n.metadata) {

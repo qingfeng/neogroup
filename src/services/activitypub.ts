@@ -455,13 +455,60 @@ export async function discoverRemoteGroup(handle: string): Promise<RemoteGroupIn
   }
 }
 
+// --- Remote User Discovery ---
+
+export interface RemoteUserInfo {
+  actorUri: string
+  name: string
+  username: string
+  avatarUrl: string | null
+  domain: string
+}
+
+export async function discoverRemoteUser(handle: string): Promise<RemoteUserInfo | null> {
+  // Parse @user@domain or user@domain
+  const match = handle.replace(/^@/, '').match(/^([^@]+)@(.+)$/)
+  if (!match) return null
+
+  const [, username, domain] = match
+
+  try {
+    const webfingerUrl = `https://${domain}/.well-known/webfinger?resource=acct:${username}@${domain}`
+    const wfRes = await fetch(webfingerUrl, {
+      headers: { 'Accept': 'application/jrd+json, application/json' },
+    })
+    if (!wfRes.ok) return null
+
+    const wfData = await wfRes.json() as any
+    const selfLink = wfData.links?.find((l: any) => l.rel === 'self' && l.type === 'application/activity+json')
+    if (!selfLink?.href) return null
+
+    const actor = await fetchActor(selfLink.href)
+    if (!actor) return null
+
+    // Accept Person type (or Application/Service for bots)
+    if (actor.type !== 'Person' && actor.type !== 'Application' && actor.type !== 'Service') return null
+
+    return {
+      actorUri: actor.id,
+      name: actor.name || actor.preferredUsername || username,
+      username: actor.preferredUsername || username,
+      avatarUrl: actor.icon?.url || null,
+      domain,
+    }
+  } catch (e) {
+    console.error('[discoverRemoteUser] Error:', e)
+    return null
+  }
+}
+
 // --- AP Username lookup ---
 
 export async function getApUsername(db: Database, userId: string): Promise<string | null> {
   const providers = await db
     .select({ metadata: authProviders.metadata })
     .from(authProviders)
-    .where(eq(authProviders.userId, userId))
+    .where(and(eq(authProviders.userId, userId), eq(authProviders.providerType, 'mastodon')))
     .limit(1)
 
   if (providers.length === 0 || !providers[0].metadata) return null
