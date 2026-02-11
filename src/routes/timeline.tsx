@@ -7,6 +7,7 @@ import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, resizeImage, processContentImages } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { deliverTopicToFollowers, discoverRemoteUser, getOrCreateRemoteUser, fetchActor } from '../services/activitypub'
+import { resolveStatusByUrl, reblogStatus } from '../services/mastodon'
 import { buildSignedEvent, pubkeyToNpub, npubToPubkey } from '../services/nostr'
 import { getOrCreateNostrUser, fetchAndUpdateNostrProfile, backfillNostrUserPosts } from '../services/nostr-community'
 
@@ -318,6 +319,25 @@ timeline.post('/post', async (c) => {
   c.executionCtx.waitUntil(
     deliverTopicToFollowers(db, baseUrl, user.id, topicId, '', htmlContent)
   )
+
+  // Mastodon reblog: auto-boost so it appears on user's Mastodon timeline
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const authProvider = await db.query.authProviders.findFirst({
+        where: and(eq(authProviders.userId, user.id), eq(authProviders.providerType, 'mastodon')),
+      })
+      if (!authProvider?.accessToken) return
+      const userDomain = authProvider.providerId.split('@')[1]
+      if (!userDomain) return
+      const noteUrl = `${baseUrl}/ap/notes/${topicId}`
+      const localStatusId = await resolveStatusByUrl(userDomain, authProvider.accessToken, noteUrl)
+      if (localStatusId) {
+        await reblogStatus(userDomain, authProvider.accessToken, localStatusId)
+      }
+    } catch (e) {
+      console.error('[Timeline] Auto-reblog failed:', e)
+    }
+  })())
 
   // Nostr: broadcast Kind 1
   if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {

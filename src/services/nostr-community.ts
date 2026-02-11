@@ -14,6 +14,7 @@ import {
 import { generateId, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import { deliverTopicToFollowers } from './activitypub'
+import { resolveStatusByUrl, reblogStatus } from './mastodon'
 
 // --- Cron entry point ---
 
@@ -1149,18 +1150,38 @@ export async function pollOwnUserPosts(env: Bindings, db: Database) {
     if (stored) since = parseInt(stored, 10)
   }
 
-  // Get all local users with Nostr sync enabled
+  // Get all local users with Nostr sync enabled, including Mastodon auth for auto-reblog
   const nostrUsers = await db
-    .select({ id: users.id, nostrPubkey: users.nostrPubkey })
+    .select({
+      id: users.id,
+      nostrPubkey: users.nostrPubkey,
+      mastodonToken: authProviders.accessToken,
+      mastodonProviderId: authProviders.providerId,
+    })
     .from(users)
+    .leftJoin(authProviders, and(
+      eq(authProviders.userId, users.id),
+      eq(authProviders.providerType, 'mastodon')
+    ))
     .where(and(eq(users.nostrSyncEnabled, 1), isNotNull(users.nostrPubkey)))
 
   if (nostrUsers.length === 0) return
 
   // Build pubkey → user map for fast lookup
-  const pubkeyToUser = new Map<string, { id: string }>()
+  const pubkeyToUser = new Map<string, {
+    id: string
+    mastodonToken?: string | null
+    mastodonDomain?: string | null
+  }>()
   for (const u of nostrUsers) {
-    if (u.nostrPubkey) pubkeyToUser.set(u.nostrPubkey, { id: u.id })
+    if (u.nostrPubkey) {
+      const domain = u.mastodonProviderId?.split('@')[1] || null
+      pubkeyToUser.set(u.nostrPubkey, {
+        id: u.id,
+        mastodonToken: u.mastodonToken,
+        mastodonDomain: domain,
+      })
+    }
   }
 
   const BATCH_SIZE = 50
@@ -1241,6 +1262,22 @@ export async function pollOwnUserPosts(env: Bindings, db: Database) {
             console.log(`[Nostr OwnPosts] AP delivery completed for ${topicId}`)
           } catch (e) {
             console.error(`[Nostr OwnPosts] AP delivery failed for ${topicId}:`, e)
+          }
+
+          // Mastodon reblog: auto-boost so it appears on user's Mastodon timeline
+          if (localUser.mastodonToken && localUser.mastodonDomain) {
+            try {
+              const noteUrl = `${baseUrl}/ap/notes/${topicId}`
+              const localStatusId = await resolveStatusByUrl(
+                localUser.mastodonDomain, localUser.mastodonToken, noteUrl
+              )
+              if (localStatusId) {
+                await reblogStatus(localUser.mastodonDomain, localUser.mastodonToken, localStatusId)
+                console.log(`[Nostr OwnPosts] Mastodon reblog done for ${topicId}`)
+              }
+            } catch (e) {
+              console.error(`[Nostr OwnPosts] Mastodon reblog failed for ${topicId}:`, e)
+            }
           }
         } catch (e) {
           console.error(`[Nostr OwnPosts] Failed to process event ${event.id}:`, e)
