@@ -1,7 +1,7 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, isNotNull, inArray } from 'drizzle-orm'
 import type { Database } from '../db'
 import type { Bindings } from '../types'
-import { groups, topics, users, authProviders, nostrFollows, nostrCommunityFollows, userFollows } from '../db/schema'
+import { groups, topics, comments, users, authProviders, notifications, topicLikes, commentLikes, nostrFollows, nostrCommunityFollows, userFollows } from '../db/schema'
 import type { User } from '../db/schema'
 import {
   type NostrEvent,
@@ -12,6 +12,7 @@ import {
   pubkeyToNpub,
 } from './nostr'
 import { generateId, truncate } from '../lib/utils'
+import { createNotification } from '../lib/notifications'
 
 // --- Cron entry point ---
 
@@ -300,6 +301,133 @@ export async function getOrCreateNostrUser(
 
   console.log(`[NIP-72] Created shadow user ${username} for pubkey ${pubkey.slice(0, 8)}...`)
   return { id: userId, username }
+}
+
+/**
+ * Fetch Kind 0 metadata from relay and update shadow user profile (displayName, avatarUrl, bio).
+ * Should be called in waitUntil after creating a Nostr shadow user.
+ */
+export async function fetchAndUpdateNostrProfile(
+  db: Database,
+  userId: string,
+  pubkey: string,
+  relayUrls: string[],
+): Promise<void> {
+  for (const relayUrl of relayUrls) {
+    try {
+      const events = await fetchEventsFromRelay(relayUrl, {
+        kinds: [0],
+        authors: [pubkey],
+        limit: 1,
+      })
+      if (events.length === 0) continue
+
+      const latest = events.sort((a, b) => b.created_at - a.created_at)[0]
+      const meta = JSON.parse(latest.content) as {
+        name?: string
+        display_name?: string
+        picture?: string
+        about?: string
+      }
+
+      const displayName = meta.display_name || meta.name || null
+      const avatarUrl = meta.picture || null
+      const bio = meta.about ? `<p>${meta.about.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>` : null
+
+      const updateData: Record<string, unknown> = { updatedAt: new Date() }
+      if (displayName) updateData.displayName = displayName
+      if (avatarUrl) updateData.avatarUrl = avatarUrl
+      if (bio) updateData.bio = bio
+
+      if (displayName || avatarUrl || bio) {
+        await db.update(users).set(updateData).where(eq(users.id, userId))
+        console.log(`[Nostr Profile] Updated shadow user ${userId} with metadata from ${relayUrl}`)
+      }
+      return // Success, no need to try other relays
+    } catch (e) {
+      console.error(`[Nostr Profile] Failed to fetch Kind 0 from ${relayUrl}:`, e)
+    }
+  }
+}
+
+/**
+ * Backfill recent posts (up to 10) from a newly followed Nostr user.
+ * Called in waitUntil when a user follows a Nostr pubkey.
+ */
+export async function backfillNostrUserPosts(
+  db: Database,
+  shadowUserId: string,
+  pubkey: string,
+  relayUrls: string[],
+): Promise<void> {
+  for (const relayUrl of relayUrls) {
+    try {
+      const events = await fetchEventsFromRelay(relayUrl, {
+        kinds: [1],
+        authors: [pubkey],
+        limit: 10,
+      })
+      if (events.length === 0) continue
+
+      // Sort newest first
+      events.sort((a, b) => b.created_at - a.created_at)
+
+      let imported = 0
+      for (const event of events) {
+        try {
+          if (!verifyEvent(event)) continue
+
+          // Dedup
+          const existing = await db.select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.nostrEventId, event.id))
+            .limit(1)
+          if (existing.length > 0) continue
+
+          // Skip NIP-72 community posts
+          const hasATag = event.tags.some((t: string[]) => t[0] === 'a' && t[1]?.startsWith('34550:'))
+          if (hasATag) continue
+
+          // Reject future timestamps
+          const nowSec = Math.floor(Date.now() / 1000)
+          if (event.created_at > nowSec + 600) continue
+
+          const escaped = event.content
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+          const htmlContent = escaped
+            ? '<p>' + escaped.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
+            : null
+
+          const topicId = generateId()
+          const topicNow = new Date(event.created_at * 1000)
+
+          await db.insert(topics).values({
+            id: topicId,
+            groupId: null,
+            userId: shadowUserId,
+            title: '',
+            content: htmlContent,
+            type: 0,
+            nostrEventId: event.id,
+            nostrAuthorPubkey: event.pubkey,
+            createdAt: topicNow,
+            updatedAt: topicNow,
+          })
+          imported++
+        } catch (e) {
+          // Skip individual event failures (likely dedup constraint)
+        }
+      }
+
+      console.log(`[Nostr Backfill] Imported ${imported} posts for ${pubkey.slice(0, 8)}... from ${relayUrl}`)
+      return // Done with first successful relay
+    } catch (e) {
+      console.error(`[Nostr Backfill] Failed to fetch from ${relayUrl}:`, e)
+    }
+  }
 }
 
 // --- Poll followed Nostr users ---
@@ -698,5 +826,308 @@ export async function syncContactListsFromRelay(env: Bindings, db: Database) {
     if (imported > 0) {
       console.log(`[Nostr K3 Sync] Imported ${imported} follows from relay for user ${u.id}`)
     }
+  }
+}
+
+// --- Poll Nostr Kind 7 Reactions ---
+
+export async function pollNostrReactions(env: Bindings, db: Database) {
+  const relayUrls = (env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (relayUrls.length === 0) return
+
+  const relayUrl = relayUrls[0]
+  const KV_KEY = 'nostr_reactions_last_poll'
+
+  // Get last poll timestamp from KV
+  let since = Math.floor(Date.now() / 1000) - 3600 // Default: last hour
+  if (env.KV) {
+    const stored = await env.KV.get(KV_KEY)
+    if (stored) since = parseInt(stored, 10)
+  }
+
+  // Collect nostr_event_ids from recent topics and comments (limit 200 each)
+  const recentTopics = await db
+    .select({ id: topics.id, userId: topics.userId, nostrEventId: topics.nostrEventId })
+    .from(topics)
+    .where(isNotNull(topics.nostrEventId))
+    .orderBy(sql`${topics.createdAt} DESC`)
+    .limit(200)
+
+  const recentComments = await db
+    .select({ id: comments.id, userId: comments.userId, topicId: comments.topicId, nostrEventId: comments.nostrEventId })
+    .from(comments)
+    .where(isNotNull(comments.nostrEventId))
+    .orderBy(sql`${comments.createdAt} DESC`)
+    .limit(200)
+
+  // Build lookup maps: nostrEventId -> { type, id, userId, topicId }
+  const eventMap = new Map<string, { type: 'topic' | 'comment'; id: string; userId: string; topicId?: string }>()
+  for (const t of recentTopics) {
+    if (t.nostrEventId) eventMap.set(t.nostrEventId, { type: 'topic', id: t.id, userId: t.userId })
+  }
+  for (const c of recentComments) {
+    if (c.nostrEventId) eventMap.set(c.nostrEventId, { type: 'comment', id: c.id, userId: c.userId, topicId: c.topicId })
+  }
+
+  if (eventMap.size === 0) return
+
+  const eventIds = Array.from(eventMap.keys())
+
+  // Fetch Kind 7 reactions referencing our events
+  // Relay filters have size limits, so batch if needed
+  const BATCH_SIZE = 50
+  let maxCreatedAt = since
+
+  for (let i = 0; i < eventIds.length; i += BATCH_SIZE) {
+    const batch = eventIds.slice(i, i + BATCH_SIZE)
+
+    try {
+      const events = await fetchEventsFromRelay(relayUrl, {
+        kinds: [7],
+        '#e': batch,
+        since,
+      })
+
+      console.log(`[Nostr Reactions] Fetched ${events.length} Kind 7 events (batch ${Math.floor(i / BATCH_SIZE) + 1})`)
+
+      for (const event of events) {
+        try {
+          // Find which of our content this reaction targets
+          // The last 'e' tag is typically the reacted-to event
+          const eTags = event.tags.filter((t: string[]) => t[0] === 'e')
+          if (eTags.length === 0) continue
+
+          // Check all e tags (some clients put the target as last, some as first)
+          let target: { type: 'topic' | 'comment'; id: string; userId: string; topicId?: string } | null = null
+          for (const eTag of eTags) {
+            const match = eventMap.get(eTag[1])
+            if (match) {
+              target = match
+              break
+            }
+          }
+          if (!target) continue
+
+          // Skip self-reactions (check if the reactor is the content author)
+          // Get or create shadow user for the reactor
+          const reactor = await getOrCreateNostrUser(db, event.pubkey)
+          if (reactor.id === target.userId) continue
+
+          const notifyType = target.type === 'topic' ? 'topic_like' : 'comment_like'
+
+          // Dedup: check existing notification
+          const existing = await db.select({ id: notifications.id })
+            .from(notifications)
+            .where(and(
+              eq(notifications.actorId, reactor.id),
+              eq(notifications.type, notifyType),
+              ...(target.type === 'comment'
+                ? [eq(notifications.commentId, target.id)]
+                : [eq(notifications.topicId, target.id)])
+            ))
+            .limit(1)
+
+          if (existing.length > 0) continue
+
+          // Insert into like table (for like count display)
+          if (target.type === 'topic') {
+            const existingLike = await db.select({ id: topicLikes.id }).from(topicLikes)
+              .where(and(eq(topicLikes.topicId, target.id), eq(topicLikes.userId, reactor.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(topicLikes).values({ id: generateId(), topicId: target.id, userId: reactor.id, createdAt: new Date() })
+            }
+          } else if (target.type === 'comment') {
+            const existingLike = await db.select({ id: commentLikes.id }).from(commentLikes)
+              .where(and(eq(commentLikes.commentId, target.id), eq(commentLikes.userId, reactor.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(commentLikes).values({ id: generateId(), commentId: target.id, userId: reactor.id, createdAt: new Date() })
+            }
+          }
+
+          await createNotification(db, {
+            userId: target.userId,
+            actorId: reactor.id,
+            type: notifyType,
+            topicId: target.type === 'topic' ? target.id : target.topicId,
+            commentId: target.type === 'comment' ? target.id : undefined,
+          })
+
+          console.log(`[Nostr Reactions] Created ${notifyType} notification from ${event.pubkey.slice(0, 8)}...`)
+        } catch (e) {
+          console.error(`[Nostr Reactions] Failed to process event ${event.id}:`, e)
+        }
+
+        if (event.created_at > maxCreatedAt) {
+          maxCreatedAt = event.created_at
+        }
+      }
+    } catch (e) {
+      console.error(`[Nostr Reactions] Fetch failed for batch:`, e)
+    }
+  }
+
+  // Update last poll timestamp
+  if (env.KV && maxCreatedAt > since) {
+    await env.KV.put(KV_KEY, String(maxCreatedAt + 1))
+  }
+}
+
+// --- Poll Nostr Kind 1 Replies (comments) ---
+
+export async function pollNostrReplies(env: Bindings, db: Database) {
+  const relayUrls = (env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (relayUrls.length === 0) return
+
+  const relayUrl = relayUrls[0]
+  const KV_KEY = 'nostr_replies_last_poll'
+
+  let since = Math.floor(Date.now() / 1000) - 3600
+  if (env.KV) {
+    const stored = await env.KV.get(KV_KEY)
+    if (stored) since = parseInt(stored, 10)
+  }
+
+  // Collect nostr_event_ids from recent topics and comments
+  const recentTopics = await db
+    .select({ id: topics.id, userId: topics.userId, groupId: topics.groupId, nostrEventId: topics.nostrEventId })
+    .from(topics)
+    .where(isNotNull(topics.nostrEventId))
+    .orderBy(sql`${topics.createdAt} DESC`)
+    .limit(200)
+
+  const recentComments = await db
+    .select({ id: comments.id, userId: comments.userId, topicId: comments.topicId, nostrEventId: comments.nostrEventId })
+    .from(comments)
+    .where(isNotNull(comments.nostrEventId))
+    .orderBy(sql`${comments.createdAt} DESC`)
+    .limit(200)
+
+  // Build lookup: nostrEventId -> { type, id, userId, topicId, groupId }
+  const eventMap = new Map<string, { type: 'topic' | 'comment'; id: string; userId: string; topicId: string; groupId?: string | null }>()
+  for (const t of recentTopics) {
+    if (t.nostrEventId) eventMap.set(t.nostrEventId, { type: 'topic', id: t.id, userId: t.userId, topicId: t.id, groupId: t.groupId })
+  }
+  for (const c of recentComments) {
+    if (c.nostrEventId) eventMap.set(c.nostrEventId, { type: 'comment', id: c.id, userId: c.userId, topicId: c.topicId })
+  }
+
+  if (eventMap.size === 0) return
+
+  const eventIds = Array.from(eventMap.keys())
+  const BATCH_SIZE = 50
+  let maxCreatedAt = since
+
+  for (let i = 0; i < eventIds.length; i += BATCH_SIZE) {
+    const batch = eventIds.slice(i, i + BATCH_SIZE)
+
+    try {
+      const events = await fetchEventsFromRelay(relayUrl, {
+        kinds: [1],
+        '#e': batch,
+        since,
+      })
+
+      console.log(`[Nostr Replies] Fetched ${events.length} Kind 1 reply events (batch ${Math.floor(i / BATCH_SIZE) + 1})`)
+
+      for (const event of events) {
+        try {
+          // Skip events we already imported
+          const existingComment = await db.select({ id: comments.id })
+            .from(comments).where(eq(comments.nostrEventId, event.id)).limit(1)
+          if (existingComment.length > 0) {
+            if (event.created_at > maxCreatedAt) maxCreatedAt = event.created_at
+            continue
+          }
+          const existingTopic = await db.select({ id: topics.id })
+            .from(topics).where(eq(topics.nostrEventId, event.id)).limit(1)
+          if (existingTopic.length > 0) {
+            if (event.created_at > maxCreatedAt) maxCreatedAt = event.created_at
+            continue
+          }
+
+          if (!verifyEvent(event)) continue
+
+          // Reject future timestamps
+          const nowSec = Math.floor(Date.now() / 1000)
+          if (event.created_at > nowSec + 600) continue
+
+          // Find which of our content this replies to via e tags
+          // NIP-10: look for 'reply' marker, or last 'e' tag
+          const eTags = event.tags.filter((t: string[]) => t[0] === 'e')
+          if (eTags.length === 0) continue
+
+          // Try to find a matching parent: prefer tagged with 'reply' marker, then last e tag
+          let parent: { type: 'topic' | 'comment'; id: string; userId: string; topicId: string; groupId?: string | null } | null = null
+          // First check marked tags (NIP-10 positional markers)
+          for (const eTag of eTags) {
+            if (eTag[3] === 'reply' || eTag[3] === 'root') {
+              const match = eventMap.get(eTag[1])
+              if (match) { parent = match; break }
+            }
+          }
+          // Fallback: check all e tags
+          if (!parent) {
+            for (const eTag of eTags) {
+              const match = eventMap.get(eTag[1])
+              if (match) { parent = match; break }
+            }
+          }
+          if (!parent) continue
+
+          // Get or create shadow user
+          const author = await getOrCreateNostrUser(db, event.pubkey)
+
+          // Escape HTML
+          const escaped = event.content
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+          const htmlContent = escaped
+            ? '<p>' + escaped.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
+            : '<p></p>'
+
+          const commentId = generateId()
+          const commentNow = new Date(event.created_at * 1000)
+
+          await db.insert(comments).values({
+            id: commentId,
+            topicId: parent.topicId,
+            userId: author.id,
+            content: htmlContent,
+            replyToId: parent.type === 'comment' ? parent.id : null,
+            nostrEventId: event.id,
+            createdAt: commentNow,
+            updatedAt: commentNow,
+          })
+
+          // Update topic updatedAt
+          await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, parent.topicId))
+
+          // Notify the parent author
+          if (author.id !== parent.userId) {
+            await createNotification(db, {
+              userId: parent.userId,
+              actorId: author.id,
+              type: parent.type === 'topic' ? 'reply' : 'comment_reply',
+              topicId: parent.topicId,
+              commentId,
+            })
+          }
+
+          console.log(`[Nostr Replies] Created comment ${commentId} in topic ${parent.topicId} from ${event.pubkey.slice(0, 8)}...`)
+        } catch (e) {
+          console.error(`[Nostr Replies] Failed to process event ${event.id}:`, e)
+        }
+
+        if (event.created_at > maxCreatedAt) maxCreatedAt = event.created_at
+      }
+    } catch (e) {
+      console.error(`[Nostr Replies] Fetch failed for batch:`, e)
+    }
+  }
+
+  if (env.KV && maxCreatedAt > since) {
+    await env.KV.put(KV_KEY, String(maxCreatedAt + 1))
   }
 }

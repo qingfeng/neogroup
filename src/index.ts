@@ -507,6 +507,22 @@ export default {
       console.error('[Cron] Nostr contact list sync failed:', e)
     }
 
+    // Poll Nostr Kind 7 reactions (likes)
+    try {
+      const { pollNostrReactions } = await import('./services/nostr-community')
+      await pollNostrReactions(env, db)
+    } catch (e) {
+      console.error('[Cron] Nostr reactions poll failed:', e)
+    }
+
+    // Poll Nostr Kind 1 replies (comments)
+    try {
+      const { pollNostrReplies } = await import('./services/nostr-community')
+      await pollNostrReplies(env, db)
+    } catch (e) {
+      console.error('[Cron] Nostr replies poll failed:', e)
+    }
+
     // Note: Nostr auto-enable for users/groups has completed (all 286 users + 55 groups done).
     // Code removed since it's no longer needed.
   },

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers } from '../db/schema'
+import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes } from '../db/schema'
 import { generateId, stripHtml, truncate } from '../lib/utils'
 import { createNotification } from '../lib/notifications'
 import {
@@ -668,6 +668,16 @@ ap.post('/ap/users/:username/inbox', async (c) => {
         sharedInboxUrl,
         createdAt: new Date(),
       })
+
+      // Notify the local user about the new follower
+      await createNotification(db, {
+        userId: user.id,
+        type: 'follow',
+        actorName: remoteActor.name || remoteActor.preferredUsername || followerActorUri,
+        actorAvatarUrl: remoteActor.icon?.url || null,
+        actorUrl: remoteActor.url || followerActorUri,
+        actorUri: followerActorUri,
+      })
     }
 
     // Send Accept
@@ -733,6 +743,95 @@ ap.post('/ap/users/:username/inbox', async (c) => {
             eq(groupMembers.followStatus, 'pending')
           ))
         console.log('[AP Inbox] Accept(Follow) for remote group:', targetActorUri, 'user:', user.id)
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Like') {
+    // Handle Like — remote user liked a local topic or comment
+    const objectUrl = typeof activity.object === 'string' ? activity.object : activity.object?.id
+    if (objectUrl) {
+      const topicNoteMatch = objectUrl.match(/\/ap\/notes\/([a-zA-Z0-9_-]+)/)
+      const commentNoteMatch = objectUrl.match(/\/ap\/comments\/([a-zA-Z0-9_-]+)/)
+
+      let notifyUserId: string | null = null
+      let notifyTopicId: string | null = null
+      let notifyCommentId: string | null = null
+      let notifyType: string | null = null
+
+      if (topicNoteMatch) {
+        const likedTopic = await db.select({ id: topics.id, userId: topics.userId })
+          .from(topics).where(eq(topics.id, topicNoteMatch[1])).limit(1)
+        if (likedTopic.length > 0) {
+          notifyUserId = likedTopic[0].userId
+          notifyTopicId = likedTopic[0].id
+          notifyType = 'topic_like'
+        }
+      } else if (commentNoteMatch) {
+        const likedComment = await db.select({ id: comments.id, userId: comments.userId, topicId: comments.topicId })
+          .from(comments).where(eq(comments.id, commentNoteMatch[1])).limit(1)
+        if (likedComment.length > 0) {
+          notifyUserId = likedComment[0].userId
+          notifyTopicId = likedComment[0].topicId
+          notifyCommentId = likedComment[0].id
+          notifyType = 'comment_like'
+        }
+      }
+
+      if (notifyUserId && notifyType) {
+        const remoteActorUri = activity.actor
+        const remoteActor = remoteActorUri ? await fetchActor(remoteActorUri) : null
+        const actorName = remoteActor?.name || remoteActor?.preferredUsername || remoteActorUri
+        const actorAvatarUrl = remoteActor?.icon?.url || null
+        const remoteActorUrl = remoteActor?.url || remoteActorUri
+
+        // Create shadow user for the remote actor so the like counts
+        const shadowUser = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+
+        // Insert into like table (for like count display)
+        if (shadowUser) {
+          if (notifyType === 'topic_like' && notifyTopicId) {
+            const existingLike = await db.select({ id: topicLikes.id }).from(topicLikes)
+              .where(and(eq(topicLikes.topicId, notifyTopicId), eq(topicLikes.userId, shadowUser.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(topicLikes).values({ id: generateId(), topicId: notifyTopicId, userId: shadowUser.id, createdAt: new Date() })
+            }
+          } else if (notifyType === 'comment_like' && notifyCommentId) {
+            const existingLike = await db.select({ id: commentLikes.id }).from(commentLikes)
+              .where(and(eq(commentLikes.commentId, notifyCommentId), eq(commentLikes.userId, shadowUser.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(commentLikes).values({ id: generateId(), commentId: notifyCommentId, userId: shadowUser.id, createdAt: new Date() })
+            }
+          }
+        }
+
+        // Dedup: check if notification already exists for this actor + target
+        const existing = await db.select({ id: notifications.id })
+          .from(notifications)
+          .where(and(
+            eq(notifications.actorUri, remoteActorUri),
+            eq(notifications.type, notifyType),
+            ...(notifyCommentId
+              ? [eq(notifications.commentId, notifyCommentId)]
+              : [eq(notifications.topicId, notifyTopicId!)])
+          ))
+          .limit(1)
+
+        if (existing.length === 0) {
+          await createNotification(db, {
+            userId: notifyUserId,
+            type: notifyType,
+            topicId: notifyTopicId || undefined,
+            commentId: notifyCommentId || undefined,
+            actorId: shadowUser?.id,
+            actorName: shadowUser ? undefined : actorName,
+            actorAvatarUrl: shadowUser ? undefined : actorAvatarUrl,
+            actorUrl: shadowUser ? undefined : remoteActorUrl,
+            actorUri: remoteActorUri,
+          })
+          console.log(`[AP Inbox] Like notification: ${notifyType} from ${remoteActorUri}`)
+        }
       }
     }
     return c.json({ status: 'accepted' }, 202)
@@ -1533,6 +1632,95 @@ ap.post('/ap/inbox', async (c) => {
               return c.json({ status: 'created' }, 202)
             }
           }
+        }
+      }
+    }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'Like') {
+    // Handle Like — remote user liked a local topic or comment
+    const objectUrl = typeof activity.object === 'string' ? activity.object : activity.object?.id
+    if (objectUrl) {
+      const topicNoteMatch = objectUrl.match(/\/ap\/notes\/([a-zA-Z0-9_-]+)/)
+      const commentNoteMatch = objectUrl.match(/\/ap\/comments\/([a-zA-Z0-9_-]+)/)
+
+      let notifyUserId: string | null = null
+      let notifyTopicId: string | null = null
+      let notifyCommentId: string | null = null
+      let notifyType: string | null = null
+
+      if (topicNoteMatch) {
+        const likedTopic = await db.select({ id: topics.id, userId: topics.userId })
+          .from(topics).where(eq(topics.id, topicNoteMatch[1])).limit(1)
+        if (likedTopic.length > 0) {
+          notifyUserId = likedTopic[0].userId
+          notifyTopicId = likedTopic[0].id
+          notifyType = 'topic_like'
+        }
+      } else if (commentNoteMatch) {
+        const likedComment = await db.select({ id: comments.id, userId: comments.userId, topicId: comments.topicId })
+          .from(comments).where(eq(comments.id, commentNoteMatch[1])).limit(1)
+        if (likedComment.length > 0) {
+          notifyUserId = likedComment[0].userId
+          notifyTopicId = likedComment[0].topicId
+          notifyCommentId = likedComment[0].id
+          notifyType = 'comment_like'
+        }
+      }
+
+      if (notifyUserId && notifyType) {
+        const remoteActorUri = activity.actor
+        const remoteActor = remoteActorUri ? await fetchActor(remoteActorUri) : null
+        const actorName = remoteActor?.name || remoteActor?.preferredUsername || remoteActorUri
+        const actorAvatarUrl = remoteActor?.icon?.url || null
+        const remoteActorUrl = remoteActor?.url || remoteActorUri
+
+        // Create shadow user for the remote actor so the like counts
+        const shadowUser = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+
+        // Insert into like table (for like count display)
+        if (shadowUser) {
+          if (notifyType === 'topic_like' && notifyTopicId) {
+            const existingLike = await db.select({ id: topicLikes.id }).from(topicLikes)
+              .where(and(eq(topicLikes.topicId, notifyTopicId), eq(topicLikes.userId, shadowUser.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(topicLikes).values({ id: generateId(), topicId: notifyTopicId, userId: shadowUser.id, createdAt: new Date() })
+            }
+          } else if (notifyType === 'comment_like' && notifyCommentId) {
+            const existingLike = await db.select({ id: commentLikes.id }).from(commentLikes)
+              .where(and(eq(commentLikes.commentId, notifyCommentId), eq(commentLikes.userId, shadowUser.id))).limit(1)
+            if (existingLike.length === 0) {
+              await db.insert(commentLikes).values({ id: generateId(), commentId: notifyCommentId, userId: shadowUser.id, createdAt: new Date() })
+            }
+          }
+        }
+
+        // Dedup: check if notification already exists for this actor + target
+        const existing = await db.select({ id: notifications.id })
+          .from(notifications)
+          .where(and(
+            eq(notifications.actorUri, remoteActorUri),
+            eq(notifications.type, notifyType),
+            ...(notifyCommentId
+              ? [eq(notifications.commentId, notifyCommentId)]
+              : [eq(notifications.topicId, notifyTopicId!)])
+          ))
+          .limit(1)
+
+        if (existing.length === 0) {
+          await createNotification(db, {
+            userId: notifyUserId,
+            type: notifyType,
+            topicId: notifyTopicId || undefined,
+            commentId: notifyCommentId || undefined,
+            actorId: shadowUser?.id,
+            actorName: shadowUser ? undefined : actorName,
+            actorAvatarUrl: shadowUser ? undefined : actorAvatarUrl,
+            actorUrl: shadowUser ? undefined : remoteActorUrl,
+            actorUri: remoteActorUri,
+          })
+          console.log(`[AP SharedInbox] Like notification: ${notifyType} from ${remoteActorUri}`)
         }
       }
     }
