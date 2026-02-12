@@ -5,7 +5,8 @@ import { users, authProviders, groups, groupMembers, topics, comments, topicLike
 import { generateId, generateApiKey, ensureUniqueUsername, stripHtml, isSuperAdmin } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
-import { escrowFreeze, escrowRelease, escrowRefund, getBalance, transfer, creditBalance, recordLedger } from '../lib/balance'
+import { escrowFreeze, escrowRelease, escrowRefund, getBalance, transfer, creditBalance, recordLedger, publishLedgerEvents } from '../lib/balance'
+import type { LedgerEventInfo } from '../services/nostr'
 import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub } from '../services/nostr'
 import { buildJobRequestEvent, buildJobResultEvent, buildJobFeedbackEvent, buildHandlerInfoEvent } from '../services/dvm'
@@ -909,11 +910,13 @@ api.post('/dvm/request', requireApiAuth, async (c) => {
   const bidMsats = bidSats ? bidSats * 1000 : undefined
 
   // Escrow freeze if bid_sats > 0
+  let freezeEntries: LedgerEventInfo[] = []
   if (bidSats > 0) {
-    const ok = await escrowFreeze(db, user.id, bidSats, 'pending')
-    if (!ok) {
+    const freezeResult = await escrowFreeze(db, user.id, bidSats, 'pending')
+    if (!freezeResult.ok) {
       return c.json({ error: 'Insufficient balance', balance_sats: await getBalance(db, user.id) }, 400)
     }
+    freezeEntries = freezeResult.entries
   }
 
   const relays = (c.env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -957,11 +960,18 @@ api.post('/dvm/request', requireApiAuth, async (c) => {
     await db.update(ledgerEntries)
       .set({ refId: jobId })
       .where(and(eq(ledgerEntries.userId, user.id), eq(ledgerEntries.refId, 'pending'), eq(ledgerEntries.type, 'escrow_freeze')))
+    for (const e of freezeEntries) e.memo = `Escrow freeze for job ${jobId}`
   }
 
   // Publish to relay
   if (c.env.NOSTR_QUEUE) {
     c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [event] }))
+  }
+
+  // Publish ledger events (GEP-0009)
+  if (freezeEntries.length > 0 && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    const userKeys = user.nostrPubkey ? { pubkey: user.nostrPubkey, privEncrypted: user.nostrPrivEncrypted!, iv: user.nostrPrivIv! } : undefined
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, freezeEntries, userKeys))
   }
 
   // 同站直投：如果本站有注册了对应 Kind 的 Provider，直接创建 provider job
@@ -1288,13 +1298,20 @@ api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
 
   // Refund escrow if bid > 0
   const bidSats = job[0].bidMsats ? Math.floor(job[0].bidMsats / 1000) : 0
+  let refundEntries: LedgerEventInfo[] = []
   if (bidSats > 0) {
-    await escrowRefund(db, user.id, bidSats, jobId)
+    const refundResult = await escrowRefund(db, user.id, bidSats, jobId)
+    refundEntries = refundResult.entries
   }
 
   await db.update(dvmJobs)
     .set({ status: 'cancelled', updatedAt: new Date() })
     .where(eq(dvmJobs.id, jobId))
+
+  // Publish ledger events (GEP-0009)
+  if (refundEntries.length > 0 && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, refundEntries))
+  }
 
   // Send Kind 5 deletion event for the request
   if (job[0].requestEventId && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
@@ -1678,9 +1695,15 @@ api.post('/transfer', requireApiAuth, async (c) => {
   if (target.length === 0) return c.json({ error: 'User not found' }, 404)
   if (target[0].id === user.id) return c.json({ error: 'Cannot transfer to yourself' }, 400)
 
-  const ok = await transfer(db, user.id, target[0].id, amountSats, memo)
-  if (!ok) {
+  const transferResult = await transfer(db, user.id, target[0].id, amountSats, memo)
+  if (!transferResult.ok) {
     return c.json({ error: 'Insufficient balance', balance_sats: await getBalance(db, user.id) }, 400)
+  }
+
+  // Publish ledger events (GEP-0009)
+  if (transferResult.entries.length > 0 && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    const userKeys = user.nostrPubkey ? { pubkey: user.nostrPubkey, privEncrypted: user.nostrPrivEncrypted!, iv: user.nostrPrivIv! } : undefined
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, transferResult.entries, userKeys))
   }
 
   return c.json({ ok: true, balance_sats: await getBalance(db, user.id) })
@@ -1713,16 +1736,26 @@ api.post('/admin/airdrop', requireApiAuth, async (c) => {
 
   await creditBalance(db, target[0].id, amountSats)
   const newBalance = await getBalance(db, target[0].id)
+  const airdropMemo = memo || `Airdrop from admin ${user.username}`
 
-  await recordLedger(db, {
+  const entryId = await recordLedger(db, {
     userId: target[0].id,
     type: 'airdrop',
     amountSats,
     balanceAfter: newBalance,
     refId: user.id,
     refType: 'airdrop',
-    memo: memo || `Airdrop from admin ${user.username}`,
+    memo: airdropMemo,
   })
+
+  // Publish ledger event (GEP-0009)
+  if (c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    const entries: LedgerEventInfo[] = [{
+      ledgerEntryId: entryId, type: 'airdrop', amountSats,
+      balanceAfter: newBalance, signerType: 'system', memo: airdropMemo,
+    }]
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, entries))
+  }
 
   return c.json({ ok: true, new_balance: newBalance })
 })
@@ -1760,14 +1793,21 @@ api.post('/dvm/jobs/:id/complete', requireApiAuth, async (c) => {
   }
 
   // Settle escrow
+  let releaseEntries: LedgerEventInfo[] = []
   if (bidSats > 0 && providerUserId) {
-    await escrowRelease(db, user.id, providerUserId, bidSats, jobId)
+    const releaseResult = await escrowRelease(db, user.id, providerUserId, bidSats, jobId)
+    releaseEntries = releaseResult.entries
   }
 
   // Mark customer job as completed
   await db.update(dvmJobs)
     .set({ status: 'completed', updatedAt: new Date() })
     .where(eq(dvmJobs.id, jobId))
+
+  // Publish ledger events (GEP-0009)
+  if (releaseEntries.length > 0 && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, releaseEntries))
+  }
 
   return c.json({
     ok: true,
@@ -1859,18 +1899,29 @@ api.get('/deposit/:id/status', requireApiAuth, async (c) => {
         // Credit balance
         await creditBalance(db, user.id, d.amountSats)
         const balance = await getBalance(db, user.id)
-        await recordLedger(db, {
+        const depositMemo = `Lightning deposit ${d.amountSats} sats`
+        const entryId = await recordLedger(db, {
           userId: user.id,
           type: 'deposit',
           amountSats: d.amountSats,
           balanceAfter: balance,
           refId: d.id,
           refType: 'deposit',
-          memo: `Lightning deposit ${d.amountSats} sats`,
+          memo: depositMemo,
         })
         await db.update(deposits)
           .set({ status: 'paid', paidAt: new Date() })
           .where(eq(deposits.id, d.id))
+
+        // Publish ledger event (GEP-0009)
+        if (c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+          const entries: LedgerEventInfo[] = [{
+            ledgerEntryId: entryId, type: 'deposit', amountSats: d.amountSats,
+            balanceAfter: balance, signerType: 'system', memo: depositMemo,
+          }]
+          const userKeys = user.nostrPubkey ? { pubkey: user.nostrPubkey, privEncrypted: user.nostrPrivEncrypted!, iv: user.nostrPrivIv! } : undefined
+          c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, entries, userKeys))
+        }
 
         return c.json({
           deposit_id: d.id,
@@ -1920,18 +1971,28 @@ api.post('/webhook/lnbits', async (c) => {
   // Credit balance
   await creditBalance(db, d.userId, d.amountSats)
   const balance = await getBalance(db, d.userId)
-  await recordLedger(db, {
+  const depositMemo = `Lightning deposit ${d.amountSats} sats`
+  const entryId = await recordLedger(db, {
     userId: d.userId,
     type: 'deposit',
     amountSats: d.amountSats,
     balanceAfter: balance,
     refId: d.id,
     refType: 'deposit',
-    memo: `Lightning deposit ${d.amountSats} sats`,
+    memo: depositMemo,
   })
   await db.update(deposits)
     .set({ status: 'paid', paidAt: new Date() })
     .where(eq(deposits.id, d.id))
+
+  // Publish ledger event (GEP-0009)
+  if (c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    const entries: LedgerEventInfo[] = [{
+      ledgerEntryId: entryId, type: 'deposit', amountSats: d.amountSats,
+      balanceAfter: balance, signerType: 'system', memo: depositMemo,
+    }]
+    c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, entries))
+  }
 
   console.log(`[Deposit] Credited ${d.amountSats} sats to user ${d.userId}`)
   return c.json({ ok: true })
@@ -1982,15 +2043,26 @@ api.post('/withdraw', requireApiAuth, async (c) => {
 
     // Record ledger
     const balance = await getBalance(db, user.id)
-    await recordLedger(db, {
+    const withdrawMemo = `Lightning withdrawal ${amountSats} sats`
+    const entryId = await recordLedger(db, {
       userId: user.id,
       type: 'withdrawal',
       amountSats: -amountSats,
       balanceAfter: balance,
       refId: paymentResult.payment_hash,
       refType: 'withdrawal',
-      memo: `Lightning withdrawal ${amountSats} sats`,
+      memo: withdrawMemo,
     })
+
+    // Publish ledger event (GEP-0009)
+    if (c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+      const entries: LedgerEventInfo[] = [{
+        ledgerEntryId: entryId, type: 'withdrawal', amountSats: -amountSats,
+        balanceAfter: balance, signerType: 'user', memo: withdrawMemo,
+      }]
+      const userKeys = user.nostrPubkey ? { pubkey: user.nostrPubkey, privEncrypted: user.nostrPrivEncrypted!, iv: user.nostrPrivIv! } : undefined
+      c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, entries, userKeys))
+    }
 
     return c.json({
       ok: true,

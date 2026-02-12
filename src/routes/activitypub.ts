@@ -112,12 +112,24 @@ ap.get('/.well-known/nostr.json', async (c) => {
   }
 
   const db = c.get('db')
+  const relayUrl = c.env.NOSTR_RELAY_URL || 'wss://relay.damus.io'
+
+  // System identity (GEP-0009 Public Ledger)
+  if (name === 'system') {
+    const systemPubkey = c.env.SYSTEM_NOSTR_PUBKEY || await c.env.KV.get('system_nostr_pubkey')
+    if (systemPubkey) {
+      return c.json({
+        names: { system: systemPubkey },
+        relays: { [systemPubkey]: [relayUrl] },
+      }, 200, { 'Access-Control-Allow-Origin': '*' })
+    }
+    return c.json({ names: {}, relays: {} }, 200, { 'Access-Control-Allow-Origin': '*' })
+  }
+
   const user = await db.select({ nostrPubkey: users.nostrPubkey })
     .from(users)
     .where(and(eq(users.username, name), eq(users.nostrSyncEnabled, 1)))
     .limit(1)
-
-  const relayUrl = c.env.NOSTR_RELAY_URL || 'wss://relay.damus.io'
 
   if (user.length > 0 && user[0].nostrPubkey) {
     return c.json({

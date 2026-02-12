@@ -287,6 +287,7 @@ export const ledgerEntries = sqliteTable('ledger_entry', {
   refId: text('ref_id'),
   refType: text('ref_type'), // dvm_job | transfer | airdrop
   memo: text('memo'),
+  nostrEventId: text('nostr_event_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
