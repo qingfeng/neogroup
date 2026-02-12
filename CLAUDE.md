@@ -290,6 +290,7 @@ Nostr event 有唯一 ID，relay 自动去重，重试安全。
 | `NOSTR_RELAYS` | Secret | 逗号分隔的 relay WebSocket URL 列表 |
 | `NOSTR_RELAY_URL` | Var | NIP-05 返回的推荐 relay（默认取 NOSTR_RELAYS 第一个） |
 | `NOSTR_QUEUE` | Queue binding | Cloudflare Queue（`nostr-events`） |
+| `RELAY_SERVICE` | Service binding | 自建 relay Worker（`neogroup-relay`），可选 |
 
 ### 用户设置页
 
@@ -302,11 +303,13 @@ Nostr event 有唯一 ID，relay 自动去重，重试安全。
 
 Queue Consumer 在 Worker 内运行（`src/index.ts`），接收一批 event 后：
 
-1. 依次连接每个 relay（`NOSTR_RELAYS` 列表）
-2. 通过 WebSocket 发送 `["EVENT", signed_event]`
+1. 如果配置了 `RELAY_SERVICE`（Service Binding），先通过内部调用发布到自建 relay（`relay.neogrp.club`）
+2. 依次连接每个公共 relay（`NOSTR_RELAYS` 列表），通过 WebSocket 发送 `["EVENT", signed_event]`
 3. 等待 `["OK", event_id, true/false]` 响应（10 秒超时）
 4. 关闭连接
-5. 只要有一个 relay 成功就算通过，全部失败则抛错触发 Queue 重试
+5. 只要有一个公共 relay 成功就算通过，全部失败则抛错触发 Queue 重试
+
+> **自建 relay**：`relay/` 子项目部署为独立 Worker（`neogroup-relay`），使用 Durable Objects 管理 WebSocket 连接。由于同一 Cloudflare 账号下 Worker→Worker 的外部 WebSocket 连接不通（code=1006），必须通过 Service Binding 内部调用。
 
 无需外部服务器、无需 tunnel、无需 Mac Mini。
 
