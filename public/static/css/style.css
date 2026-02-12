@@ -591,18 +591,25 @@ a:hover {
 .topic-meta {
   display: flex;
   align-items: center;
-  gap: 15px;
-  padding: 0 15px 15px;
+  gap: 12px;
+  padding: 12px 20px 14px;
   color: #999;
-  font-size: 12px;
+  font-size: 13px;
   border-bottom: 1px solid #e8e8e8;
 }
 
 .topic-author {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   color: #37a;
+}
+
+.topic-author .avatar-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .topic-date {

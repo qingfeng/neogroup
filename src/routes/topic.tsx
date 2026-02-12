@@ -711,11 +711,22 @@ topic.get('/:id', async (c) => {
             </>
           ) : (
             <div class="sidebar-group-card">
-              <div class="sidebar-group-info">
-                <span class="sidebar-group-name">个人动态</span>
-                <p class="sidebar-group-desc">
-                  <a href={`/user/${topicData.user.username}`}>查看作者主页</a>
-                </p>
+              <div class="sidebar-group-header">
+                <img
+                  src={resizeImage(topicData.user.avatarUrl, 80) || '/static/img/default-avatar.svg'}
+                  alt=""
+                  class="sidebar-group-icon"
+                  style="border-radius: 50%;"
+                />
+                <div class="sidebar-group-info">
+                  <a href={`/user/${topicData.user.username}`} class="sidebar-group-name">
+                    {topicData.user.displayName || topicData.user.username}
+                  </a>
+                  <p class="sidebar-group-desc">@{topicData.user.username}</p>
+                </div>
+              </div>
+              <div class="sidebar-group-stats">
+                <a href={`/user/${topicData.user.username}`}>查看作者主页</a>
               </div>
             </div>
           )}
