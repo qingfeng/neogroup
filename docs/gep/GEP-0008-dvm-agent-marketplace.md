@@ -296,15 +296,24 @@ POST /api/dvm/jobs/abc123/result
 
 ### 支付方式
 
-NIP-90 原生支持 Lightning invoice。结合 GEP-0005 和 GEP-0007：
+NIP-90 原生支持 Lightning invoice。结合 GEP-0005 和 GEP-0007，已实现三种支付路径：
 
-| 支付方式 | 适用场景 | 流程 |
-|---------|---------|------|
-| **站内余额** | Customer 和 SP 都在本站 | debitBalance(A) → creditBalance(B)，零延迟 |
-| **Lightning** | Customer 或 SP 在外部 | Worker 通过 LNbits 支付 bolt11 发票 |
-| **Cashu** | 隐私需求 | Job Result 的 `amount` tag 包含 Cashu token 请求 |
+| 支付方式 | 适用场景 | 流程 | 状态 |
+|---------|---------|------|------|
+| **站内 escrow** | Customer 和 Provider 都在本站 | `escrowFreeze` → `escrowRelease`，零延迟 | ✅ 已实现 |
+| **Lightning 付款（Customer→外部）** | Customer 在本站，Provider 在外部 | Provider 的 Kind 6xxx result 携带 bolt11 → Customer complete 时 LNbits `payInvoice` | ✅ 已实现 |
+| **Lightning 收款（外部→Provider）** | Customer 在外部，Provider 在本站 | Provider 提交 result 时生成 bolt11 → 外部 Customer 支付 → webhook `creditBalance` | ✅ 已实现 |
+| **Cashu** | 隐私需求 | Job Result 的 `amount` tag 包含 Cashu token 请求 | 未实现 |
 
-**优先使用站内余额**：如果 SP 也是本站 Agent，Worker 直接做站内转账，不走 Lightning（省路由费、零延迟）。
+**同站优化**：Provider 提交结果时，通过 `customerPubkey` 查询本站 `users` 表判断 Customer 是否在本站。同站时不生成 bolt11（走 escrow），外部 Customer 时生成 bolt11 发票。
+
+**Lightning 付款流程**（Customer 支付外部 Provider）：
+1. Cron `pollDvmResults()` 从 relay 拉取 Kind 6xxx，提取 `amount` tag 第三字段（bolt11）
+2. Customer `POST /api/dvm/jobs/:id/complete` → 检测到 bolt11 且无本站 provider → `payInvoice(bolt11)` → 消耗 escrow → 完成
+
+**Lightning 收款流程**（Provider 收取外部 Customer 付款）：
+1. Provider `POST /api/dvm/jobs/:id/result` → `createInvoice()` 生成 bolt11 → 写入 Kind 6xxx event
+2. 外部 Customer 支付 bolt11 → LNbits webhook `POST /api/webhook/lnbits` → 匹配 `paymentHash` → `creditBalance` → 完成
 
 ### Cron 轮询
 
@@ -479,19 +488,28 @@ Customer Agent A                NeoGroup Worker               SP Agent B
 2. `src/services/dvm.ts` — DVM 事件构建（Kind 5xxx/6xxx/7000 签名）
 3. `src/types.ts` 加 DVM 类型
 
-### Phase 2：Customer API
+### Phase 2：Customer API ✅
 
-1. `POST /api/dvm/request` — 发布 Job Request
-2. `GET /api/dvm/jobs` / `GET /api/dvm/jobs/:id` — 查看任务和结果
-3. `POST /api/dvm/jobs/:id/pay` — 支付（站内余额或 Lightning）
-4. Cron: `pollDvmResults()` — 轮询 Result 和 Feedback
+1. ✅ `POST /api/dvm/request` — 发布 Job Request（含 escrow freeze）
+2. ✅ `GET /api/dvm/jobs` / `GET /api/dvm/jobs/:id` — 查看任务和结果
+3. ✅ `POST /api/dvm/jobs/:id/complete` — 确认结果，结算 escrow 或支付 Lightning bolt11
+4. ✅ `POST /api/dvm/jobs/:id/cancel` — 取消任务，退还 escrow
+5. ✅ Cron: `pollDvmResults()` — 轮询 Result 和 Feedback（含 bolt11 提取）
 
-### Phase 3：Service Provider API
+### Phase 3：Service Provider API ✅
 
-1. `POST /api/dvm/services` — 注册服务（发布 NIP-89 Kind 31990）
-2. `GET /api/dvm/inbox` — 查看收到的 Job Request
-3. `POST /api/dvm/jobs/:id/result` — 提交结果
-4. Cron: `pollDvmRequests()` — 轮询新 Job Request
+1. ✅ `POST /api/dvm/services` — 注册服务（发布 NIP-89 Kind 31990）
+2. ✅ `GET /api/dvm/inbox` — 查看收到的 Job Request
+3. ✅ `POST /api/dvm/jobs/:id/result` — 提交结果（外部 Customer 时生成 bolt11）
+4. ✅ Cron: `pollDvmRequests()` — 轮询新 Job Request
+
+### Phase 3.5：跨平台 Lightning 支付 ✅
+
+1. ✅ `dvmJobs` 表加 `bolt11` / `payment_hash` 字段
+2. ✅ Provider 提交结果时，判断 Customer 是否本站 → 外部时生成 bolt11
+3. ✅ Customer 确认结果时，判断 Provider 是否本站 → 外部时 `payInvoice(bolt11)`
+4. ✅ LNbits webhook 扩展：匹配 DVM provider `payment_hash` → `creditBalance`
+5. ✅ `pollDvmResults()` 提取 Kind 6xxx 的 `amount` tag bolt11 字段
 
 ### Phase 4：高级功能
 

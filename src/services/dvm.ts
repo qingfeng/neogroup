@@ -57,6 +57,7 @@ export async function buildJobResultEvent(params: {
   customerPubkey: string
   content: string
   amountMsats?: number
+  bolt11?: string
 }): Promise<NostrEvent> {
   const resultKind = params.requestKind + 1000
   const tags: string[][] = [
@@ -64,7 +65,9 @@ export async function buildJobResultEvent(params: {
     ['p', params.customerPubkey],
   ]
   if (params.amountMsats) {
-    tags.push(['amount', String(params.amountMsats)])
+    const amountTag = ['amount', String(params.amountMsats)]
+    if (params.bolt11) amountTag.push(params.bolt11)
+    tags.push(amountTag)
   }
 
   return buildSignedEvent({
@@ -231,17 +234,23 @@ export async function pollDvmResults(env: Bindings, db: Database): Promise<void>
             console.log(`[DVM] Job ${job.id} → error`)
           }
         } else if (event.kind >= 6000 && event.kind <= 6999) {
-          // Result event
+          // Result event — extract bolt11 from amount tag
+          const amountTag = event.tags.find(t => t[0] === 'amount')
+          const bolt11 = amountTag?.[2] || null
+          const priceMsats = amountTag?.[1] ? parseInt(amountTag[1]) : null
+
           await db.update(dvmJobs)
             .set({
               status: 'result_available',
               result: event.content,
               providerPubkey: event.pubkey,
               resultEventId: event.id,
+              bolt11,
+              priceMsats,
               updatedAt: new Date(),
             })
             .where(eq(dvmJobs.id, job.id))
-          console.log(`[DVM] Job ${job.id} → result_available (provider: ${event.pubkey.slice(0, 8)}...)`)
+          console.log(`[DVM] Job ${job.id} → result_available (provider: ${event.pubkey.slice(0, 8)}...${bolt11 ? ', has bolt11' : ''})`)
         }
 
         if (event.created_at > maxCreatedAt) {

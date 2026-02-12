@@ -943,16 +943,6 @@ export default {
       return
     }
 
-    // Publish to self-hosted relay via Service Binding (bypasses external routing)
-    if (env.RELAY_SERVICE) {
-      try {
-        const ok = await publishToRelay('wss://relay.neogrp.club', events, env.RELAY_SERVICE)
-        console.log(`[Nostr] relay.neogrp.club (service): ${ok}/${events.length} events accepted`)
-      } catch (e) {
-        console.error(`[Nostr] relay.neogrp.club (service) failed:`, e)
-      }
-    }
-
     let successCount = 0
     for (const relayUrl of relayUrls) {
       try {
@@ -1000,11 +990,10 @@ function getContentType(ext: string): string {
 }
 
 // Publish Nostr events to a single relay via WebSocket
-async function publishToRelay(relayUrl: string, events: any[], fetcher?: Fetcher): Promise<number> {
+async function publishToRelay(relayUrl: string, events: any[]): Promise<number> {
   // Workers use fetch with Upgrade header for outbound WebSocket
   const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://')
-  const fetchFn = fetcher ? fetcher.fetch.bind(fetcher) : fetch
-  const resp = await fetchFn(httpUrl, {
+  const resp = await fetch(httpUrl, {
     headers: { Upgrade: 'websocket' },
   })
 

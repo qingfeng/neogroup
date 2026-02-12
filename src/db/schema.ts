@@ -259,6 +259,8 @@ export const dvmJobs = sqliteTable('dvm_job', {
   requestEventId: text('request_event_id'),
   resultEventId: text('result_event_id'),
   params: text('params'), // JSON
+  bolt11: text('bolt11'), // Lightning invoice (from provider result)
+  paymentHash: text('payment_hash'), // For matching LNbits webhook
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })

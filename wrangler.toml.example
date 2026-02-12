@@ -53,12 +53,6 @@ id = "your-kv-namespace-id-here"  # 运行 wrangler kv namespace create KV 获�
 # [triggers]
 # crons = ["*/5 * * * *"]
 
-# 自建 Nostr Relay（可选，需先部署 relay/ 子项目）
-# 通过 Service Binding 内部调用，绕过同账号 Worker→Worker WebSocket 限制
-# [[services]]
-# binding = "RELAY_SERVICE"
-# service = "neogroup-relay"
-
 # [vars] 中添加（可选，最低 PoW 难度，默认 20）：
 # NOSTR_MIN_POW = "20"
 

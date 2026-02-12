@@ -1570,6 +1570,35 @@ api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
     return c.json({ error: 'content is required' }, 400)
   }
 
+  const amountSats = body.amount_sats || 0
+  const amountMsats = amountSats ? amountSats * 1000 : undefined
+
+  // Check if customer is on this site (same-site → escrow, no bolt11 needed)
+  let isLocalCustomer = false
+  if (job[0].customerPubkey) {
+    const localCustomer = await db.select({ id: users.id }).from(users)
+      .where(eq(users.nostrPubkey, job[0].customerPubkey))
+      .limit(1)
+    isLocalCustomer = localCustomer.length > 0
+  }
+
+  // Generate bolt11 for external customers when amount > 0 and LNbits configured
+  let bolt11: string | undefined
+  let paymentHash: string | undefined
+
+  if (amountSats > 0 && !isLocalCustomer && c.env.LNBITS_URL && c.env.LNBITS_INVOICE_KEY) {
+    const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+    const webhookUrl = c.env.LNBITS_WEBHOOK_SECRET
+      ? `${baseUrl}/api/webhook/lnbits?secret=${c.env.LNBITS_WEBHOOK_SECRET}`
+      : undefined
+    const invoice = await createInvoice(
+      c.env.LNBITS_URL, c.env.LNBITS_INVOICE_KEY, amountSats,
+      `DVM job ${job[0].requestEventId?.slice(0, 8)} result`, webhookUrl,
+    )
+    bolt11 = invoice.payment_request
+    paymentHash = invoice.payment_hash
+  }
+
   const resultEvent = await buildJobResultEvent({
     privEncrypted: user.nostrPrivEncrypted!,
     iv: user.nostrPrivIv!,
@@ -1578,7 +1607,8 @@ api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
     requestEventId: job[0].requestEventId!,
     customerPubkey: job[0].customerPubkey!,
     content: body.content,
-    amountMsats: body.amount_sats ? body.amount_sats * 1000 : undefined,
+    amountMsats: amountMsats,
+    bolt11,
   })
 
   // Update provider job
@@ -1588,12 +1618,14 @@ api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
       result: body.content,
       resultEventId: resultEvent.id,
       eventId: resultEvent.id,
-      priceMsats: body.amount_sats ? body.amount_sats * 1000 : null,
+      priceMsats: amountMsats || null,
+      bolt11: bolt11 || null,
+      paymentHash: paymentHash || null,
       updatedAt: new Date(),
     })
     .where(eq(dvmJobs.id, jobId))
 
-  // If customer is also on this site, update their job directly
+  // If customer is also on this site, update their job directly (no bolt11 for same-site)
   if (job[0].requestEventId) {
     const customerJob = await db.select({ id: dvmJobs.id }).from(dvmJobs)
       .where(and(
@@ -1609,7 +1641,7 @@ api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
           result: body.content,
           providerPubkey: user.nostrPubkey,
           resultEventId: resultEvent.id,
-          priceMsats: body.amount_sats ? body.amount_sats * 1000 : null,
+          priceMsats: amountMsats || null,
           updatedAt: new Date(),
         })
         .where(eq(dvmJobs.id, customerJob[0].id))
@@ -1794,7 +1826,33 @@ api.post('/dvm/jobs/:id/complete', requireApiAuth, async (c) => {
 
   // Settle escrow
   let releaseEntries: LedgerEventInfo[] = []
-  if (bidSats > 0 && providerUserId) {
+
+  if (bidSats > 0 && !providerUserId && job[0].bolt11) {
+    // External Provider — pay via Lightning
+    if (!c.env.LNBITS_URL || !c.env.LNBITS_ADMIN_KEY) {
+      return c.json({ error: 'Lightning payments not configured' }, 503)
+    }
+    try {
+      await payInvoice(c.env.LNBITS_URL, c.env.LNBITS_ADMIN_KEY, job[0].bolt11)
+      // Consume escrow (record ledger, no credit to any local user)
+      const balance = await getBalance(db, user.id)
+      const memo = `Lightning payment to external DVM provider for job ${jobId}`
+      const entryId = await recordLedger(db, {
+        userId: user.id, type: 'lightning_payment', amountSats: 0,
+        balanceAfter: balance, refId: jobId, refType: 'dvm_job', memo,
+      })
+      releaseEntries = [{
+        ledgerEntryId: entryId, type: 'lightning_payment', amountSats: 0,
+        balanceAfter: balance, signerType: 'system', memo,
+      }]
+    } catch (e) {
+      return c.json({
+        error: 'Lightning payment failed',
+        detail: e instanceof Error ? e.message : 'Unknown error',
+      }, 502)
+    }
+  } else if (bidSats > 0 && providerUserId) {
+    // Local Provider — settle via escrow (existing logic)
     const releaseResult = await escrowRelease(db, user.id, providerUserId, bidSats, jobId)
     releaseEntries = releaseResult.entries
   }
@@ -1962,7 +2020,38 @@ api.post('/webhook/lnbits', async (c) => {
     .limit(1)
 
   if (deposit.length === 0) {
-    // Already processed or not found — idempotent
+    // Check if this is a DVM provider receiving Lightning payment
+    const dvmJob = await db.select().from(dvmJobs)
+      .where(and(eq(dvmJobs.paymentHash, paymentHash), eq(dvmJobs.role, 'provider')))
+      .limit(1)
+
+    if (dvmJob.length > 0 && dvmJob[0].status !== 'completed') {
+      const priceSats = dvmJob[0].priceMsats ? Math.floor(dvmJob[0].priceMsats / 1000) : 0
+      if (priceSats > 0) {
+        await creditBalance(db, dvmJob[0].userId, priceSats)
+        const balance = await getBalance(db, dvmJob[0].userId)
+        const dvmMemo = `DVM job payment received via Lightning`
+        const entryId = await recordLedger(db, {
+          userId: dvmJob[0].userId, type: 'job_payment', amountSats: priceSats,
+          balanceAfter: balance, refId: dvmJob[0].id, refType: 'dvm_job', memo: dvmMemo,
+        })
+        // Publish ledger event (GEP-0009)
+        if (c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+          const entries: LedgerEventInfo[] = [{
+            ledgerEntryId: entryId, type: 'job_payment', amountSats: priceSats,
+            balanceAfter: balance, signerType: 'system', memo: dvmMemo,
+          }]
+          c.executionCtx.waitUntil(publishLedgerEvents(db, c.env.KV, c.env.NOSTR_QUEUE, c.env.NOSTR_MASTER_KEY, entries))
+        }
+      }
+      await db.update(dvmJobs)
+        .set({ status: 'completed', updatedAt: new Date() })
+        .where(eq(dvmJobs.id, dvmJob[0].id))
+      console.log(`[DVM] Provider ${dvmJob[0].userId} received Lightning payment for job ${dvmJob[0].id}`)
+      return c.json({ ok: true })
+    }
+
+    // Neither deposit nor DVM job matched — idempotent
     return c.json({ ok: true })
   }
 
