@@ -19,6 +19,7 @@ export async function createInvoice(
   amountSats: number,
   memo: string,
   webhookUrl?: string,
+  unhashedDescription?: string,
 ): Promise<LnbitsInvoice> {
   const body: Record<string, unknown> = {
     out: false,
@@ -28,6 +29,9 @@ export async function createInvoice(
   }
   if (webhookUrl) {
     body.webhook = webhookUrl
+  }
+  if (unhashedDescription) {
+    body.unhashed_description = unhashedDescription
   }
 
   const resp = await fetch(`${url}/api/v1/payments`, {

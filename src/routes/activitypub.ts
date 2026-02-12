@@ -2,7 +2,9 @@ import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes } from '../db/schema'
-import { generateId, stripHtml, truncate } from '../lib/utils'
+import { generateId, stripHtml, truncate, now } from '../lib/utils'
+import { deposits } from '../db/schema'
+import { createInvoice } from '../services/lnbits'
 import { createNotification } from '../lib/notifications'
 import {
   ensureKeyPair, getWebFingerJson, getActorJson, getNodeInfoJson,
@@ -161,43 +163,123 @@ ap.get('/.well-known/nostr.json', async (c) => {
 })
 
 // --- LNURL-pay proxy (Lightning Address: username@this-domain) ---
+// LNURL-pay metadata (LUD-06 / LUD-16)
 ap.get('/.well-known/lnurlp/:username', async (c) => {
   const username = c.req.param('username')
   const db = c.get('db')
 
-  const user = await db.select({ lightningAddress: users.lightningAddress })
+  const user = await db.select({ id: users.id, nostrPubkey: users.nostrPubkey })
     .from(users)
     .where(eq(users.username, username))
     .limit(1)
 
-  if (!user.length || !user[0].lightningAddress) {
-    return c.json({ status: 'ERROR', reason: 'User not found or no Lightning Address configured' }, 404)
+  if (!user.length) {
+    return c.json({ status: 'ERROR', reason: 'User not found' }, 404)
   }
 
-  // Parse user's real Lightning Address: name@domain
-  const lnAddr = user[0].lightningAddress
-  const atIndex = lnAddr.lastIndexOf('@')
-  if (atIndex < 1) {
-    return c.json({ status: 'ERROR', reason: 'Invalid Lightning Address' }, 400)
+  if (!c.env.LNBITS_URL || !c.env.LNBITS_INVOICE_KEY) {
+    return c.json({ status: 'ERROR', reason: 'Lightning payments not configured' }, 503)
   }
-  const lnName = lnAddr.slice(0, atIndex)
-  const lnDomain = lnAddr.slice(atIndex + 1)
 
-  // Proxy to upstream LNURL-pay endpoint
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+
+  const metadata = JSON.stringify([
+    ['text/plain', `Payment to ${username} on ${c.env.APP_NAME || 'NeoGroup'}`],
+    ['text/identifier', `${username}@${host}`],
+  ])
+
+  const resp: Record<string, unknown> = {
+    tag: 'payRequest',
+    callback: `${baseUrl}/.well-known/lnurlp/${username}/callback`,
+    minSendable: 1000,       // 1 sat
+    maxSendable: 1000000000, // 1M sats
+    metadata,
+    commentAllowed: 0,
+  }
+
+  // NIP-57 zap support
+  if (user[0].nostrPubkey) {
+    resp.allowsNostr = true
+    resp.nostrPubkey = user[0].nostrPubkey
+  }
+
+  return new Response(JSON.stringify(resp), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+})
+
+// LNURL-pay callback — create invoice via LNbits
+ap.get('/.well-known/lnurlp/:username/callback', async (c) => {
+  const username = c.req.param('username')
+  const amountMsats = Number(c.req.query('amount'))
+
+  if (!amountMsats || amountMsats < 1000 || amountMsats > 1000000000) {
+    return c.json({ status: 'ERROR', reason: 'Invalid amount' }, 400)
+  }
+
+  if (!c.env.LNBITS_URL || !c.env.LNBITS_INVOICE_KEY) {
+    return c.json({ status: 'ERROR', reason: 'Lightning payments not configured' }, 503)
+  }
+
+  const db = c.get('db')
+  const user = await db.select({ id: users.id })
+    .from(users)
+    .where(eq(users.username, username))
+    .limit(1)
+
+  if (!user.length) {
+    return c.json({ status: 'ERROR', reason: 'User not found' }, 404)
+  }
+
+  const amountSats = Math.floor(amountMsats / 1000)
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+
+  // Build metadata (must match the metadata from the payRequest endpoint)
+  const metadata = JSON.stringify([
+    ['text/plain', `Payment to ${username} on ${c.env.APP_NAME || 'NeoGroup'}`],
+    ['text/identifier', `${username}@${host}`],
+  ])
+  const unhashedDescription = btoa(metadata)
+
+  const webhookUrl = c.env.LNBITS_WEBHOOK_SECRET
+    ? `${baseUrl}/api/webhook/lnbits?secret=${c.env.LNBITS_WEBHOOK_SECRET}`
+    : undefined
+
   try {
-    const upstream = await fetch(`https://${lnDomain}/.well-known/lnurlp/${lnName}`, {
-      headers: { Accept: 'application/json' },
+    const invoice = await createInvoice(
+      c.env.LNBITS_URL,
+      c.env.LNBITS_INVOICE_KEY,
+      amountSats,
+      `${username}@${host} +${amountSats} sats`,
+      webhookUrl,
+      unhashedDescription,
+    )
+
+    // Store deposit for webhook processing
+    await db.insert(deposits).values({
+      id: generateId(),
+      userId: user[0].id,
+      amountSats,
+      paymentHash: invoice.payment_hash,
+      paymentRequest: invoice.payment_request,
+      status: 'pending',
+      createdAt: now(),
     })
-    const body = await upstream.text()
-    return new Response(body, {
-      status: upstream.status,
+
+    return new Response(JSON.stringify({ pr: invoice.payment_request, routes: [] }), {
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       },
     })
   } catch (e) {
-    return c.json({ status: 'ERROR', reason: 'Failed to reach upstream Lightning service' }, 502)
+    console.error('[LNURL-pay] callback error:', e)
+    return c.json({ status: 'ERROR', reason: 'Failed to create invoice' }, 500)
   }
 })
 

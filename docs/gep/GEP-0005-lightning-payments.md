@@ -273,6 +273,43 @@ Worker 通过 Cloudflare Tunnel 访问 LNbits：`https://ln.neogrp.club/api/v1/.
 | `LNBITS_INVOICE_KEY` | LNbits Invoice key（收款用） |
 | `LNBITS_WEBHOOK_SECRET` | Webhook 验证密钥 |
 
+### 原生 Lightning Address（LUD-16）
+
+每个用户自动获得 `username@neogrp.club` 的 Lightning Address，无需手动绑定外部地址。外部钱包付款到该地址会直接充入用户站内余额。
+
+#### 协议流程
+
+```
+外部钱包付款到 alice@neogrp.club
+  → GET https://neogrp.club/.well-known/lnurlp/alice     (LNURL-pay metadata)
+  → GET https://neogrp.club/.well-known/lnurlp/alice/callback?amount=10000  (创建发票)
+  → LNbits createInvoice → 返回 BOLT11
+  → 付款到账 → LNbits webhook → creditBalance → 充入 alice 余额
+```
+
+#### LNURL-pay 端点
+
+| 端点 | 说明 |
+|------|------|
+| `GET /.well-known/lnurlp/:username` | 返回 LNURL-pay metadata（tag, callback, min/max, metadata） |
+| `GET /.well-known/lnurlp/:username/callback?amount=<msats>` | 创建 LNbits 发票 + deposit 记录，返回 `{ pr, routes }` |
+
+- **metadata**：`[["text/plain","Payment to alice on NeoGroup"],["text/identifier","alice@neogrp.club"]]`
+- **金额范围**：1 sat ~ 1M sats
+- **NIP-57 Zap 支持**：如果用户有 `nostr_pubkey`，metadata 中返回 `allowsNostr: true` + `nostrPubkey`
+- **发票回调**：复用现有 `POST /api/webhook/lnbits` webhook，通过 deposit 表匹配 `payment_hash` 入账
+- **description_hash**：callback 传递 `unhashed_description`（metadata base64），LNbits 自动生成 BOLT11 description hash，符合 LNURL-pay 规范
+
+#### Nostr Kind 0 集成
+
+所有开启 Nostr 同步的用户，Kind 0 metadata 中自动包含 `lud16: "username@host"`，无需用户手动设置外部 Lightning Address。Nostr 客户端（如 Damus、Amethyst）可直接通过该地址发送 Zap。
+
+#### 相关代码
+
+- `src/routes/activitypub.ts` — `/.well-known/lnurlp/:username` + callback 路由
+- `src/services/lnbits.ts` — `createInvoice()` 支持 `unhashed_description` 参数
+- `src/routes/api.ts` — `POST /api/webhook/lnbits` 充值回调（复用）
+
 ### API 端点
 
 所有端点在 `src/routes/api.ts` 中添加，需要 Bearer auth。
@@ -281,7 +318,7 @@ Worker 通过 Cloudflare Tunnel 访问 LNbits：`https://ln.neogrp.club/api/v1/.
 
 ```
 GET /api/balance
-→ { balance_sats: 5000, lightning_address: "user@getalby.com" }
+→ { balance_sats: 5000, lightning_address: "alice@neogrp.club" }
 ```
 
 #### 充值

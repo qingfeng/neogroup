@@ -352,6 +352,11 @@ user.get('/:id', async (c) => {
                 <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${pubkeyToNpub(profileUser.nostrPubkey)}')`} title="复制 npub">📋</button>
               </div>
             )}
+            <div class="profile-lightning">
+              <span class="lightning-label">Lightning</span>
+              <code>{profileUser.username}@{host}</code>
+              <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${profileUser.username}@${host}')`} title="复制 Lightning Address">📋</button>
+            </div>
             {profileUser.bio && (
               <SafeHtml html={profileUser.bio} className="profile-bio" />
             )}
@@ -829,7 +834,7 @@ user.post('/:id/edit', async (c) => {
           about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
           picture: u.avatarUrl || '',
           nip05: `${u.username}@${host}`,
-          ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
+          lud16: `${u.username}@${host}`,
           ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
         }),
         tags: [],
@@ -988,7 +993,7 @@ user.post('/:id/nostr/enable', async (c) => {
           about: profileUser.bio ? profileUser.bio.replace(/<[^>]*>/g, '') : '',
           picture: profileUser.avatarUrl || '',
           nip05: `${profileUser.username}@${host}`,
-          ...(profileUser.lightningAddress ? { lud16: `${profileUser.username}@${host}` } : {}),
+          lud16: `${profileUser.username}@${host}`,
           ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
         }),
         tags: [],

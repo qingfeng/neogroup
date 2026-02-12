@@ -735,6 +735,105 @@ a:hover {
   text-decoration: underline;
 }
 
+.topic-like-btn.zap-btn {
+  background: #fff8f0;
+  border-color: #f7931a;
+  color: #f7931a;
+}
+
+.topic-like-btn.zap-btn:hover {
+  background: #fff0e0;
+}
+
+.zap-modal-body {
+  padding: 16px;
+  text-align: center;
+}
+
+.zap-amounts {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.zap-amt-btn {
+  padding: 6px 14px;
+  border: 1px solid #e0e0d8;
+  border-radius: 3px;
+  background: #faf9f5;
+  cursor: pointer;
+  font-size: 13px;
+  color: #555;
+}
+
+.zap-amt-btn:hover, .zap-amt-btn.selected {
+  border-color: #f7931a;
+  background: #fff8f0;
+  color: #f7931a;
+}
+
+.zap-custom-input {
+  width: 100px;
+  padding: 6px 10px;
+  border: 1px solid #e0e0d8;
+  border-radius: 3px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.zap-send-btn {
+  display: inline-block;
+  padding: 8px 24px;
+  background: #f7931a;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 8px;
+}
+
+.zap-send-btn:hover {
+  background: #e8850f;
+}
+
+.zap-send-btn:disabled {
+  background: #ccc;
+  cursor: default;
+}
+
+.zap-invoice-area {
+  margin-top: 12px;
+}
+
+.zap-invoice-area img {
+  max-width: 200px;
+  margin: 8px auto;
+  display: block;
+}
+
+.zap-invoice-area code {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  background: #f0f0ea;
+  padding: 8px;
+  border-radius: 3px;
+  margin-top: 8px;
+  cursor: pointer;
+  max-height: 60px;
+  overflow: hidden;
+}
+
+.zap-status {
+  font-size: 12px;
+  color: #888;
+  margin-top: 8px;
+}
+
 /* Modal */
 .modal-overlay {
   position: fixed;
@@ -2269,6 +2368,32 @@ button.ql-neodb:hover::after {
 .nostr-label {
   display: inline-block;
   background: #8e44ad;
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.5px;
+}
+
+.profile-lightning {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.profile-lightning code {
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  font-size: 12px;
+  color: #666;
+}
+
+.lightning-label {
+  display: inline-block;
+  background: #f7931a;
   color: #fff;
   font-size: 10px;
   font-weight: bold;

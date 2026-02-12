@@ -398,6 +398,9 @@ topic.get('/:id', async (c) => {
                 {repostCount} 人转发
               </button>
             )}
+            <button type="button" class="topic-like-btn zap-btn" onclick="document.getElementById('zap-modal').style.display='flex'">
+              Zap
+            </button>
           </div>
 
           {repostCount > 0 && (
@@ -418,6 +421,69 @@ topic.get('/:id', async (c) => {
               </div>
             </div>
           )}
+
+          {/* Zap Modal */}
+          <div id="zap-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+            <div class="modal-content">
+              <div class="modal-header">
+                <span class="modal-title">Zap {topicData.user.displayName || topicData.user.username}</span>
+                <button type="button" class="modal-close" onclick="document.getElementById('zap-modal').style.display='none'">&times;</button>
+              </div>
+              <div class="zap-modal-body">
+                <div class="zap-amounts">
+                  <button type="button" class="zap-amt-btn selected" data-amt="21" onclick="selectZapAmt(this,21)">21</button>
+                  <button type="button" class="zap-amt-btn" data-amt="100" onclick="selectZapAmt(this,100)">100</button>
+                  <button type="button" class="zap-amt-btn" data-amt="500" onclick="selectZapAmt(this,500)">500</button>
+                  <button type="button" class="zap-amt-btn" data-amt="1000" onclick="selectZapAmt(this,1000)">1k</button>
+                  <input type="number" class="zap-custom-input" id="zap-custom" placeholder="自定义" min="1" onfocus="document.querySelectorAll('.zap-amt-btn').forEach(b=>b.classList.remove('selected'))" />
+                </div>
+                <button type="button" class="zap-send-btn" id="zap-send-btn" onclick={`sendZap('${topicData.user.username}')`}>
+                  发送 Zap
+                </button>
+                <div id="zap-result" class="zap-invoice-area" style="display:none"></div>
+                <div id="zap-status" class="zap-status"></div>
+              </div>
+            </div>
+          </div>
+          <script dangerouslySetInnerHTML={{ __html: `
+            var zapAmount = 21;
+            function selectZapAmt(btn, amt) {
+              zapAmount = amt;
+              document.getElementById('zap-custom').value = '';
+              document.querySelectorAll('.zap-amt-btn').forEach(function(b) { b.classList.remove('selected'); });
+              btn.classList.add('selected');
+            }
+            async function sendZap(username) {
+              var custom = parseInt(document.getElementById('zap-custom').value);
+              var amt = custom > 0 ? custom : zapAmount;
+              var msats = amt * 1000;
+              var btn = document.getElementById('zap-send-btn');
+              var result = document.getElementById('zap-result');
+              var status = document.getElementById('zap-status');
+              btn.disabled = true;
+              btn.textContent = '生成发票中...';
+              status.textContent = '';
+              result.style.display = 'none';
+              try {
+                var res = await fetch('/.well-known/lnurlp/' + username + '/callback?amount=' + msats);
+                var data = await res.json();
+                if (data.pr) {
+                  result.innerHTML = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(data.pr) + '" alt="QR" />' +
+                    '<code onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor=\\'#3ba726\\';setTimeout(function(){this.style.borderColor=\\'\\'},800)" title="点击复制">' + data.pr + '</code>';
+                  result.style.display = 'block';
+                  status.textContent = '请使用 Lightning 钱包扫码或复制发票支付';
+                  btn.textContent = '发送 Zap';
+                  btn.disabled = false;
+                } else {
+                  throw new Error(data.reason || '获取发票失败');
+                }
+              } catch (e) {
+                status.textContent = e.message || '发送失败';
+                btn.textContent = '发送 Zap';
+                btn.disabled = false;
+              }
+            }
+          `}} />
 
           <div class="comments-section">
             <div class="comments-header">

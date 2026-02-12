@@ -733,7 +733,7 @@ app.post('/admin/nostr-enable-all', async (c) => {
           kind: 0, content: JSON.stringify({
             name: u.displayName || u.username, about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
             picture: u.avatarUrl || '', nip05: `${u.username}@${host}`,
-            ...(u.lightningAddress ? { lud16: `${u.username}@${host}` } : {}),
+            lud16: `${u.username}@${host}`,
             ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
           }), tags: [],
         })
@@ -773,6 +773,74 @@ app.post('/admin/nostr-enable-all', async (c) => {
   }
 
   return c.json({ ok: true, enabled: count, total: usersWithoutNostr.length })
+})
+
+// POST /admin/nostr/rebroadcast-metadata — 重新广播所有用户 Kind 0（含 lud16）
+app.post('/admin/nostr/rebroadcast-metadata', loadUser, async (c) => {
+  const db = c.get('db')
+  if (!c.env.NOSTR_MASTER_KEY || !c.env.NOSTR_QUEUE) {
+    return c.json({ error: 'Nostr not configured' }, 503)
+  }
+
+  // 认证：Bearer token = NOSTR_MASTER_KEY，或站长 session
+  const authHeader = c.req.header('Authorization') || ''
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  if (bearerToken) {
+    if (bearerToken !== c.env.NOSTR_MASTER_KEY) return c.json({ error: 'Invalid token' }, 403)
+  } else {
+    const user = c.get('user')
+    if (!user) return c.json({ error: 'Unauthorized' }, 401)
+    const firstUser = await db.query.users.findFirst({ orderBy: (u, { asc }) => [asc(u.createdAt)] })
+    if (!firstUser || firstUser.id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const { buildSignedEvent } = await import('./services/nostr')
+  const { users: usersTable } = await import('./db/schema')
+  const { isNotNull } = await import('drizzle-orm')
+
+  const nostrUsers = await db.select({
+    id: usersTable.id, username: usersTable.username, displayName: usersTable.displayName,
+    bio: usersTable.bio, avatarUrl: usersTable.avatarUrl,
+    nostrPrivEncrypted: usersTable.nostrPrivEncrypted, nostrPrivIv: usersTable.nostrPrivIv,
+  }).from(usersTable).where(isNotNull(usersTable.nostrPrivEncrypted))
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const host = new URL(baseUrl).host
+  let count = 0
+  const BATCH = 10
+
+  for (let i = 0; i < nostrUsers.length; i += BATCH) {
+    const batch = nostrUsers.slice(i, i + BATCH)
+    const events = []
+    for (const u of batch) {
+      try {
+        const event = await buildSignedEvent({
+          privEncrypted: u.nostrPrivEncrypted!, iv: u.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY,
+          kind: 0,
+          content: JSON.stringify({
+            name: u.displayName || u.username,
+            about: u.bio ? u.bio.replace(/<[^>]*>/g, '') : '',
+            picture: u.avatarUrl || '',
+            nip05: `${u.username}@${host}`,
+            lud16: `${u.username}@${host}`,
+            ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
+          }),
+          tags: [],
+        })
+        events.push(event)
+        count++
+      } catch (e) {
+        console.error(`[Nostr] Failed to build Kind 0 for ${u.username}:`, e)
+      }
+    }
+    if (events.length > 0) {
+      await c.env.NOSTR_QUEUE.send({ events })
+    }
+  }
+
+  console.log(`[Nostr] Re-broadcast Kind 0 for ${count}/${nostrUsers.length} users`)
+  return c.json({ ok: true, rebroadcast: count, total: nostrUsers.length })
 })
 
 export default {

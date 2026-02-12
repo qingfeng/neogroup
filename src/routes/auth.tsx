@@ -416,7 +416,7 @@ auth.get('/callback', async (c) => {
                 about: userRow.bio ? userRow.bio.replace(/<[^>]*>/g, '') : '',
                 picture: userRow.avatarUrl || '',
                 nip05: `${username}@${host}`,
-                ...((userRow as any).lightningAddress ? { lud16: `${username}@${host}` } : {}),
+                lud16: `${username}@${host}`,
                 ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
               }),
               tags: [],
