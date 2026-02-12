@@ -3,8 +3,11 @@ import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
 import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername, stripHtml } from '../lib/utils'
-import { generateNostrKeypair, buildSignedEvent } from '../services/nostr'
+import { generateNostrKeypair, buildSignedEvent, verifyEvent, nsecToPrivkey, pubkeyToNpub, encryptPrivkey } from '../services/nostr'
+import { schnorr } from '@noble/curves/secp256k1.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { topics } from '../db/schema'
+import type { Database } from '../db'
 import { Layout } from '../components/Layout'
 import {
   getOrCreateApp,
@@ -51,6 +54,20 @@ auth.get('/login', (c) => {
     .agent-steps li strong { color: #072; }
   `
 
+  const nostrCss = `
+    .nostr-section { margin-bottom: 20px; }
+    .nostr-section:last-child { margin-bottom: 0; }
+    .nostr-divider { display: flex; align-items: center; margin: 20px 0; color: #999; font-size: 12px; }
+    .nostr-divider::before, .nostr-divider::after { content: ''; flex: 1; border-top: 1px solid #e0e0d8; }
+    .nostr-divider span { padding: 0 12px; }
+    .nostr-section h3 { font-size: 14px; margin: 0 0 8px; color: #333; }
+    .nostr-section p { font-size: 12px; color: #888; margin: 4px 0 12px; }
+    .login-panel input[type="password"] { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #c7deb8; border-radius: 3px; font-size: 13px; }
+    #nip07-unavailable { display: none; font-size: 12px; color: #c63; margin-top: 8px; }
+    #nostr-error { display: none; color: #c33; font-size: 12px; margin-top: 8px; padding: 8px; background: #fff0f0; border-radius: 3px; }
+    #nostr-loading { display: none; font-size: 12px; color: #666; margin-top: 8px; }
+  `
+
   const copyScript = `
     document.querySelectorAll('.agent-cmd').forEach(function(el) {
       el.addEventListener('click', function() {
@@ -63,13 +80,68 @@ auth.get('/login', (c) => {
     });
   `
 
+  const nip07Script = `
+    (function() {
+      var nip07Btn = document.getElementById('nip07-btn');
+      var nip07Unavail = document.getElementById('nip07-unavailable');
+      var nostrError = document.getElementById('nostr-error');
+      var nostrLoading = document.getElementById('nostr-loading');
+
+      if (!window.nostr) {
+        if (nip07Btn) nip07Btn.style.display = 'none';
+        if (nip07Unavail) nip07Unavail.style.display = 'block';
+      }
+
+      if (nip07Btn) {
+        nip07Btn.addEventListener('click', async function() {
+          nostrError.style.display = 'none';
+          nostrLoading.style.display = 'block';
+          nip07Btn.disabled = true;
+          try {
+            var pubkey = await window.nostr.getPublicKey();
+            var res = await fetch('/auth/nostr/challenge', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            var data = await res.json();
+            if (!data.challenge) throw new Error('获取 challenge 失败');
+            var event = await window.nostr.signEvent({
+              kind: 22242,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['challenge', data.challenge]],
+              content: ''
+            });
+            var vRes = await fetch('/auth/nostr/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: event })
+            });
+            var vData = await vRes.json();
+            if (vData.ok) {
+              window.location.href = vData.redirect || '/';
+            } else {
+              throw new Error(vData.error || '登录失败');
+            }
+          } catch (e) {
+            nostrError.textContent = e.message || '登录失败';
+            nostrError.style.display = 'block';
+          } finally {
+            nostrLoading.style.display = 'none';
+            nip07Btn.disabled = false;
+          }
+        });
+      }
+    })();
+  `
+
   return c.html(
     <Layout user={null} title="登录" siteName={appName}>
-      <style dangerouslySetInnerHTML={{ __html: loginCss }} />
+      <style dangerouslySetInnerHTML={{ __html: loginCss + nostrCss }} />
       <div class="login-container">
         <h1>登录 {appName}</h1>
         <div class="login-tabs">
           <a class={`login-tab ${tab === 'human' ? 'active' : ''}`} href="/auth/login?tab=human">👤 人类用户</a>
+          <a class={`login-tab ${tab === 'nostr' ? 'active' : ''}`} href="/auth/login?tab=nostr">🔑 Nostr</a>
           <a class={`login-tab ${tab === 'agent' ? 'active' : ''}`} href="/auth/login?tab=agent">🤖 AI Agent</a>
         </div>
         {tab === 'human' ? (
@@ -79,6 +151,26 @@ auth.get('/login', (c) => {
               <input type="text" name="domain" placeholder="mastodon.social" required />
               <button type="submit" class="btn btn-primary btn-login">使用 Mastodon 登录</button>
             </form>
+          </div>
+        ) : tab === 'nostr' ? (
+          <div class="login-panel">
+            <div class="nostr-section">
+              <h3>NIP-07 浏览器扩展</h3>
+              <p>使用 nos2x、Alby 等扩展一键登录，无需暴露私钥</p>
+              <button id="nip07-btn" type="button" class="btn btn-primary btn-login">使用 Nostr 扩展登录</button>
+              <div id="nip07-unavailable">未检测到 Nostr 扩展（需安装 nos2x、Alby 等）</div>
+              <div id="nostr-loading">正在签名验证...</div>
+              <div id="nostr-error"></div>
+            </div>
+            <div class="nostr-divider"><span>或</span></div>
+            <div class="nostr-section">
+              <h3>nsec 私钥登录</h3>
+              <p>适用于移动端或无扩展环境，粘贴你的 nsec 私钥</p>
+              <form action="/auth/nostr/nsec" method="post">
+                <input type="password" name="nsec" placeholder="nsec1..." required autocomplete="off" />
+                <button type="submit" class="btn btn-primary btn-login">使用 nsec 登录</button>
+              </form>
+            </div>
           </div>
         ) : (
           <div class="login-panel">
@@ -97,6 +189,7 @@ auth.get('/login', (c) => {
         )}
       </div>
       <script dangerouslySetInnerHTML={{ __html: copyScript }} />
+      {tab === 'nostr' && <script dangerouslySetInnerHTML={{ __html: nip07Script }} />}
     </Layout>
   )
 })
@@ -409,6 +502,238 @@ auth.get('/callback', async (c) => {
   } catch (error) {
     console.error('Callback error:', error)
     return c.html(`<p>登录失败: ${error}</p><a href="/auth/login">重试</a>`)
+  }
+})
+
+// --- Nostr 登录辅助函数 ---
+
+async function findOrCreateNostrUser(
+  db: Database,
+  pubkey: string,
+  env: { NOSTR_MASTER_KEY?: string },
+): Promise<{ userId: string; isNew: boolean }> {
+  // 1. 查 auth_provider: provider_type='nostr' + provider_id=pubkey
+  const existingAuth = await db
+    .select({ userId: authProviders.userId })
+    .from(authProviders)
+    .where(and(
+      eq(authProviders.providerType, 'nostr'),
+      eq(authProviders.providerId, pubkey),
+    ))
+    .limit(1)
+
+  if (existingAuth.length > 0) {
+    return { userId: existingAuth[0].userId, isNew: false }
+  }
+
+  // 2. 查 users.nostr_pubkey=pubkey（Mastodon 用户已开启 Nostr 同步）
+  const existingUser = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.nostrPubkey, pubkey))
+    .limit(1)
+
+  if (existingUser.length > 0) {
+    const userId = existingUser[0].id
+    // 补建 auth_provider
+    await db.insert(authProviders).values({
+      id: generateId(),
+      userId,
+      providerType: 'nostr',
+      providerId: pubkey,
+      metadata: JSON.stringify({ npub: pubkeyToNpub(pubkey) }),
+      createdAt: now(),
+    })
+    return { userId, isNew: false }
+  }
+
+  // 3. 创建新用户
+  const npub = pubkeyToNpub(pubkey)
+  const baseUsername = npub.slice(0, 16)
+  const username = await ensureUniqueUsername(db, baseUsername)
+  const displayName = npub.slice(0, 12) + '...'
+  const userId = generateId()
+
+  await db.insert(users).values({
+    id: userId,
+    username,
+    displayName,
+    nostrPubkey: pubkey,
+    nostrSyncEnabled: 0,
+    createdAt: now(),
+    updatedAt: now(),
+  })
+
+  await db.insert(authProviders).values({
+    id: generateId(),
+    userId,
+    providerType: 'nostr',
+    providerId: pubkey,
+    metadata: JSON.stringify({ npub }),
+    createdAt: now(),
+  })
+
+  console.log(`[Nostr Auth] Created user ${username} for pubkey ${pubkey.slice(0, 8)}...`)
+  return { userId, isNew: true }
+}
+
+// --- Nostr 登录端点 ---
+
+// 生成 challenge
+auth.post('/nostr/challenge', async (c) => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  const challenge = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  await c.env.KV.put(`nostr_challenge:${challenge}`, '1', { expirationTtl: 300 })
+
+  return c.json({ challenge })
+})
+
+// NIP-07 验证签名事件
+auth.post('/nostr/verify', async (c) => {
+  try {
+    const body = await c.req.json()
+    const event = body.event
+
+    if (!event || !event.id || !event.pubkey || !event.sig || !event.tags) {
+      return c.json({ error: '无效的事件格式' }, 400)
+    }
+
+    // 验证 Kind 22242
+    if (event.kind !== 22242) {
+      return c.json({ error: '无效的事件类型' }, 400)
+    }
+
+    // 验证签名
+    if (!verifyEvent(event)) {
+      return c.json({ error: '签名验证失败' }, 400)
+    }
+
+    // 验证 created_at 在 5 分钟内
+    const nowTs = Math.floor(Date.now() / 1000)
+    if (Math.abs(nowTs - event.created_at) > 300) {
+      return c.json({ error: '事件已过期' }, 400)
+    }
+
+    // 提取并验证 challenge
+    const challengeTag = event.tags.find((t: string[]) => t[0] === 'challenge')
+    if (!challengeTag || !challengeTag[1]) {
+      return c.json({ error: '缺少 challenge' }, 400)
+    }
+
+    const challengeKey = `nostr_challenge:${challengeTag[1]}`
+    const stored = await c.env.KV.get(challengeKey)
+    if (!stored) {
+      return c.json({ error: 'challenge 无效或已过期' }, 400)
+    }
+    await c.env.KV.delete(challengeKey)
+
+    // 查找或创建用户
+    const db = c.get('db')
+    const { userId } = await findOrCreateNostrUser(db, event.pubkey, c.env)
+
+    // 创建 session
+    const sessionId = await createSession(c.env.KV, userId)
+    c.header('Set-Cookie', createSessionCookie(sessionId))
+
+    return c.json({ ok: true, redirect: '/' })
+  } catch (error) {
+    console.error('[Nostr Auth] verify error:', error)
+    return c.json({ error: '登录失败' }, 500)
+  }
+})
+
+// nsec 私钥登录
+auth.post('/nostr/nsec', async (c) => {
+  try {
+    let nsec: string
+
+    const contentType = c.req.header('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const body = await c.req.json()
+      nsec = body.nsec
+    } else {
+      const form = await c.req.parseBody()
+      nsec = form.nsec as string
+    }
+
+    if (!nsec || typeof nsec !== 'string') {
+      return c.html(`<p>请输入 nsec 私钥</p><a href="/auth/login?tab=nostr">重试</a>`)
+    }
+
+    nsec = nsec.trim()
+
+    // 解码 nsec → privkey hex
+    const privkeyHex = nsecToPrivkey(nsec)
+    if (!privkeyHex) {
+      return c.html(`<p>无效的 nsec 格式</p><a href="/auth/login?tab=nostr">重试</a>`)
+    }
+
+    // 推导 pubkey
+    const pubkey = bytesToHex(schnorr.getPublicKey(hexToBytes(privkeyHex)))
+
+    // 查找或创建用户
+    const db = c.get('db')
+    const { userId } = await findOrCreateNostrUser(db, pubkey, c.env)
+
+    // 加密存储 nsec 私钥，开启 Nostr 同步
+    if (c.env.NOSTR_MASTER_KEY) {
+      const userRow = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+      })
+
+      if (userRow) {
+        const needsKeyUpdate = !userRow.nostrPrivEncrypted || userRow.nostrPubkey !== pubkey
+
+        if (needsKeyUpdate) {
+          const { encrypted, iv } = await encryptPrivkey(privkeyHex, c.env.NOSTR_MASTER_KEY)
+          await db.update(users).set({
+            nostrPubkey: pubkey,
+            nostrPrivEncrypted: encrypted,
+            nostrPrivIv: iv,
+            nostrKeyVersion: 1,
+            nostrSyncEnabled: 1,
+            updatedAt: now(),
+          }).where(eq(users.id, userId))
+
+          // 广播 Kind 0 metadata
+          if (c.env.NOSTR_QUEUE) {
+            const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+            const host = new URL(baseUrl).host
+            const metadataEvent = await buildSignedEvent({
+              privEncrypted: encrypted, iv,
+              masterKey: c.env.NOSTR_MASTER_KEY,
+              kind: 0,
+              content: JSON.stringify({
+                name: userRow.displayName || userRow.username,
+                about: userRow.bio ? userRow.bio.replace(/<[^>]*>/g, '') : '',
+                picture: userRow.avatarUrl || '',
+                nip05: `${userRow.username}@${host}`,
+              }),
+              tags: [],
+            })
+            await c.env.NOSTR_QUEUE.send({ events: [metadataEvent] })
+          }
+
+          console.log(`[Nostr Auth] Stored nsec key for user ${userId}`)
+        } else if (!userRow.nostrSyncEnabled) {
+          // 有密钥但同步未开启，开启同步
+          await db.update(users).set({
+            nostrSyncEnabled: 1,
+            updatedAt: now(),
+          }).where(eq(users.id, userId))
+        }
+      }
+    }
+
+    // 创建 session
+    const sessionId = await createSession(c.env.KV, userId)
+    c.header('Set-Cookie', createSessionCookie(sessionId))
+
+    return c.redirect('/')
+  } catch (error) {
+    console.error('[Nostr Auth] nsec error:', error)
+    return c.html(`<p>登录失败: ${error}</p><a href="/auth/login?tab=nostr">重试</a>`)
   }
 })
 

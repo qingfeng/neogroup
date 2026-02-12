@@ -33,7 +33,7 @@ async function importMasterKey(masterKeyHex: string): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 
-async function encryptPrivkey(privkeyHex: string, masterKeyHex: string): Promise<{ encrypted: string; iv: string }> {
+export async function encryptPrivkey(privkeyHex: string, masterKeyHex: string): Promise<{ encrypted: string; iv: string }> {
   const key = await importMasterKey(masterKeyHex)
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const encoded = new TextEncoder().encode(privkeyHex)
@@ -119,6 +119,16 @@ export function privkeyToNsec(hex: string): string {
   const bytes = hexToBytes(hex)
   const words = bech32.toWords(Array.from(bytes))
   return bech32.encode('nsec', words, 90)
+}
+
+export function nsecToPrivkey(nsec: string): string | null {
+  try {
+    const { prefix, words } = bech32.decode(nsec, 90)
+    if (prefix !== 'nsec') return null
+    return bytesToHex(new Uint8Array(bech32.fromWords(words)))
+  } catch {
+    return null
+  }
 }
 
 // --- NIP-13 PoW Verification ---
