@@ -49,7 +49,7 @@ export async function pollCommunityPosts(env: Bindings, db: Database) {
       const aTag = `34550:${group.nostrPubkey}:${group.actorName}`
       const since = group.nostrLastPollAt || Math.floor(Date.now() / 1000) - 3600 // Default: last hour
 
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [1, 1111],
         '#a': [aTag],
         since,
@@ -83,10 +83,37 @@ export async function pollCommunityPosts(env: Bindings, db: Database) {
 
 // --- WebSocket REQ ---
 
+export type RelayResult = { events: NostrEvent[]; success: boolean }
+
 export async function fetchEventsFromRelay(
   relayUrl: string,
   filter: Record<string, any>,
-): Promise<NostrEvent[]> {
+  retries = 1,
+): Promise<RelayResult> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await _fetchEventsFromRelayOnce(relayUrl, filter)
+      if (result.closedEarly && attempt < retries) {
+        // Wait before retry on early close
+        await new Promise(r => setTimeout(r, 2000))
+        continue
+      }
+      return { events: result.events, success: !result.closedEarly }
+    } catch (e) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 2000))
+        continue
+      }
+      throw e
+    }
+  }
+  return { events: [], success: false }
+}
+
+async function _fetchEventsFromRelayOnce(
+  relayUrl: string,
+  filter: Record<string, any>,
+): Promise<{ events: NostrEvent[]; closedEarly: boolean }> {
   const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://')
   const resp = await fetch(httpUrl, {
     headers: { Upgrade: 'websocket' },
@@ -94,20 +121,22 @@ export async function fetchEventsFromRelay(
 
   const ws = (resp as any).webSocket as WebSocket
   if (!ws) {
-    throw new Error('WebSocket upgrade failed')
+    throw new Error(`WebSocket upgrade failed for ${relayUrl}`)
   }
   ws.accept()
 
   const subId = 'nip72-' + Math.random().toString(36).slice(2, 8)
   const events: NostrEvent[] = []
 
-  return new Promise<NostrEvent[]>((resolve) => {
+  return new Promise<{ events: NostrEvent[]; closedEarly: boolean }>((resolve) => {
+    let gotEose = false
+
     const timeout = setTimeout(() => {
       try {
         ws.send(JSON.stringify(['CLOSE', subId]))
         ws.close()
       } catch {}
-      resolve(events)
+      resolve({ events, closedEarly: false })
     }, 15000)
 
     ws.addEventListener('message', (msg: MessageEvent) => {
@@ -118,24 +147,31 @@ export async function fetchEventsFromRelay(
         if (data[0] === 'EVENT' && data[1] === subId && data[2]) {
           events.push(data[2] as NostrEvent)
         } else if (data[0] === 'EOSE' && data[1] === subId) {
+          gotEose = true
           clearTimeout(timeout)
           try {
             ws.send(JSON.stringify(['CLOSE', subId]))
             ws.close()
           } catch {}
-          resolve(events)
+          resolve({ events, closedEarly: false })
+        } else if (data[0] === 'CLOSED' || data[0] === 'NOTICE') {
+          console.warn(`[Relay] ${relayUrl}: ${data[0]}: ${data.slice(1).join(' ')}`)
         }
       } catch {}
     })
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (ev: CloseEvent) => {
+      const closedEarly = !gotEose && events.length === 0
+      if (closedEarly) {
+        console.warn(`[Relay] ${relayUrl} closed early (code=${ev.code}), will retry`)
+      }
       clearTimeout(timeout)
-      resolve(events)
+      resolve({ events, closedEarly })
     })
 
     ws.addEventListener('error', () => {
       clearTimeout(timeout)
-      resolve(events)
+      resolve({ events, closedEarly: true })
     })
 
     // Send REQ
@@ -317,7 +353,7 @@ export async function fetchAndUpdateNostrProfile(
 ): Promise<void> {
   for (const relayUrl of relayUrls) {
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [0],
         authors: [pubkey],
         limit: 1,
@@ -364,7 +400,7 @@ export async function backfillNostrUserPosts(
 ): Promise<void> {
   for (const relayUrl of relayUrls) {
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [1],
         authors: [pubkey],
         limit: 10,
@@ -449,7 +485,6 @@ export async function pollFollowedUsers(env: Bindings, db: Database) {
 
   if (follows.length === 0) return
 
-  const relayUrl = relayUrls[0]
   const BATCH_SIZE = 50
 
   for (let i = 0; i < follows.length; i += BATCH_SIZE) {
@@ -461,13 +496,31 @@ export async function pollFollowedUsers(env: Bindings, db: Database) {
     }, Math.floor(Date.now() / 1000) - 3600) // Default: last hour
 
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
-        kinds: [1],
-        authors: pubkeys,
-        since: minSince,
-      })
+      // Try all relays and merge results (dedup by event ID)
+      let events: NostrEvent[] = []
+      let anyRelaySucceeded = false
+      const seenIds = new Set<string>()
+      for (const relayUrl of relayUrls) {
+        try {
+          const result = await fetchEventsFromRelay(relayUrl, {
+            kinds: [1],
+            authors: pubkeys,
+            since: minSince,
+          })
+          if (result.success) anyRelaySucceeded = true
+          for (const e of result.events) {
+            if (!seenIds.has(e.id)) {
+              seenIds.add(e.id)
+              events.push(e)
+            }
+          }
+          if (events.length > 0) break // Got events, no need to try more relays
+        } catch (e) {
+          console.warn(`[Nostr Follow] Relay ${relayUrl} failed:`, e)
+        }
+      }
 
-      console.log(`[Nostr Follow] Fetched ${events.length} events from ${pubkeys.length} authors since ${minSince}`)
+      console.log(`[Nostr Follow] Fetched ${events.length} events from ${pubkeys.length} authors since ${minSince} (relayOk=${anyRelaySucceeded})`)
 
       for (const event of events) {
         try {
@@ -524,12 +577,15 @@ export async function pollFollowedUsers(env: Bindings, db: Database) {
         }
       }
 
-      // Update last_poll_at for all pubkeys in this batch
-      const nowTs = Math.floor(Date.now() / 1000)
-      for (const pk of pubkeys) {
-        await db.update(nostrFollows)
-          .set({ lastPollAt: nowTs })
-          .where(eq(nostrFollows.targetPubkey, pk))
+      // Only advance last_poll_at if at least one relay connection was successful
+      // Otherwise we'd skip events in the gap window
+      if (anyRelaySucceeded) {
+        const nowTs = Math.floor(Date.now() / 1000)
+        for (const pk of pubkeys) {
+          await db.update(nostrFollows)
+            .set({ lastPollAt: nowTs })
+            .where(eq(nostrFollows.targetPubkey, pk))
+        }
       }
     } catch (e) {
       console.error('[Nostr Follow] Poll failed:', e)
@@ -559,7 +615,7 @@ export async function pollFollowedCommunities(env: Bindings, db: Database) {
 
       const useRelay = cf.communityRelay || relayUrl
 
-      const events = await fetchEventsFromRelay(useRelay, {
+      const { events } = await fetchEventsFromRelay(useRelay, {
         kinds: [1],
         '#a': [aTag],
         since,
@@ -657,7 +713,7 @@ export async function syncAndPublishContactList(db: Database, env: Bindings, use
   // 2. Fetch latest Kind 3 from relay
   const relayPubkeys = new Set<string>()
   try {
-    const events = await fetchEventsFromRelay(relayUrls[0], {
+    const { events } = await fetchEventsFromRelay(relayUrls[0], {
       kinds: [3],
       authors: [user.nostrPubkey],
       limit: 1,
@@ -753,10 +809,11 @@ export async function syncContactListsFromRelay(env: Bindings, db: Database) {
   const pubkeys = nostrUsers.map(u => u.nostrPubkey!).filter(Boolean)
   let kind3Events: NostrEvent[] = []
   try {
-    kind3Events = await fetchEventsFromRelay(relayUrl, {
+    const k3Result = await fetchEventsFromRelay(relayUrl, {
       kinds: [3],
       authors: pubkeys,
     })
+    kind3Events = k3Result.events
   } catch (e) {
     console.error('[Nostr K3 Sync] Failed to fetch Kind 3 events:', e)
     return
@@ -884,7 +941,7 @@ export async function pollNostrReactions(env: Bindings, db: Database) {
     const batch = eventIds.slice(i, i + BATCH_SIZE)
 
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [7],
         '#e': batch,
         since,
@@ -1023,7 +1080,7 @@ export async function pollNostrReplies(env: Bindings, db: Database) {
     const batch = eventIds.slice(i, i + BATCH_SIZE)
 
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [1],
         '#e': batch,
         since,
@@ -1193,7 +1250,7 @@ export async function pollOwnUserPosts(env: Bindings, db: Database) {
     const pubkeys = batch.map(u => u.nostrPubkey!).filter(Boolean)
 
     try {
-      const events = await fetchEventsFromRelay(relayUrl, {
+      const { events } = await fetchEventsFromRelay(relayUrl, {
         kinds: [1],
         authors: pubkeys,
         since,

@@ -782,15 +782,7 @@ export default {
     const { createDb } = await import('./db')
     const db = createDb(env.DB)
 
-    // NIP-72: poll Nostr relays for community posts
-    try {
-      const { pollCommunityPosts } = await import('./services/nostr-community')
-      await pollCommunityPosts(env, db)
-    } catch (e) {
-      console.error('[Cron] NIP-72 poll failed:', e)
-    }
-
-    // Poll followed Nostr users
+    // Poll followed Nostr users (run first to avoid relay rate-limiting from 55+ community polls)
     try {
       const { pollFollowedUsers } = await import('./services/nostr-community')
       await pollFollowedUsers(env, db)
@@ -804,6 +796,14 @@ export default {
       await pollOwnUserPosts(env, db)
     } catch (e) {
       console.error('[Cron] Own Nostr posts poll failed:', e)
+    }
+
+    // NIP-72: poll Nostr relays for community posts (55+ WebSocket connections)
+    try {
+      const { pollCommunityPosts } = await import('./services/nostr-community')
+      await pollCommunityPosts(env, db)
+    } catch (e) {
+      console.error('[Cron] NIP-72 poll failed:', e)
     }
 
     // Poll followed Nostr communities

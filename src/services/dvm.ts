@@ -188,20 +188,20 @@ export async function pollDvmResults(env: Bindings, db: Database): Promise<void>
 
     try {
       // Query Kind 6000-6999 results
-      const resultEvents = await fetchEventsFromRelay(relayUrl, {
+      const resultRelay = await fetchEventsFromRelay(relayUrl, {
         kinds: Array.from({ length: 1000 }, (_, k) => k + 6000),
         '#e': batch,
         since,
       })
 
       // Query Kind 7000 feedback
-      const feedbackEvents = await fetchEventsFromRelay(relayUrl, {
+      const feedbackRelay = await fetchEventsFromRelay(relayUrl, {
         kinds: [7000],
         '#e': batch,
         since,
       })
 
-      const allEvents = [...resultEvents, ...feedbackEvents]
+      const allEvents = [...resultRelay.events, ...feedbackRelay.events]
 
       for (const event of allEvents) {
         if (!verifyEvent(event)) continue
@@ -297,7 +297,7 @@ export async function pollDvmRequests(env: Bindings, db: Database): Promise<void
   const relayUrl = relayUrls[0]
 
   try {
-    const events = await fetchEventsFromRelay(relayUrl, {
+    const { events } = await fetchEventsFromRelay(relayUrl, {
       kinds: Array.from(allKinds),
       since,
     })
