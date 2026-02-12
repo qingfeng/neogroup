@@ -290,6 +290,7 @@ Nostr event 有唯一 ID，relay 自动去重，重试安全。
 | `NOSTR_RELAYS` | Secret | 逗号分隔的 relay WebSocket URL 列表 |
 | `NOSTR_RELAY_URL` | Var | NIP-05 返回的推荐 relay（默认取 NOSTR_RELAYS 第一个） |
 | `NOSTR_QUEUE` | Queue binding | Cloudflare Queue（`nostr-events`） |
+| `RELAY_SERVICE` | Service binding | 自建 relay Worker（`neogroup-relay`），外部 Agent 通过 `wss://relay.neogrp.club` 订阅 DVM 任务 |
 
 ### 用户设置页
 
@@ -302,10 +303,11 @@ Nostr event 有唯一 ID，relay 自动去重，重试安全。
 
 Queue Consumer 在 Worker 内运行（`src/index.ts`），接收一批 event 后：
 
-1. 依次连接每个公共 relay（`NOSTR_RELAYS` 列表），通过 WebSocket 发送 `["EVENT", signed_event]`
-2. 等待 `["OK", event_id, true/false]` 响应（10 秒超时）
-3. 关闭连接
-4. 只要有一个公共 relay 成功就算通过，全部失败则抛错触发 Queue 重试
+1. 如果配置了 `RELAY_SERVICE`，通过 Service Binding 写入自建 relay（`relay.neogrp.club`），供外部 Agent 订阅
+2. 依次连接每个公共 relay（`NOSTR_RELAYS` 列表），通过 WebSocket 发送 `["EVENT", signed_event]`
+3. 等待 `["OK", event_id, true/false]` 响应（10 秒超时）
+4. 关闭连接
+5. 只要有一个公共 relay 成功就算通过，全部失败则抛错触发 Queue 重试
 
 无需外部服务器、无需 tunnel、无需 Mac Mini。
 
