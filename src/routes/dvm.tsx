@@ -299,10 +299,20 @@ dvm.get('/jobs/:id', async (c) => {
       .orderBy(desc(dvmJobs.updatedAt))
   }
 
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const jobUrl = `${baseUrl}/dvm/jobs/${job.id}`
+  const ogDescription = job.input ? (job.input.length > 200 ? job.input.slice(0, 200) + '...' : job.input) : `${getKindLabel(job.kind)} 任务`
+  // 如果结果是图片 URL，用作 og:image
+  const ogImage = job.result && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(job.result) ? job.result : undefined
+
   return c.html(
     <Layout
       user={user}
       title={`${getKindLabel(job.kind)} - DVM 任务`}
+      description={ogDescription}
+      url={jobUrl}
+      image={ogImage}
+      ogType="article"
       siteName={c.env.APP_NAME}
       unreadCount={c.get('unreadNotificationCount')}
     >

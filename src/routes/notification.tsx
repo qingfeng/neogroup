@@ -48,12 +48,14 @@ notification.get('/', async (c) => {
     // 逐个查（D1 不支持 IN 子句的数组绑定）
     for (const tid of topicIds) {
       const row = await db
-        .select({ id: topics.id, title: topics.title })
+        .select({ id: topics.id, title: topics.title, content: topics.content, groupId: topics.groupId })
         .from(topics)
         .where(eq(topics.id, tid))
         .limit(1)
       if (row.length > 0) {
-        topicMap.set(row[0].id, row[0].title)
+        // 说说（无 group、无 title）用 content 摘要代替
+        const label = row[0].title || (row[0].content ? stripHtml(row[0].content) : '')
+        topicMap.set(row[0].id, label)
       }
     }
   }
