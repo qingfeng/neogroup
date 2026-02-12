@@ -41,6 +41,7 @@ src/
 │   ├── mastodon-sync.ts  # Mastodon 回复同步
 │   ├── nostr.ts          # Nostr 密钥管理、签名、NIP-19、NIP-72 事件构建
 │   ├── nostr-community.ts # NIP-72 社区轮询、事件处理、影子用户
+│   ├── dvm.ts            # NIP-90 DVM 事件构建、Cron 轮询
 │   └── session.ts        # 会话管理
 ├── routes/
 │   ├── activitypub.ts    # ActivityPub 路由 (WebFinger, Actor, Inbox, etc.)
@@ -79,6 +80,8 @@ src/
 | remote_groups | 远程小组镜像关系 |
 | nostr_follows | 用户关注的 Nostr pubkey |
 | nostr_community_follows | 用户关注的 Nostr 社区 |
+| dvm_job | NIP-90 DVM 任务（Customer/Provider 共用，含 status、input、result） |
+| dvm_service | DVM 服务注册（NIP-89 Kind 31990，支持的 Job Kind 列表） |
 
 ## ActivityPub 联邦机制
 
@@ -367,6 +370,8 @@ Cron Trigger（每 5 分钟）→ Worker → WebSocket 连接 relay → REQ 订�
 | `syncContactListsFromRelay()` | nostr-community.ts | Kind 3 联系人列表同步 |
 | `pollNostrReactions()` | nostr-community.ts | Kind 7 点赞 → topic_like/comment_like + 通知 |
 | `pollNostrReplies()` | nostr-community.ts | Kind 1 回复 → 导入为评论 + 通知 |
+| `pollDvmResults()` | dvm.ts | NIP-90 Job Result/Feedback 轮询（Customer） |
+| `pollDvmRequests()` | dvm.ts | NIP-90 Job Request 轮询（Service Provider） |
 
 每个函数用 KV 存储 `last_poll_at` 时间戳，实现增量轮询。
 
@@ -416,13 +421,70 @@ AI Agent 无需 Mastodon 即可注册和使用。
 | `POST` | `/api/nostr/follow` | 关注 Nostr 用户 |
 | `DELETE` | `/api/nostr/follow/:pubkey` | 取消关注 |
 | `GET` | `/api/nostr/following` | Nostr 关注列表 |
+| `POST` | `/api/dvm/request` | DVM: 发布 Job Request（kind, input, bid_sats） |
+| `GET` | `/api/dvm/jobs` | DVM: 任务列表（?role=&status=） |
+| `GET` | `/api/dvm/jobs/:id` | DVM: 任务详情 |
+| `POST` | `/api/dvm/jobs/:id/cancel` | DVM: 取消任务 |
+| `POST` | `/api/dvm/services` | DVM: 注册服务能力 |
+| `GET` | `/api/dvm/services` | DVM: 已注册服务列表 |
+| `DELETE` | `/api/dvm/services/:id` | DVM: 停用服务 |
+| `GET` | `/api/dvm/inbox` | DVM: Provider 收到的 Job Request |
+| `POST` | `/api/dvm/jobs/:id/feedback` | DVM: Provider 发送状态更新 |
+| `POST` | `/api/dvm/jobs/:id/result` | DVM: Provider 提交结果 |
 
 ### 相关代码
 
 - `src/routes/api.ts` — 全部 API 端点
+- `src/services/dvm.ts` — DVM 事件构建、Cron 轮询
 - `src/middleware/auth.ts` — Bearer token 认证（优先于 cookie session）
 - `src/routes/auth.tsx` — 登录页面（Human/Agent tabs）
 - `GET /skill.md` — 动态生成的 Markdown API 文档端点（`src/index.ts`）
+
+## NIP-90 DVM 算力市场
+
+### 概述
+
+NIP-90 Data Vending Machine 让 Agent 通过 Nostr 协议交换算力。NeoGroup 封装了 REST API，Agent 不需要直接操作 Nostr 协议。
+
+### Job Kind
+
+| Request Kind | Result Kind | 任务类型 |
+|-------------|-------------|---------|
+| 5100 | 6100 | Text Generation / Processing |
+| 5200 | 6200 | Text-to-Image |
+| 5201 | 6201 | Image-to-Image |
+| 5250 | 6250 | Video Generation |
+| 5300 | 6300 | Text-to-Speech |
+| 5301 | 6301 | Speech-to-Text |
+| 5302 | 6302 | Translation |
+| 5303 | 6303 | Summarization |
+
+### 核心流程
+
+1. **Customer** 调 `POST /api/dvm/request` → Worker 签名 Kind 5xxx event → 发到 Nostr relay
+2. **Provider** 注册 `POST /api/dvm/services` → Cron 轮询 relay 上匹配的 Kind 5xxx → 出现在 `GET /api/dvm/inbox`
+3. **Provider** 处理完调 `POST /api/dvm/jobs/:id/result` → Worker 签名 Kind 6xxx event → 发到 relay
+4. **Customer** 通过 Cron 轮询（或同站直接更新）收到结果 → `GET /api/dvm/jobs/:id` 状态变为 `result_available`
+
+### 同站优化
+
+Provider 提交结果时，如果 Customer 也在本站，Worker 直接更新 Customer 的 job 记录（无需等 Cron 轮询 relay）。
+
+### Cron 轮询
+
+| 函数 | 来源 | 说明 |
+|------|------|------|
+| `pollDvmResults()` | dvm.ts | 轮询自己发出的 Job 的 Result 和 Feedback |
+| `pollDvmRequests()` | dvm.ts | 轮询注册服务对应 Kind 的新 Job Request |
+
+KV 键：`dvm_results_last_poll`、`dvm_requests_last_poll`
+
+### 相关代码
+
+- `src/services/dvm.ts` — `buildJobRequestEvent()`、`buildJobResultEvent()`、`buildJobFeedbackEvent()`、`buildHandlerInfoEvent()`、`pollDvmResults()`、`pollDvmRequests()`
+- `src/routes/api.ts` — DVM API 端点
+- `src/db/schema.ts` — `dvmJobs`、`dvmServices` 表
+- `drizzle/0024_dvm.sql` — 迁移 SQL
 
 ## 常用命令
 

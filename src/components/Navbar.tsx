@@ -19,6 +19,7 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
             <a href="/timeline">说说</a>
             <a href="/group/create">创建小组</a>
             <a href="/group/search">远程社区</a>
+            <a href="/dvm">DVM</a>
             <a href="/notifications" class="notification-bell">
               提醒
               {unreadCount > 0 && <span class="notification-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
@@ -27,7 +28,10 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
             <a href="/auth/logout">登出</a>
           </>
         ) : (
-          <a href="/auth/login">登录</a>
+          <>
+            <a href="/dvm">DVM</a>
+            <a href="/auth/login">登录</a>
+          </>
         )}
       </div>
     </nav>

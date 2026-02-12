@@ -239,6 +239,43 @@ export const nostrCommunityFollows = sqliteTable('nostr_community_follow', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// DVM 任务表 (NIP-90)
+export const dvmJobs = sqliteTable('dvm_job', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  role: text('role').notNull(), // 'customer' | 'provider'
+  kind: integer('kind').notNull(), // Job Kind (5100, 5200, etc.)
+  eventId: text('event_id'), // Nostr event ID (own event)
+  status: text('status').notNull(), // open | processing | result_available | completed | cancelled | error
+  input: text('input'),
+  inputType: text('input_type'), // text | url | event | job
+  output: text('output'), // 期望输出格式
+  result: text('result'),
+  bidMsats: integer('bid_msats'),
+  priceMsats: integer('price_msats'),
+  customerPubkey: text('customer_pubkey'),
+  providerPubkey: text('provider_pubkey'),
+  requestEventId: text('request_event_id'),
+  resultEventId: text('result_event_id'),
+  params: text('params'), // JSON
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// DVM 服务注册表 (NIP-89)
+export const dvmServices = sqliteTable('dvm_service', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  kinds: text('kinds').notNull(), // JSON array: [5200, 5201]
+  description: text('description'),
+  pricingMin: integer('pricing_min'), // msats
+  pricingMax: integer('pricing_max'), // msats
+  eventId: text('event_id'), // NIP-89 Kind 31990 event ID
+  active: integer('active').default(1),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -260,3 +297,5 @@ export type UserFollow = typeof userFollows.$inferSelect
 export type RemoteGroup = typeof remoteGroups.$inferSelect
 export type NostrFollow = typeof nostrFollows.$inferSelect
 export type NostrCommunityFollow = typeof nostrCommunityFollows.$inferSelect
+export type DvmJob = typeof dvmJobs.$inferSelect
+export type DvmService = typeof dvmServices.$inferSelect

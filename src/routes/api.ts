@@ -1,12 +1,13 @@
 import { Hono } from 'hono'
-import { eq, desc, and, or, sql } from 'drizzle-orm'
+import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers } from '../db/schema'
+import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices } from '../db/schema'
 import { generateId, generateApiKey, ensureUniqueUsername, stripHtml } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
 import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
-import { generateNostrKeypair, buildSignedEvent } from '../services/nostr'
+import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub } from '../services/nostr'
+import { buildJobRequestEvent, buildJobResultEvent, buildJobFeedbackEvent, buildHandlerInfoEvent } from '../services/dvm'
 
 const api = new Hono<AppContext>()
 
@@ -814,6 +815,772 @@ api.get('/nostr/following', requireApiAuth, async (c) => {
     .orderBy(desc(nostrFollows.createdAt))
 
   return c.json({ following: list })
+})
+
+// ─── DVM (NIP-90 Data Vending Machine) ───
+
+// GET /api/dvm/market — 公开：可接单的任务列表（无需认证）
+api.get('/dvm/market', async (c) => {
+  const db = c.get('db')
+  const kindFilter = c.req.query('kind') // 可选 kind 过滤
+  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
+  const page = parseInt(c.req.query('page') || '1')
+  const offset = (page - 1) * limit
+
+  const conditions = [
+    eq(dvmJobs.role, 'customer'),
+    inArray(dvmJobs.status, ['open', 'error']),
+  ]
+  if (kindFilter) {
+    const k = parseInt(kindFilter)
+    if (k >= 5000 && k <= 5999) {
+      conditions.push(eq(dvmJobs.kind, k))
+    }
+  }
+
+  const jobs = await db
+    .select({
+      id: dvmJobs.id,
+      kind: dvmJobs.kind,
+      status: dvmJobs.status,
+      input: dvmJobs.input,
+      inputType: dvmJobs.inputType,
+      output: dvmJobs.output,
+      bidMsats: dvmJobs.bidMsats,
+      params: dvmJobs.params,
+      createdAt: dvmJobs.createdAt,
+    })
+    .from(dvmJobs)
+    .where(and(...conditions))
+    .orderBy(desc(dvmJobs.createdAt))
+    .limit(limit)
+    .offset(offset)
+
+  return c.json({
+    jobs: jobs.map(j => ({
+      id: j.id,
+      kind: j.kind,
+      status: j.status,
+      input: j.input,
+      input_type: j.inputType,
+      output: j.output,
+      bid_sats: j.bidMsats ? Math.floor(j.bidMsats / 1000) : 0,
+      params: j.params ? JSON.parse(j.params) : null,
+      created_at: j.createdAt,
+      accept_url: `/api/dvm/jobs/${j.id}/accept`,
+    })),
+    page,
+    limit,
+  })
+})
+
+// POST /api/dvm/request — Customer: 发布 Job Request
+api.post('/dvm/request', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  if (!user.nostrPrivEncrypted || !user.nostrPrivIv || !c.env.NOSTR_MASTER_KEY) {
+    return c.json({ error: 'Nostr keys not configured' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    kind?: number
+    input?: string
+    input_type?: string
+    output?: string
+    bid_sats?: number
+    params?: Record<string, string>
+  }
+
+  const kind = body.kind
+  if (!kind || kind < 5000 || kind > 5999) {
+    return c.json({ error: 'kind must be between 5000 and 5999' }, 400)
+  }
+
+  const input = body.input?.trim()
+  if (!input) {
+    return c.json({ error: 'input is required' }, 400)
+  }
+
+  const inputType = body.input_type || 'text'
+  const bidMsats = body.bid_sats ? body.bid_sats * 1000 : undefined
+
+  const relays = (c.env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
+
+  const event = await buildJobRequestEvent({
+    privEncrypted: user.nostrPrivEncrypted!,
+    iv: user.nostrPrivIv!,
+    masterKey: c.env.NOSTR_MASTER_KEY!,
+    kind,
+    input,
+    inputType,
+    output: body.output,
+    bidMsats,
+    extraParams: body.params,
+    relays,
+  })
+
+  // Save to DB
+  const jobId = generateId()
+  const now = new Date()
+  await db.insert(dvmJobs).values({
+    id: jobId,
+    userId: user.id,
+    role: 'customer',
+    kind,
+    eventId: event.id,
+    status: 'open',
+    input,
+    inputType,
+    output: body.output || null,
+    bidMsats: bidMsats || null,
+    customerPubkey: event.pubkey,
+    requestEventId: event.id,
+    params: body.params ? JSON.stringify(body.params) : null,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  // Publish to relay
+  if (c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [event] }))
+  }
+
+  // 同站直投：如果本站有注册了对应 Kind 的 Provider，直接创建 provider job
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const activeServices = await db
+        .select({ userId: dvmServices.userId, kinds: dvmServices.kinds })
+        .from(dvmServices)
+        .where(eq(dvmServices.active, 1))
+
+      for (const svc of activeServices) {
+        if (svc.userId === user.id) continue // 不给自己投递
+        try {
+          const svcKinds = JSON.parse(svc.kinds) as number[]
+          if (!svcKinds.includes(kind)) continue
+
+          // 检查是否已存在（防重复）
+          const existing = await db
+            .select({ id: dvmJobs.id })
+            .from(dvmJobs)
+            .where(and(
+              eq(dvmJobs.requestEventId, event.id),
+              eq(dvmJobs.userId, svc.userId),
+            ))
+            .limit(1)
+          if (existing.length > 0) continue
+
+          await db.insert(dvmJobs).values({
+            id: generateId(),
+            userId: svc.userId,
+            role: 'provider',
+            kind,
+            status: 'open',
+            input,
+            inputType,
+            output: body.output || null,
+            bidMsats: bidMsats || null,
+            customerPubkey: event.pubkey,
+            requestEventId: event.id,
+            params: body.params ? JSON.stringify(body.params) : null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          console.log(`[DVM] Local delivery: job ${event.id} → provider ${svc.userId}`)
+        } catch {}
+      }
+    } catch (e) {
+      console.error('[DVM] Local delivery failed:', e)
+    }
+  })())
+
+  return c.json({
+    job_id: jobId,
+    event_id: event.id,
+    status: 'open',
+    kind,
+  }, 201)
+})
+
+// GET /api/dvm/jobs — 查看自己的任务列表
+api.get('/dvm/jobs', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const role = c.req.query('role') // customer | provider
+  const status = c.req.query('status') // comma-separated
+  const page = parseInt(c.req.query('page') || '1')
+  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
+  const offset = (page - 1) * limit
+
+  const conditions = [eq(dvmJobs.userId, user.id)]
+  if (role === 'customer' || role === 'provider') {
+    conditions.push(eq(dvmJobs.role, role))
+  }
+  if (status) {
+    const statuses = status.split(',').map(s => s.trim()).filter(Boolean)
+    if (statuses.length > 0) {
+      conditions.push(inArray(dvmJobs.status, statuses))
+    }
+  }
+
+  const jobs = await db
+    .select()
+    .from(dvmJobs)
+    .where(and(...conditions))
+    .orderBy(desc(dvmJobs.createdAt))
+    .limit(limit)
+    .offset(offset)
+
+  return c.json({
+    jobs: jobs.map(j => ({
+      id: j.id,
+      role: j.role,
+      kind: j.kind,
+      status: j.status,
+      input: j.input,
+      input_type: j.inputType,
+      output: j.output,
+      result: j.result,
+      bid_sats: j.bidMsats ? Math.floor(j.bidMsats / 1000) : null,
+      customer_pubkey: j.customerPubkey,
+      provider_pubkey: j.providerPubkey,
+      request_event_id: j.requestEventId,
+      result_event_id: j.resultEventId,
+      params: j.params ? JSON.parse(j.params) : null,
+      created_at: j.createdAt,
+      updated_at: j.updatedAt,
+    })),
+    page,
+    limit,
+  })
+})
+
+// GET /api/dvm/jobs/:id — 任务详情（查看任意 job）
+api.get('/dvm/jobs/:id', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  // 先查自己名下的 job（包含 provider 视角）
+  let job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id)))
+    .limit(1)
+
+  // 如果不是自己的，查 customer 的原始 job（公开需求）
+  if (job.length === 0) {
+    job = await db.select().from(dvmJobs)
+      .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.role, 'customer')))
+      .limit(1)
+  }
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+
+  const j = job[0]
+  return c.json({
+    id: j.id,
+    role: j.role,
+    kind: j.kind,
+    status: j.status,
+    input: j.input,
+    input_type: j.inputType,
+    output: j.output,
+    result: j.result,
+    bid_sats: j.bidMsats ? Math.floor(j.bidMsats / 1000) : null,
+    price_sats: j.priceMsats ? Math.floor(j.priceMsats / 1000) : null,
+    customer_pubkey: j.customerPubkey,
+    provider_pubkey: j.providerPubkey,
+    request_event_id: j.requestEventId,
+    result_event_id: j.resultEventId,
+    params: j.params ? JSON.parse(j.params) : null,
+    created_at: j.createdAt,
+    updated_at: j.updatedAt,
+  })
+})
+
+// POST /api/dvm/jobs/:id/accept — Provider: 接单（为自己创建 provider job）
+api.post('/dvm/jobs/:id/accept', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  // 查 customer 的原始 job
+  const customerJob = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.role, 'customer')))
+    .limit(1)
+
+  if (customerJob.length === 0) return c.json({ error: 'Job not found' }, 404)
+
+  const cj = customerJob[0]
+  if (cj.userId === user.id) return c.json({ error: 'Cannot accept your own job' }, 400)
+  if (cj.status === 'cancelled') return c.json({ error: 'Job is cancelled' }, 400)
+  if (cj.status === 'completed') return c.json({ error: 'Job is already completed' }, 400)
+
+  // error 状态允许重新接单，重置为 open
+  if (cj.status === 'error') {
+    await db.update(dvmJobs)
+      .set({ status: 'open', updatedAt: new Date() })
+      .where(eq(dvmJobs.id, jobId))
+  }
+
+  // 检查是否已有活跃的 provider job（open/processing）
+  const existing = await db.select({ id: dvmJobs.id, status: dvmJobs.status }).from(dvmJobs)
+    .where(and(
+      eq(dvmJobs.requestEventId, cj.requestEventId!),
+      eq(dvmJobs.userId, user.id),
+      eq(dvmJobs.role, 'provider'),
+      inArray(dvmJobs.status, ['open', 'processing']),
+    ))
+    .limit(1)
+
+  if (existing.length > 0) {
+    return c.json({ job_id: existing[0].id, status: 'already_accepted' })
+  }
+
+  // 创建 provider job
+  const providerJobId = generateId()
+  const now = new Date()
+  await db.insert(dvmJobs).values({
+    id: providerJobId,
+    userId: user.id,
+    role: 'provider',
+    kind: cj.kind,
+    status: 'open',
+    input: cj.input,
+    inputType: cj.inputType,
+    output: cj.output,
+    bidMsats: cj.bidMsats,
+    customerPubkey: cj.customerPubkey,
+    requestEventId: cj.requestEventId,
+    params: cj.params,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  return c.json({ job_id: providerJobId, status: 'accepted', kind: cj.kind })
+})
+
+// POST /api/dvm/jobs/:id/reject — Customer: 拒绝结果，重新开放接单
+api.post('/dvm/jobs/:id/reject', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  const job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'customer')))
+    .limit(1)
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+  if (job[0].status !== 'result_available') {
+    return c.json({ error: `Cannot reject job with status: ${job[0].status}` }, 400)
+  }
+
+  // 重置 customer job 为 open
+  await db.update(dvmJobs)
+    .set({
+      status: 'open',
+      result: null,
+      resultEventId: null,
+      providerPubkey: null,
+      priceMsats: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(dvmJobs.id, jobId))
+
+  // 把对应的 provider job 标记为 rejected
+  if (job[0].requestEventId) {
+    await db.update(dvmJobs)
+      .set({ status: 'rejected', updatedAt: new Date() })
+      .where(and(
+        eq(dvmJobs.requestEventId, job[0].requestEventId),
+        eq(dvmJobs.role, 'provider'),
+        inArray(dvmJobs.status, ['completed', 'result_available']),
+      ))
+  }
+
+  // 重新同站直投：给注册了对应 Kind 的 Provider 创建新的 provider job（排除已被拒绝的）
+  const cj = job[0]
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const activeServices = await db
+        .select({ userId: dvmServices.userId, kinds: dvmServices.kinds })
+        .from(dvmServices)
+        .where(eq(dvmServices.active, 1))
+
+      for (const svc of activeServices) {
+        if (svc.userId === user.id) continue
+        try {
+          const svcKinds = JSON.parse(svc.kinds) as number[]
+          if (!svcKinds.includes(cj.kind)) continue
+
+          // 检查该 Provider 是否已有此 request 的 rejected 记录（不重复投递给已被拒绝的）
+          // 但如果同一 Provider 想重新接单，accept 接口仍然可用
+          const existing = await db.select({ id: dvmJobs.id }).from(dvmJobs)
+            .where(and(
+              eq(dvmJobs.requestEventId, cj.requestEventId!),
+              eq(dvmJobs.userId, svc.userId),
+              eq(dvmJobs.role, 'provider'),
+              inArray(dvmJobs.status, ['open', 'processing']),
+            ))
+            .limit(1)
+          if (existing.length > 0) continue
+
+          await db.insert(dvmJobs).values({
+            id: generateId(),
+            userId: svc.userId,
+            role: 'provider',
+            kind: cj.kind,
+            status: 'open',
+            input: cj.input,
+            inputType: cj.inputType,
+            output: cj.output,
+            bidMsats: cj.bidMsats,
+            customerPubkey: cj.customerPubkey,
+            requestEventId: cj.requestEventId,
+            params: cj.params,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          console.log(`[DVM] Re-delivery after reject: job ${cj.requestEventId} → provider ${svc.userId}`)
+        } catch {}
+      }
+    } catch (e) {
+      console.error('[DVM] Re-delivery after reject failed:', e)
+    }
+  })())
+
+  return c.json({ ok: true, status: 'open' })
+})
+
+// POST /api/dvm/jobs/:id/cancel — Customer: 取消任务
+api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  const job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'customer')))
+    .limit(1)
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+  if (job[0].status === 'completed' || job[0].status === 'cancelled') {
+    return c.json({ error: `Cannot cancel job with status: ${job[0].status}` }, 400)
+  }
+
+  await db.update(dvmJobs)
+    .set({ status: 'cancelled', updatedAt: new Date() })
+    .where(eq(dvmJobs.id, jobId))
+
+  // Send Kind 5 deletion event for the request
+  if (job[0].requestEventId && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const event = await buildSignedEvent({
+          privEncrypted: user.nostrPrivEncrypted!,
+          iv: user.nostrPrivIv!,
+          masterKey: c.env.NOSTR_MASTER_KEY!,
+          kind: 5,
+          content: '',
+          tags: [['e', job[0].requestEventId!]],
+        })
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
+      } catch (e) {
+        console.error('[DVM] Failed to send deletion event:', e)
+      }
+    })())
+  }
+
+  return c.json({ ok: true, status: 'cancelled' })
+})
+
+// POST /api/dvm/services — Provider: 注册服务
+api.post('/dvm/services', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  if (!user.nostrPrivEncrypted || !user.nostrPrivIv || !c.env.NOSTR_MASTER_KEY) {
+    return c.json({ error: 'Nostr keys not configured' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    kinds?: number[]
+    description?: string
+    pricing?: { min_sats?: number; max_sats?: number }
+  }
+
+  if (!body.kinds || !Array.isArray(body.kinds) || body.kinds.length === 0) {
+    return c.json({ error: 'kinds array is required' }, 400)
+  }
+
+  for (const k of body.kinds) {
+    if (k < 5000 || k > 5999) {
+      return c.json({ error: `Invalid kind ${k}: must be between 5000 and 5999` }, 400)
+    }
+  }
+
+  const pricingMin = body.pricing?.min_sats ? body.pricing.min_sats * 1000 : null
+  const pricingMax = body.pricing?.max_sats ? body.pricing.max_sats * 1000 : null
+
+  // Build NIP-89 Handler Info (Kind 31990)
+  const handlerEvent = await buildHandlerInfoEvent({
+    privEncrypted: user.nostrPrivEncrypted!,
+    iv: user.nostrPrivIv!,
+    masterKey: c.env.NOSTR_MASTER_KEY!,
+    kinds: body.kinds,
+    name: user.displayName || user.username,
+    about: body.description,
+    pricingMin: pricingMin || undefined,
+    pricingMax: pricingMax || undefined,
+  })
+
+  const serviceId = generateId()
+  const now = new Date()
+
+  await db.insert(dvmServices).values({
+    id: serviceId,
+    userId: user.id,
+    kinds: JSON.stringify(body.kinds),
+    description: body.description || null,
+    pricingMin,
+    pricingMax,
+    eventId: handlerEvent.id,
+    active: 1,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  // Publish Handler Info to relay
+  if (c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [handlerEvent] }))
+  }
+
+  return c.json({
+    service_id: serviceId,
+    event_id: handlerEvent.id,
+    kinds: body.kinds,
+  }, 201)
+})
+
+// GET /api/dvm/services — Provider: 查看自己注册的服务
+api.get('/dvm/services', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const services = await db.select().from(dvmServices)
+    .where(eq(dvmServices.userId, user.id))
+    .orderBy(desc(dvmServices.createdAt))
+
+  return c.json({
+    services: services.map(s => ({
+      id: s.id,
+      kinds: JSON.parse(s.kinds),
+      description: s.description,
+      pricing_min_sats: s.pricingMin ? Math.floor(s.pricingMin / 1000) : null,
+      pricing_max_sats: s.pricingMax ? Math.floor(s.pricingMax / 1000) : null,
+      active: !!s.active,
+      created_at: s.createdAt,
+    })),
+  })
+})
+
+// DELETE /api/dvm/services/:id — Provider: 停用服务
+api.delete('/dvm/services/:id', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const serviceId = c.req.param('id')
+
+  const svc = await db.select({ id: dvmServices.id }).from(dvmServices)
+    .where(and(eq(dvmServices.id, serviceId), eq(dvmServices.userId, user.id)))
+    .limit(1)
+
+  if (svc.length === 0) return c.json({ error: 'Service not found' }, 404)
+
+  await db.update(dvmServices)
+    .set({ active: 0, updatedAt: new Date() })
+    .where(eq(dvmServices.id, serviceId))
+
+  return c.json({ ok: true })
+})
+
+// GET /api/dvm/inbox — Provider: 查看收到的 Job Request
+api.get('/dvm/inbox', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const kindFilter = c.req.query('kind')
+  const statusFilter = c.req.query('status') || 'open'
+  const page = parseInt(c.req.query('page') || '1')
+  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
+  const offset = (page - 1) * limit
+
+  const conditions = [eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'provider')]
+  if (kindFilter) {
+    conditions.push(eq(dvmJobs.kind, parseInt(kindFilter)))
+  }
+  if (statusFilter) {
+    const statuses = statusFilter.split(',').map(s => s.trim()).filter(Boolean)
+    if (statuses.length > 0) {
+      conditions.push(inArray(dvmJobs.status, statuses))
+    }
+  }
+
+  const jobs = await db
+    .select()
+    .from(dvmJobs)
+    .where(and(...conditions))
+    .orderBy(desc(dvmJobs.createdAt))
+    .limit(limit)
+    .offset(offset)
+
+  return c.json({
+    jobs: jobs.map(j => ({
+      id: j.id,
+      kind: j.kind,
+      status: j.status,
+      input: j.input,
+      input_type: j.inputType,
+      output: j.output,
+      bid_sats: j.bidMsats ? Math.floor(j.bidMsats / 1000) : null,
+      customer_pubkey: j.customerPubkey,
+      request_event_id: j.requestEventId,
+      params: j.params ? JSON.parse(j.params) : null,
+      created_at: j.createdAt,
+    })),
+    page,
+    limit,
+  })
+})
+
+// POST /api/dvm/jobs/:id/feedback — Provider: 发送状态更新
+api.post('/dvm/jobs/:id/feedback', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  if (!user.nostrPrivEncrypted || !user.nostrPrivIv || !c.env.NOSTR_MASTER_KEY) {
+    return c.json({ error: 'Nostr keys not configured' }, 400)
+  }
+
+  const job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'provider')))
+    .limit(1)
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+  if (!job[0].requestEventId || !job[0].customerPubkey) {
+    return c.json({ error: 'Job missing request data' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    status?: 'processing' | 'error'
+    content?: string
+  }
+
+  if (!body.status || !['processing', 'error'].includes(body.status)) {
+    return c.json({ error: 'status must be "processing" or "error"' }, 400)
+  }
+
+  const feedbackEvent = await buildJobFeedbackEvent({
+    privEncrypted: user.nostrPrivEncrypted!,
+    iv: user.nostrPrivIv!,
+    masterKey: c.env.NOSTR_MASTER_KEY!,
+    requestEventId: job[0].requestEventId!,
+    customerPubkey: job[0].customerPubkey!,
+    status: body.status,
+    content: body.content,
+  })
+
+  await db.update(dvmJobs)
+    .set({ status: body.status === 'error' ? 'error' : 'processing', updatedAt: new Date() })
+    .where(eq(dvmJobs.id, jobId))
+
+  if (c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [feedbackEvent] }))
+  }
+
+  return c.json({ ok: true, event_id: feedbackEvent.id })
+})
+
+// POST /api/dvm/jobs/:id/result — Provider: 提交结果
+api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  if (!user.nostrPrivEncrypted || !user.nostrPrivIv || !c.env.NOSTR_MASTER_KEY) {
+    return c.json({ error: 'Nostr keys not configured' }, 400)
+  }
+
+  const job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'provider')))
+    .limit(1)
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+  if (!job[0].requestEventId || !job[0].customerPubkey) {
+    return c.json({ error: 'Job missing request data' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    content?: string
+    amount_sats?: number
+  }
+
+  if (!body.content) {
+    return c.json({ error: 'content is required' }, 400)
+  }
+
+  const resultEvent = await buildJobResultEvent({
+    privEncrypted: user.nostrPrivEncrypted!,
+    iv: user.nostrPrivIv!,
+    masterKey: c.env.NOSTR_MASTER_KEY!,
+    requestKind: job[0].kind,
+    requestEventId: job[0].requestEventId!,
+    customerPubkey: job[0].customerPubkey!,
+    content: body.content,
+    amountMsats: body.amount_sats ? body.amount_sats * 1000 : undefined,
+  })
+
+  // Update provider job
+  await db.update(dvmJobs)
+    .set({
+      status: 'completed',
+      result: body.content,
+      resultEventId: resultEvent.id,
+      eventId: resultEvent.id,
+      priceMsats: body.amount_sats ? body.amount_sats * 1000 : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(dvmJobs.id, jobId))
+
+  // If customer is also on this site, update their job directly
+  if (job[0].requestEventId) {
+    const customerJob = await db.select({ id: dvmJobs.id }).from(dvmJobs)
+      .where(and(
+        eq(dvmJobs.requestEventId, job[0].requestEventId),
+        eq(dvmJobs.role, 'customer'),
+      ))
+      .limit(1)
+
+    if (customerJob.length > 0) {
+      await db.update(dvmJobs)
+        .set({
+          status: 'result_available',
+          result: body.content,
+          providerPubkey: user.nostrPubkey,
+          resultEventId: resultEvent.id,
+          priceMsats: body.amount_sats ? body.amount_sats * 1000 : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(dvmJobs.id, customerJob[0].id))
+    }
+  }
+
+  // Publish result to relay
+  if (c.env.NOSTR_QUEUE) {
+    c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [resultEvent] }))
+  }
+
+  return c.json({ ok: true, event_id: resultEvent.id }, 201)
 })
 
 export default api
