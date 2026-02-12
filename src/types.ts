@@ -20,6 +20,7 @@ export type Bindings = {
   LNBITS_INVOICE_KEY?: string
   LNBITS_WEBHOOK_SECRET?: string
   SYSTEM_NOSTR_PUBKEY?: string
+  RELAY_SERVICE?: Fetcher
 }
 
 export type Variables = {
