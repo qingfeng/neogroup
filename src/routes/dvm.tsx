@@ -59,8 +59,8 @@ dvm.get('/', async (c) => {
     .orderBy(desc(dvmJobs.createdAt))
     .limit(50)
 
-  // 服务列表
-  const services = await db
+  // 服务列表（按用户合并）
+  const rawServices = await db
     .select({
       id: dvmServices.id,
       kinds: dvmServices.kinds,
@@ -77,6 +77,22 @@ dvm.get('/', async (c) => {
     .where(eq(dvmServices.active, 1))
     .orderBy(desc(dvmServices.createdAt))
     .limit(50)
+
+  // 同一用户的服务合并为一张卡片
+  const servicesByUser = new Map<string, { kinds: number[]; descriptions: string[]; pricingMin: number | null; pricingMax: number | null; userName: string; userDisplayName: string | null; userAvatarUrl: string | null }>()
+  for (const svc of rawServices) {
+    const existing = servicesByUser.get(svc.userName)
+    const kinds: number[] = JSON.parse(svc.kinds || '[]')
+    if (existing) {
+      for (const k of kinds) { if (!existing.kinds.includes(k)) existing.kinds.push(k) }
+      if (svc.description && !existing.descriptions.includes(svc.description)) existing.descriptions.push(svc.description)
+      if (svc.pricingMin && (!existing.pricingMin || svc.pricingMin < existing.pricingMin)) existing.pricingMin = svc.pricingMin
+      if (svc.pricingMax && (!existing.pricingMax || svc.pricingMax > existing.pricingMax)) existing.pricingMax = svc.pricingMax
+    } else {
+      servicesByUser.set(svc.userName, { kinds, descriptions: svc.description ? [svc.description] : [], pricingMin: svc.pricingMin, pricingMax: svc.pricingMax, userName: svc.userName, userDisplayName: svc.userDisplayName, userAvatarUrl: svc.userAvatarUrl })
+    }
+  }
+  const services = [...servicesByUser.values()]
 
   // 登录用户的任务统计
   let myCustomerCount = 0
@@ -156,29 +172,27 @@ dvm.get('/', async (c) => {
                     暂无服务。AI Agent 可通过 <a href="/dvm/skill.md">DVM API</a> 注册服务能力。
                   </div>
                 ) : (
-                  services.map((svc) => {
-                    const kinds: number[] = JSON.parse(svc.kinds || '[]')
-                    return (
+                  services.map((svc) => (
                       <div class="dvm-card">
                         <div class="dvm-kinds-list">
-                          {kinds.map((k) => (
+                          {svc.kinds.map((k) => (
                             <span class="dvm-kind-label">{getKindLabel(k)}</span>
                           ))}
                         </div>
-                        {svc.description && (
+                        {svc.descriptions.length > 0 && (
                           <div class="dvm-card-body">
-                            <div class="dvm-input-preview">{svc.description}</div>
+                            <div class="dvm-input-preview">{svc.descriptions.join(' / ')}</div>
                           </div>
                         )}
                         <div class="dvm-card-meta">
-                          <span class="dvm-card-author">
+                          <a href={`/user/${svc.userName}`} class="dvm-card-author">
                             <img
                               src={resizeImage(svc.userAvatarUrl, 48) || '/static/img/default-avatar.svg'}
                               alt=""
                               class="avatar-xs"
                             />
                             {svc.userDisplayName || svc.userName}
-                          </span>
+                          </a>
                           {svc.pricingMin ? (
                             <span class="dvm-pricing">
                               {Math.floor(svc.pricingMin / 1000)} - {Math.floor((svc.pricingMax || svc.pricingMin) / 1000)} sats
@@ -187,7 +201,7 @@ dvm.get('/', async (c) => {
                         </div>
                       </div>
                     )
-                  })
+                  )
                 )}
               </div>
             )}
