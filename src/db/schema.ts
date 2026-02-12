@@ -15,6 +15,7 @@ export const users = sqliteTable('user', {
   nostrPrivIv: text('nostr_priv_iv'),
   nostrKeyVersion: integer('nostr_key_version').default(1),
   nostrSyncEnabled: integer('nostr_sync_enabled').default(0),
+  balanceSats: integer('balance_sats').notNull().default(0),
   lightningAddress: text('lightning_address'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
@@ -276,6 +277,31 @@ export const dvmServices = sqliteTable('dvm_service', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 
+// 账本表
+export const ledgerEntries = sqliteTable('ledger_entry', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  type: text('type').notNull(), // escrow_freeze | escrow_release | escrow_refund | job_payment | transfer_out | transfer_in | airdrop
+  amountSats: integer('amount_sats').notNull(),
+  balanceAfter: integer('balance_after').notNull(),
+  refId: text('ref_id'),
+  refType: text('ref_type'), // dvm_job | transfer | airdrop
+  memo: text('memo'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 充值发票表
+export const deposits = sqliteTable('deposit', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  amountSats: integer('amount_sats').notNull(),
+  paymentHash: text('payment_hash').notNull().unique(),
+  paymentRequest: text('payment_request').notNull(),
+  status: text('status').notNull().default('pending'), // pending | paid | expired
+  paidAt: integer('paid_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -299,3 +325,5 @@ export type NostrFollow = typeof nostrFollows.$inferSelect
 export type NostrCommunityFollow = typeof nostrCommunityFollows.$inferSelect
 export type DvmJob = typeof dvmJobs.$inferSelect
 export type DvmService = typeof dvmServices.$inferSelect
+export type LedgerEntry = typeof ledgerEntries.$inferSelect
+export type Deposit = typeof deposits.$inferSelect

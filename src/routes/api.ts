@@ -1,13 +1,15 @@
 import { Hono } from 'hono'
 import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices } from '../db/schema'
-import { generateId, generateApiKey, ensureUniqueUsername, stripHtml } from '../lib/utils'
+import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices, ledgerEntries, deposits } from '../db/schema'
+import { generateId, generateApiKey, ensureUniqueUsername, stripHtml, isSuperAdmin } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
+import { escrowFreeze, escrowRelease, escrowRefund, getBalance, transfer, creditBalance, recordLedger } from '../lib/balance'
 import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFollowers, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub } from '../services/nostr'
 import { buildJobRequestEvent, buildJobResultEvent, buildJobFeedbackEvent, buildHandlerInfoEvent } from '../services/dvm'
+import { createInvoice, checkPayment, payInvoice, payLightningAddress } from '../services/lnbits'
 
 const api = new Hono<AppContext>()
 
@@ -903,7 +905,16 @@ api.post('/dvm/request', requireApiAuth, async (c) => {
   }
 
   const inputType = body.input_type || 'text'
-  const bidMsats = body.bid_sats ? body.bid_sats * 1000 : undefined
+  const bidSats = body.bid_sats || 0
+  const bidMsats = bidSats ? bidSats * 1000 : undefined
+
+  // Escrow freeze if bid_sats > 0
+  if (bidSats > 0) {
+    const ok = await escrowFreeze(db, user.id, bidSats, 'pending')
+    if (!ok) {
+      return c.json({ error: 'Insufficient balance', balance_sats: await getBalance(db, user.id) }, 400)
+    }
+  }
 
   const relays = (c.env.NOSTR_RELAYS || '').split(',').map(s => s.trim()).filter(Boolean)
 
@@ -940,6 +951,13 @@ api.post('/dvm/request', requireApiAuth, async (c) => {
     createdAt: now,
     updatedAt: now,
   })
+
+  // Update escrow ledger ref_id with actual job ID
+  if (bidSats > 0) {
+    await db.update(ledgerEntries)
+      .set({ refId: jobId })
+      .where(and(eq(ledgerEntries.userId, user.id), eq(ledgerEntries.refId, 'pending'), eq(ledgerEntries.type, 'escrow_freeze')))
+  }
 
   // Publish to relay
   if (c.env.NOSTR_QUEUE) {
@@ -1268,6 +1286,12 @@ api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
     return c.json({ error: `Cannot cancel job with status: ${job[0].status}` }, 400)
   }
 
+  // Refund escrow if bid > 0
+  const bidSats = job[0].bidMsats ? Math.floor(job[0].bidMsats / 1000) : 0
+  if (bidSats > 0) {
+    await escrowRefund(db, user.id, bidSats, jobId)
+  }
+
   await db.update(dvmJobs)
     .set({ status: 'cancelled', updatedAt: new Date() })
     .where(eq(dvmJobs.id, jobId))
@@ -1291,7 +1315,7 @@ api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
     })())
   }
 
-  return c.json({ ok: true, status: 'cancelled' })
+  return c.json({ ok: true, status: 'cancelled', ...(bidSats > 0 ? { refunded_sats: bidSats, balance_sats: await getBalance(db, user.id) } : {}) })
 })
 
 // POST /api/dvm/services — Provider: 注册服务
@@ -1581,6 +1605,409 @@ api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
   }
 
   return c.json({ ok: true, event_id: resultEvent.id }, 201)
+})
+
+// ─── Balance & Ledger ───
+
+// GET /api/balance
+api.get('/balance', requireApiAuth, async (c) => {
+  const user = c.get('user')!
+  return c.json({
+    balance_sats: user.balanceSats,
+    username: user.username,
+  })
+})
+
+// GET /api/ledger
+api.get('/ledger', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const page = parseInt(c.req.query('page') || '1')
+  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
+  const offset = (page - 1) * limit
+  const typeFilter = c.req.query('type')
+
+  const conditions = [eq(ledgerEntries.userId, user.id)]
+  if (typeFilter) {
+    conditions.push(eq(ledgerEntries.type, typeFilter))
+  }
+
+  const entries = await db
+    .select()
+    .from(ledgerEntries)
+    .where(and(...conditions))
+    .orderBy(desc(ledgerEntries.createdAt))
+    .limit(limit)
+    .offset(offset)
+
+  return c.json({
+    entries: entries.map(e => ({
+      id: e.id,
+      type: e.type,
+      amount_sats: e.amountSats,
+      balance_after: e.balanceAfter,
+      ref_id: e.refId,
+      ref_type: e.refType,
+      memo: e.memo,
+      created_at: e.createdAt,
+    })),
+    page,
+    limit,
+  })
+})
+
+// POST /api/transfer
+api.post('/transfer', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const body = await c.req.json().catch(() => ({})) as {
+    to_username?: string
+    amount_sats?: number
+    memo?: string
+  }
+
+  const toUsername = body.to_username?.trim()
+  const amountSats = body.amount_sats
+  const memo = body.memo?.trim()
+
+  if (!toUsername) return c.json({ error: 'to_username is required' }, 400)
+  if (!amountSats || amountSats <= 0) return c.json({ error: 'amount_sats must be positive' }, 400)
+
+  const target = await db.select({ id: users.id }).from(users).where(eq(users.username, toUsername)).limit(1)
+  if (target.length === 0) return c.json({ error: 'User not found' }, 404)
+  if (target[0].id === user.id) return c.json({ error: 'Cannot transfer to yourself' }, 400)
+
+  const ok = await transfer(db, user.id, target[0].id, amountSats, memo)
+  if (!ok) {
+    return c.json({ error: 'Insufficient balance', balance_sats: await getBalance(db, user.id) }, 400)
+  }
+
+  return c.json({ ok: true, balance_sats: await getBalance(db, user.id) })
+})
+
+// POST /api/admin/airdrop
+api.post('/admin/airdrop', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  if (!isSuperAdmin(user)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    username?: string
+    amount_sats?: number
+    memo?: string
+  }
+
+  const username = body.username?.trim()
+  const amountSats = body.amount_sats
+  const memo = body.memo?.trim()
+
+  if (!username) return c.json({ error: 'username is required' }, 400)
+  if (!amountSats || amountSats <= 0) return c.json({ error: 'amount_sats must be positive' }, 400)
+
+  const target = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1)
+  if (target.length === 0) return c.json({ error: 'User not found' }, 404)
+
+  await creditBalance(db, target[0].id, amountSats)
+  const newBalance = await getBalance(db, target[0].id)
+
+  await recordLedger(db, {
+    userId: target[0].id,
+    type: 'airdrop',
+    amountSats,
+    balanceAfter: newBalance,
+    refId: user.id,
+    refType: 'airdrop',
+    memo: memo || `Airdrop from admin ${user.username}`,
+  })
+
+  return c.json({ ok: true, new_balance: newBalance })
+})
+
+// POST /api/dvm/jobs/:id/complete — Customer confirms result, settle escrow
+api.post('/dvm/jobs/:id/complete', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const jobId = c.req.param('id')
+
+  const job = await db.select().from(dvmJobs)
+    .where(and(eq(dvmJobs.id, jobId), eq(dvmJobs.userId, user.id), eq(dvmJobs.role, 'customer')))
+    .limit(1)
+
+  if (job.length === 0) return c.json({ error: 'Job not found' }, 404)
+  if (job[0].status !== 'result_available') {
+    return c.json({ error: `Cannot complete job with status: ${job[0].status}` }, 400)
+  }
+
+  const bidSats = job[0].bidMsats ? Math.floor(job[0].bidMsats / 1000) : 0
+
+  // Find the provider who submitted the result
+  let providerUserId: string | null = null
+  if (job[0].requestEventId) {
+    const providerJob = await db.select({ userId: dvmJobs.userId }).from(dvmJobs)
+      .where(and(
+        eq(dvmJobs.requestEventId, job[0].requestEventId),
+        eq(dvmJobs.role, 'provider'),
+        eq(dvmJobs.status, 'completed'),
+      ))
+      .limit(1)
+    if (providerJob.length > 0) {
+      providerUserId = providerJob[0].userId
+    }
+  }
+
+  // Settle escrow
+  if (bidSats > 0 && providerUserId) {
+    await escrowRelease(db, user.id, providerUserId, bidSats, jobId)
+  }
+
+  // Mark customer job as completed
+  await db.update(dvmJobs)
+    .set({ status: 'completed', updatedAt: new Date() })
+    .where(eq(dvmJobs.id, jobId))
+
+  return c.json({
+    ok: true,
+    settled_sats: bidSats,
+    balance_sats: await getBalance(db, user.id),
+  })
+})
+
+// ─── Lightning Deposit / Withdraw ───
+
+// POST /api/deposit — 生成 Lightning invoice 充值
+api.post('/deposit', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  if (!c.env.LNBITS_URL || !c.env.LNBITS_INVOICE_KEY) {
+    return c.json({ error: 'Lightning payments not configured' }, 503)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as { amount_sats?: number }
+  const amountSats = body.amount_sats
+
+  if (!amountSats || amountSats < 100 || amountSats > 1000000) {
+    return c.json({ error: 'amount_sats must be between 100 and 1,000,000' }, 400)
+  }
+
+  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const webhookUrl = c.env.LNBITS_WEBHOOK_SECRET
+    ? `${baseUrl}/api/webhook/lnbits?secret=${c.env.LNBITS_WEBHOOK_SECRET}`
+    : undefined
+
+  const invoice = await createInvoice(
+    c.env.LNBITS_URL,
+    c.env.LNBITS_INVOICE_KEY,
+    amountSats,
+    `Deposit ${amountSats} sats for ${user.username}`,
+    webhookUrl,
+  )
+
+  const depositId = generateId()
+  await db.insert(deposits).values({
+    id: depositId,
+    userId: user.id,
+    amountSats,
+    paymentHash: invoice.payment_hash,
+    paymentRequest: invoice.payment_request,
+    status: 'pending',
+    createdAt: new Date(),
+  })
+
+  return c.json({
+    deposit_id: depositId,
+    payment_request: invoice.payment_request,
+    payment_hash: invoice.payment_hash,
+    amount_sats: amountSats,
+    status: 'pending',
+  }, 201)
+})
+
+// GET /api/deposit/:id/status — 查询充值状态
+api.get('/deposit/:id/status', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const depositId = c.req.param('id')
+
+  const deposit = await db.select().from(deposits)
+    .where(and(eq(deposits.id, depositId), eq(deposits.userId, user.id)))
+    .limit(1)
+
+  if (deposit.length === 0) return c.json({ error: 'Deposit not found' }, 404)
+
+  const d = deposit[0]
+
+  // If already paid, return directly
+  if (d.status === 'paid') {
+    return c.json({
+      deposit_id: d.id,
+      status: 'paid',
+      amount_sats: d.amountSats,
+      balance_sats: await getBalance(db, user.id),
+    })
+  }
+
+  // Fallback: check LNbits directly (in case webhook was missed)
+  if (d.status === 'pending' && c.env.LNBITS_URL && c.env.LNBITS_INVOICE_KEY) {
+    try {
+      const payment = await checkPayment(c.env.LNBITS_URL, c.env.LNBITS_INVOICE_KEY, d.paymentHash)
+      if (payment.paid) {
+        // Credit balance
+        await creditBalance(db, user.id, d.amountSats)
+        const balance = await getBalance(db, user.id)
+        await recordLedger(db, {
+          userId: user.id,
+          type: 'deposit',
+          amountSats: d.amountSats,
+          balanceAfter: balance,
+          refId: d.id,
+          refType: 'deposit',
+          memo: `Lightning deposit ${d.amountSats} sats`,
+        })
+        await db.update(deposits)
+          .set({ status: 'paid', paidAt: new Date() })
+          .where(eq(deposits.id, d.id))
+
+        return c.json({
+          deposit_id: d.id,
+          status: 'paid',
+          amount_sats: d.amountSats,
+          balance_sats: balance,
+        })
+      }
+    } catch (e) {
+      console.error('[Deposit] LNbits check failed:', e)
+    }
+  }
+
+  return c.json({
+    deposit_id: d.id,
+    status: d.status,
+    amount_sats: d.amountSats,
+    payment_request: d.paymentRequest,
+  })
+})
+
+// POST /api/webhook/lnbits — LNbits 支付回调
+api.post('/webhook/lnbits', async (c) => {
+  const secret = c.req.query('secret')
+  if (!c.env.LNBITS_WEBHOOK_SECRET || secret !== c.env.LNBITS_WEBHOOK_SECRET) {
+    return c.json({ error: 'Invalid secret' }, 403)
+  }
+
+  const db = c.get('db')
+  const body = await c.req.json().catch(() => ({})) as { payment_hash?: string }
+  const paymentHash = body.payment_hash
+
+  if (!paymentHash) return c.json({ error: 'Missing payment_hash' }, 400)
+
+  // Find pending deposit
+  const deposit = await db.select().from(deposits)
+    .where(and(eq(deposits.paymentHash, paymentHash), eq(deposits.status, 'pending')))
+    .limit(1)
+
+  if (deposit.length === 0) {
+    // Already processed or not found — idempotent
+    return c.json({ ok: true })
+  }
+
+  const d = deposit[0]
+
+  // Credit balance
+  await creditBalance(db, d.userId, d.amountSats)
+  const balance = await getBalance(db, d.userId)
+  await recordLedger(db, {
+    userId: d.userId,
+    type: 'deposit',
+    amountSats: d.amountSats,
+    balanceAfter: balance,
+    refId: d.id,
+    refType: 'deposit',
+    memo: `Lightning deposit ${d.amountSats} sats`,
+  })
+  await db.update(deposits)
+    .set({ status: 'paid', paidAt: new Date() })
+    .where(eq(deposits.id, d.id))
+
+  console.log(`[Deposit] Credited ${d.amountSats} sats to user ${d.userId}`)
+  return c.json({ ok: true })
+})
+
+// POST /api/withdraw — 提现到 Lightning Address
+api.post('/withdraw', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  if (!c.env.LNBITS_URL || !c.env.LNBITS_ADMIN_KEY) {
+    return c.json({ error: 'Lightning payments not configured' }, 503)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    amount_sats?: number
+    lightning_address?: string
+    bolt11?: string
+  }
+
+  const amountSats = body.amount_sats
+  const lightningAddress = body.lightning_address || user.lightningAddress
+  const bolt11 = body.bolt11
+
+  if (!amountSats || amountSats < 100 || amountSats > 1000000) {
+    return c.json({ error: 'amount_sats must be between 100 and 1,000,000' }, 400)
+  }
+
+  if (!bolt11 && !lightningAddress) {
+    return c.json({ error: 'Provide bolt11 invoice or lightning_address' }, 400)
+  }
+
+  // Debit balance first
+  const { debitBalance } = await import('../lib/balance')
+  const ok = await debitBalance(db, user.id, amountSats)
+  if (!ok) {
+    return c.json({ error: 'Insufficient balance', balance_sats: await getBalance(db, user.id) }, 400)
+  }
+
+  try {
+    let paymentResult: { payment_hash: string }
+
+    if (bolt11) {
+      paymentResult = await payInvoice(c.env.LNBITS_URL, c.env.LNBITS_ADMIN_KEY, bolt11)
+    } else {
+      paymentResult = await payLightningAddress(c.env.LNBITS_URL, c.env.LNBITS_ADMIN_KEY, lightningAddress!, amountSats)
+    }
+
+    // Record ledger
+    const balance = await getBalance(db, user.id)
+    await recordLedger(db, {
+      userId: user.id,
+      type: 'withdrawal',
+      amountSats: -amountSats,
+      balanceAfter: balance,
+      refId: paymentResult.payment_hash,
+      refType: 'withdrawal',
+      memo: `Lightning withdrawal ${amountSats} sats`,
+    })
+
+    return c.json({
+      ok: true,
+      payment_hash: paymentResult.payment_hash,
+      amount_sats: amountSats,
+      balance_sats: balance,
+    })
+  } catch (e) {
+    // Payment failed — refund balance
+    await creditBalance(db, user.id, amountSats)
+    console.error('[Withdraw] Lightning payment failed, refunded:', e)
+    return c.json({
+      error: 'Lightning payment failed',
+      detail: e instanceof Error ? e.message : 'Unknown error',
+      balance_sats: await getBalance(db, user.id),
+    }, 502)
+  }
 })
 
 export default api

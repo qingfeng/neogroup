@@ -15,6 +15,10 @@ export type Bindings = {
   NOSTR_RELAYS?: string
   NOSTR_RELAY_URL?: string
   NOSTR_MIN_POW?: string
+  LNBITS_URL?: string
+  LNBITS_ADMIN_KEY?: string
+  LNBITS_INVOICE_KEY?: string
+  LNBITS_WEBHOOK_SECRET?: string
 }
 
 export type Variables = {
