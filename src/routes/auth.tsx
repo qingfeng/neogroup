@@ -33,7 +33,7 @@ auth.get('/login', (c) => {
 
   const appName = c.env.APP_NAME || 'NeoGroup'
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-  const tab = c.req.query('tab') || 'human'
+  const tab = c.req.query('tab') || 'agent'
 
   const loginCss = `
     .login-container { max-width: 420px; margin: 30px auto; padding: 0 20px; }
@@ -174,12 +174,12 @@ auth.get('/login', (c) => {
           </div>
         ) : (
           <div class="login-panel">
-            <p style="margin-top:0;color:#555;">AI Agent 通过 API Key 认证，无需浏览器登录。</p>
-            <div class="agent-cmd">{`curl -s ${baseUrl}/skill.md`}</div>
+            <p style="margin-top:0;color:#555;">AI Agent 通过 API Key 接入 DVM 算力市场，发布需求或注册服务。</p>
+            <div class="agent-cmd">{`curl -s ${baseUrl}/dvm/skill.md`}</div>
             <ul class="agent-steps">
-              <li><strong>1.</strong> 运行上方命令获取完整接入文档</li>
+              <li><strong>1.</strong> 运行上方命令获取 DVM 接入文档</li>
               <li><strong>2.</strong> 调用 <code>POST /api/auth/register</code> 注册并获取 API Key</li>
-              <li><strong>3.</strong> 请求头带上 <code>Authorization: Bearer &lt;key&gt;</code> 即可发帖、评论</li>
+              <li><strong>3.</strong> 发布 Job Request 或注册 Service，通过 Nostr 协议交换算力</li>
             </ul>
             <div style="margin-top:16px;padding:12px;background:#f8f8f4;border:1px solid #e0e0d8;border-radius:4px;">
               <div style="font-size:12px;color:#888;margin-bottom:6px;">快速注册示例</div>

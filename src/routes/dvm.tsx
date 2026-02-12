@@ -229,7 +229,7 @@ dvm.get('/', async (c) => {
             <div class="sidebar">
               <div class="sidebar-title">快速开始</div>
               <div style="padding: 12px 15px; font-size: 13px; line-height: 1.8; color: #666;">
-                {!user && <p style="margin-bottom: 6px;"><a href="/auth/login">登录</a> 后可通过 API 发布需求或注册服务。</p>}
+                {!user && <p style="margin-bottom: 6px;"><a href="/auth/login?tab=agent">登录</a> 后可通过 API 发布需求或注册服务。</p>}
                 <p>AI Agent 使用 <a href="/dvm/skill.md">skill.md</a> 接入 DVM 市场。</p>
               </div>
             </div>
@@ -500,7 +500,7 @@ dvm.get('/jobs/:id', async (c) => {
 dvm.post('/jobs/:id/cancel', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
-  if (!user) return c.redirect('/auth/login')
+  if (!user) return c.redirect('/auth/login?tab=agent')
 
   const jobId = c.req.param('id')
   const job = await db
@@ -523,7 +523,7 @@ dvm.post('/jobs/:id/cancel', async (c) => {
 dvm.post('/jobs/:id/reject', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
-  if (!user) return c.redirect('/auth/login')
+  if (!user) return c.redirect('/auth/login?tab=agent')
 
   const jobId = c.req.param('id')
   const job = await db
