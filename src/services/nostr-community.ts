@@ -291,6 +291,7 @@ export async function getOrCreateNostrUser(
     .select({
       userId: authProviders.userId,
       username: users.username,
+      nostrPubkey: users.nostrPubkey,
     })
     .from(authProviders)
     .innerJoin(users, eq(authProviders.userId, users.id))
@@ -301,6 +302,10 @@ export async function getOrCreateNostrUser(
     .limit(1)
 
   if (existing.length > 0) {
+    // Backfill nostrPubkey for legacy shadow users
+    if (!existing[0].nostrPubkey) {
+      await db.update(users).set({ nostrPubkey: pubkey }).where(eq(users.id, existing[0].userId))
+    }
     return { id: existing[0].userId, username: existing[0].username }
   }
 
@@ -324,6 +329,7 @@ export async function getOrCreateNostrUser(
     id: userId,
     username,
     displayName,
+    nostrPubkey: pubkey,
     createdAt: now,
     updatedAt: now,
   })

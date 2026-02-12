@@ -348,7 +348,9 @@ user.get('/:id', async (c) => {
             {profileUser.nostrPubkey && (
               <div class="profile-nostr">
                 <span class="nostr-label">Nostr</span>
-                <code>{pubkeyToNpub(profileUser.nostrPubkey).slice(0, 20)}...</code>
+                <a href={`https://yakihonne.com/profile/${pubkeyToNpub(profileUser.nostrPubkey)}`} target="_blank" rel="noopener" title="在 Nostr 上查看" class="nostr-npub-link">
+                  <code class="nostr-npub-full">{pubkeyToNpub(profileUser.nostrPubkey)}</code>
+                </a>
                 <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${pubkeyToNpub(profileUser.nostrPubkey)}')`} title="复制 npub">📋</button>
               </div>
             )}

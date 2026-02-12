@@ -2372,6 +2372,20 @@ button.ql-neodb:hover::after {
   color: #666;
 }
 
+.nostr-npub-full {
+  word-break: break-all;
+}
+
+.nostr-npub-link {
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}
+
+.nostr-npub-link:hover code {
+  color: #8e44ad;
+}
+
 .nostr-label {
   display: inline-block;
   background: #8e44ad;

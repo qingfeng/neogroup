@@ -999,19 +999,47 @@ topic.post('/:id/comment', async (c) => {
           ['client', c.env.APP_NAME || 'NeoGroup'],
         ]
 
+        // Collect mentioned pubkeys for p tags (NIP-10 threading notifications)
+        const mentionedPubkeys = new Set<string>()
+
+        // Topic author's Nostr pubkey
+        if (topicResult[0].nostrAuthorPubkey) {
+          mentionedPubkeys.add(topicResult[0].nostrAuthorPubkey)
+        } else {
+          const topicAuthor = await db.select({ nostrPubkey: users.nostrPubkey })
+            .from(users).where(eq(users.id, topicResult[0].userId)).limit(1)
+          if (topicAuthor[0]?.nostrPubkey) mentionedPubkeys.add(topicAuthor[0].nostrPubkey)
+        }
+
         // Thread linking: reference topic's Nostr event as root
         if (topicResult[0].nostrEventId) {
           tags.push(['e', topicResult[0].nostrEventId, '', 'root'])
         }
 
-        // If replying to a comment, reference it as reply
+        // If replying to a comment, reference it as reply + get author pubkey
         if (replyToId) {
-          const parentComment = await db.select({ nostrEventId: comments.nostrEventId })
+          const parentComment = await db.select({
+            nostrEventId: comments.nostrEventId,
+            nostrPubkey: users.nostrPubkey,
+          })
             .from(comments)
+            .leftJoin(users, eq(comments.userId, users.id))
             .where(eq(comments.id, replyToId))
             .limit(1)
-          if (parentComment.length > 0 && parentComment[0].nostrEventId) {
-            tags.push(['e', parentComment[0].nostrEventId, '', 'reply'])
+          if (parentComment.length > 0) {
+            if (parentComment[0].nostrEventId) {
+              tags.push(['e', parentComment[0].nostrEventId, '', 'reply'])
+            }
+            if (parentComment[0].nostrPubkey) {
+              mentionedPubkeys.add(parentComment[0].nostrPubkey)
+            }
+          }
+        }
+
+        // Add p tags for all mentioned authors (excluding self)
+        for (const pk of mentionedPubkeys) {
+          if (pk !== user.nostrPubkey) {
+            tags.push(['p', pk])
           }
         }
 
