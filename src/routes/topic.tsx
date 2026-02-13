@@ -8,7 +8,7 @@ import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
-import { deliverCommentToFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
+import { deliverCommentToFollowers, announceToUserFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
 import { buildSignedEvent } from '../services/nostr'
 
 const topic = new Hono<AppContext>()
@@ -1169,6 +1169,12 @@ topic.post('/:id/repost', async (c) => {
       })
     }
   }
+
+  // AP Announce to user's followers
+  c.executionCtx.waitUntil(
+    announceToUserFollowers(db, baseUrl, user.id, topicId)
+      .catch(e => console.error('[AP Announce] User repost failed:', e))
+  )
 
   // Redirect back: if came from timeline, go back there
   const referer = c.req.header('Referer') || ''

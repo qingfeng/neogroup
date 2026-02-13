@@ -293,6 +293,54 @@ export async function announceToGroupFollowers(
   await Promise.allSettled(deliveryPromises)
 }
 
+// Announce a Note to all user's AP followers (for repost/boost)
+export async function announceToUserFollowers(
+  db: Database,
+  baseUrl: string,
+  userId: string,
+  topicId: string
+): Promise<void> {
+  const apUsername = await getApUsername(db, userId)
+  if (!apUsername) return
+
+  const { privateKeyPem } = await ensureKeyPair(db, userId)
+
+  const followers = await db
+    .select()
+    .from(apFollowers)
+    .where(eq(apFollowers.userId, userId))
+
+  if (followers.length === 0) return
+
+  const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+  const noteId = `${baseUrl}/ap/notes/${topicId}`
+
+  const announce = {
+    '@context': 'https://www.w3.org/ns/activitystreams',
+    id: `${actorUrl}#announce-${Date.now()}`,
+    type: 'Announce',
+    actor: actorUrl,
+    published: new Date().toISOString(),
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${actorUrl}/followers`],
+    object: noteId,
+  }
+
+  // Deduplicate by sharedInbox
+  const inboxes = new Set<string>()
+  for (const f of followers) {
+    inboxes.add(f.sharedInboxUrl || f.inboxUrl)
+  }
+
+  console.log('[AP Announce] User', apUsername, 'broadcasting to', inboxes.size, 'inboxes')
+
+  const promises = Array.from(inboxes).map(inbox =>
+    signAndDeliver(actorUrl, privateKeyPem, inbox, announce)
+      .catch(e => console.error('[AP Announce] User deliver failed:', inbox, e))
+  )
+  await Promise.allSettled(promises)
+}
+
 export function getNodeInfoJson(baseUrl: string, userCount: number) {
   return {
     version: '2.0',
