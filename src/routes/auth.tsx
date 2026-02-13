@@ -4,6 +4,7 @@ import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
 import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername, stripHtml } from '../lib/utils'
 import { generateNostrKeypair, buildSignedEvent, verifyEvent, nsecToPrivkey, pubkeyToNpub, encryptPrivkey } from '../services/nostr'
+import { fetchEventsFromRelay } from '../services/nostr-community'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { topics } from '../db/schema'
@@ -696,19 +697,56 @@ auth.post('/nostr/nsec', async (c) => {
             updatedAt: now(),
           }).where(eq(users.id, userId))
 
-          // 广播 Kind 0 metadata
+          // 从 relay 拉取用户现有 Kind 0 metadata
+          let relayMeta: { name?: string; display_name?: string; picture?: string; about?: string; nip05?: string; lud16?: string } = {}
+          try {
+            const relayUrls = (c.env.NOSTR_RELAYS || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+            for (const relayUrl of relayUrls) {
+              const { events } = await fetchEventsFromRelay(relayUrl, {
+                kinds: [0],
+                authors: [pubkey],
+                limit: 1,
+              })
+              if (events.length > 0) {
+                const latest = events.sort((a, b) => b.created_at - a.created_at)[0]
+                relayMeta = JSON.parse(latest.content)
+                break
+              }
+            }
+          } catch (e) {
+            console.error('[Nostr Auth] Failed to fetch Kind 0 from relay:', e)
+          }
+
+          // 用 relay 元数据填充站内空白字段
+          const profileUpdate: Record<string, unknown> = { updatedAt: now() }
+          const relayDisplayName = relayMeta.display_name || relayMeta.name
+          if (!userRow.displayName && relayDisplayName) profileUpdate.displayName = relayDisplayName
+          if (!userRow.avatarUrl && relayMeta.picture) profileUpdate.avatarUrl = relayMeta.picture
+          if (!userRow.bio && relayMeta.about) {
+            profileUpdate.bio = `<p>${relayMeta.about.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>`
+          }
+          if (Object.keys(profileUpdate).length > 1) {
+            await db.update(users).set(profileUpdate).where(eq(users.id, userId))
+          }
+
+          // 广播 Kind 0 metadata（保留原有 nip05）
           if (c.env.NOSTR_QUEUE) {
             const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
             const host = new URL(baseUrl).host
+            const effectiveDisplayName = (profileUpdate.displayName as string) || userRow.displayName || userRow.username
+            const effectiveBio = userRow.bio || (profileUpdate.bio as string) || ''
+            const effectiveAvatar = (profileUpdate.avatarUrl as string) || userRow.avatarUrl || ''
             const metadataEvent = await buildSignedEvent({
               privEncrypted: encrypted, iv,
               masterKey: c.env.NOSTR_MASTER_KEY,
               kind: 0,
               content: JSON.stringify({
-                name: userRow.displayName || userRow.username,
-                about: userRow.bio ? userRow.bio.replace(/<[^>]*>/g, '') : '',
-                picture: userRow.avatarUrl || '',
-                nip05: `${userRow.username}@${host}`,
+                name: effectiveDisplayName,
+                about: effectiveBio.replace(/<[^>]*>/g, ''),
+                picture: effectiveAvatar,
+                nip05: relayMeta.nip05 || `${userRow.username}@${host}`,
+                lud16: `${userRow.username}@${host}`,
+                ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
               }),
               tags: [],
             })
