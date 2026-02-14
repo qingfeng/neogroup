@@ -138,13 +138,12 @@ user.get('/:id', async (c) => {
   const apHandleMatch = rawId.match(/^@?([^@]+)@(.+)$/)
   if (apHandleMatch) {
     const [, parsedUsername, domain] = apHandleMatch
-    // Only accept handles for our own domain
     if (domain === host) {
+      // Local domain: strip domain part
       lookupName = parsedUsername
-    } else {
-      // External domain - not found
-      return c.notFound()
     }
+    // External domain (shadow users like lazycouchpotato@lemmy.world):
+    // keep lookupName as-is, will match by full username
   } else if (rawId.startsWith('@')) {
     // @username format (without domain)
     lookupName = rawId.slice(1)
