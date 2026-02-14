@@ -4,7 +4,7 @@ import type { AppContext } from '../types'
 import { users, topics, groups, comments, topicLikes, authProviders, userFollows, apFollowers } from '../db/schema'
 import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub, decryptNostrPrivkey, privkeyToNsec } from '../services/nostr'
 import { Layout } from '../components/Layout'
-import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml, generateId } from '../lib/utils'
+import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml, generateId, isNostrEnabled } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 
@@ -821,7 +821,7 @@ user.post('/:id/edit', async (c) => {
     db.select().from(users).where(eq(users.id, userId)),
     1
   )
-  if (updatedUser.length > 0 && updatedUser[0].nostrSyncEnabled && updatedUser[0].nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && updatedUser.length > 0 && updatedUser[0].nostrSyncEnabled && updatedUser[0].nostrPrivEncrypted) {
     try {
       const u = updatedUser[0]
       const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -829,7 +829,7 @@ user.post('/:id/edit', async (c) => {
       const event = await buildSignedEvent({
         privEncrypted: u.nostrPrivEncrypted!,
         iv: u.nostrPrivIv!,
-        masterKey: c.env.NOSTR_MASTER_KEY,
+        masterKey: c.env.NOSTR_MASTER_KEY!,
         kind: 0,
         content: JSON.stringify({
           name: u.displayName || u.username,
@@ -841,7 +841,7 @@ user.post('/:id/edit', async (c) => {
         }),
         tags: [],
       })
-      await c.env.NOSTR_QUEUE.send({ events: [event] })
+      await c.env.NOSTR_QUEUE!.send({ events: [event] })
     } catch (e) {
       console.error('Failed to broadcast Nostr Kind 0:', e)
     }
@@ -854,6 +854,7 @@ user.post('/:id/edit', async (c) => {
 
 // Nostr 设置页面
 user.get('/:id/nostr', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const currentUser = c.get('user')
   const userId = c.req.param('id')
@@ -939,6 +940,7 @@ user.get('/:id/nostr', async (c) => {
 
 // 开启 Nostr 同步
 user.post('/:id/nostr/enable', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const currentUser = c.get('user')
   const userId = c.req.param('id')
@@ -1089,6 +1091,7 @@ user.post('/:id/nostr/enable', async (c) => {
 
 // 导出 Nostr 密钥
 user.get('/:id/nostr/export', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const currentUser = c.get('user')
   const userId = c.req.param('id')

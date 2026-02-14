@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, mastodonApps } from '../db/schema'
-import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername, stripHtml } from '../lib/utils'
+import { generateId, now, uploadAvatarToR2, mastodonUsername, ensureUniqueUsername, stripHtml, isNostrEnabled } from '../lib/utils'
 import { generateNostrKeypair, buildSignedEvent, verifyEvent, nsecToPrivkey, pubkeyToNpub, encryptPrivkey } from '../services/nostr'
 import { fetchEventsFromRelay } from '../services/nostr-community'
 import { schnorr } from '@noble/curves/secp256k1.js'
@@ -33,164 +33,29 @@ auth.get('/login', (c) => {
   }
 
   const appName = c.env.APP_NAME || 'NeoGroup'
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-  const tab = c.req.query('tab') || 'agent'
 
   const loginCss = `
     .login-container { max-width: 420px; margin: 30px auto; padding: 0 20px; }
     .login-container h1 { text-align: center; margin-bottom: 24px; font-size: 20px; }
-    .login-tabs { display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid #e0e0d8; }
-    .login-tab { flex: 1; padding: 10px 0; text-align: center; cursor: pointer; font-size: 14px; font-weight: 500; color: #666; background: none; border: 2px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none; display: block; margin-bottom: -2px; }
-    .login-tab:hover { color: #333; background: #f0f0ea; text-decoration: none; }
-    .login-tab.active { color: #072; border-color: #e0e0d8; border-bottom-color: #f6f6f1; background: #f6f6f1; }
-    .login-panel { border: 2px solid #e0e0d8; border-top: none; border-radius: 0 0 6px 6px; padding: 24px; background: #fff; }
+    .login-panel { border: 2px solid #e0e0d8; border-radius: 6px; padding: 24px; background: #fff; }
     .login-panel input[type="text"] { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #c7deb8; border-radius: 3px; font-size: 13px; }
     .login-panel .btn-login { width: 100%; padding: 10px; font-size: 13px; margin-top: 8px; }
     .login-panel label { font-size: 13px; color: #555; }
-    .agent-cmd { background: #f0f0ea; border: 1px solid #ddd; border-radius: 4px; padding: 12px 14px; font-family: "SF Mono", Monaco, "Cascadia Code", monospace; font-size: 12.5px; color: #333; word-break: break-all; margin: 12px 0; user-select: all; cursor: pointer; position: relative; }
-    .agent-cmd:hover { background: #e8e8e0; }
-    .agent-cmd::after { content: "click to copy"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; font-family: system-ui; }
-    .agent-steps { margin: 16px 0 0; padding: 0; list-style: none; }
-    .agent-steps li { padding: 4px 0; font-size: 13px; color: #555; }
-    .agent-steps li strong { color: #072; }
-  `
-
-  const nostrCss = `
-    .nostr-section { margin-bottom: 20px; }
-    .nostr-section:last-child { margin-bottom: 0; }
-    .nostr-divider { display: flex; align-items: center; margin: 20px 0; color: #999; font-size: 12px; }
-    .nostr-divider::before, .nostr-divider::after { content: ''; flex: 1; border-top: 1px solid #e0e0d8; }
-    .nostr-divider span { padding: 0 12px; }
-    .nostr-section h3 { font-size: 14px; margin: 0 0 8px; color: #333; }
-    .nostr-section p { font-size: 12px; color: #888; margin: 4px 0 12px; }
-    .login-panel input[type="password"] { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #c7deb8; border-radius: 3px; font-size: 13px; }
-    #nip07-unavailable { display: none; font-size: 12px; color: #c63; margin-top: 8px; }
-    #nostr-error { display: none; color: #c33; font-size: 12px; margin-top: 8px; padding: 8px; background: #fff0f0; border-radius: 3px; }
-    #nostr-loading { display: none; font-size: 12px; color: #666; margin-top: 8px; }
-  `
-
-  const copyScript = `
-    document.querySelectorAll('.agent-cmd').forEach(function(el) {
-      el.addEventListener('click', function() {
-        var text = this.innerText.replace('click to copy', '').trim();
-        navigator.clipboard.writeText(text).then(function() {
-          el.style.borderColor = '#3ba726';
-          setTimeout(function() { el.style.borderColor = ''; }, 800);
-        });
-      });
-    });
-  `
-
-  const nip07Script = `
-    (function() {
-      var nip07Btn = document.getElementById('nip07-btn');
-      var nip07Unavail = document.getElementById('nip07-unavailable');
-      var nostrError = document.getElementById('nostr-error');
-      var nostrLoading = document.getElementById('nostr-loading');
-
-      if (!window.nostr) {
-        if (nip07Btn) nip07Btn.style.display = 'none';
-        if (nip07Unavail) nip07Unavail.style.display = 'block';
-      }
-
-      if (nip07Btn) {
-        nip07Btn.addEventListener('click', async function() {
-          nostrError.style.display = 'none';
-          nostrLoading.style.display = 'block';
-          nip07Btn.disabled = true;
-          try {
-            var pubkey = await window.nostr.getPublicKey();
-            var res = await fetch('/auth/nostr/challenge', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' }
-            });
-            var data = await res.json();
-            if (!data.challenge) throw new Error('获取 challenge 失败');
-            var event = await window.nostr.signEvent({
-              kind: 22242,
-              created_at: Math.floor(Date.now() / 1000),
-              tags: [['challenge', data.challenge]],
-              content: ''
-            });
-            var vRes = await fetch('/auth/nostr/verify', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ event: event })
-            });
-            var vData = await vRes.json();
-            if (vData.ok) {
-              window.location.href = vData.redirect || '/';
-            } else {
-              throw new Error(vData.error || '登录失败');
-            }
-          } catch (e) {
-            nostrError.textContent = e.message || '登录失败';
-            nostrError.style.display = 'block';
-          } finally {
-            nostrLoading.style.display = 'none';
-            nip07Btn.disabled = false;
-          }
-        });
-      }
-    })();
   `
 
   return c.html(
     <Layout user={null} title="登录" siteName={appName}>
-      <style dangerouslySetInnerHTML={{ __html: loginCss + nostrCss }} />
+      <style dangerouslySetInnerHTML={{ __html: loginCss }} />
       <div class="login-container">
         <h1>登录 {appName}</h1>
-        <div class="login-tabs">
-          <a class={`login-tab ${tab === 'human' ? 'active' : ''}`} href="/auth/login?tab=human">👤 人类用户</a>
-          <a class={`login-tab ${tab === 'nostr' ? 'active' : ''}`} href="/auth/login?tab=nostr">🔑 Nostr</a>
-          <a class={`login-tab ${tab === 'agent' ? 'active' : ''}`} href="/auth/login?tab=agent">🤖 AI Agent</a>
+        <div class="login-panel">
+          <form action="/auth/connect" method="get">
+            <label>输入你的 Mastodon 实例域名：</label>
+            <input type="text" name="domain" placeholder="mastodon.social" required />
+            <button type="submit" class="btn btn-primary btn-login">使用 Mastodon 登录</button>
+          </form>
         </div>
-        {tab === 'human' ? (
-          <div class="login-panel">
-            <form action="/auth/connect" method="get">
-              <label>输入你的 Mastodon 实例域名：</label>
-              <input type="text" name="domain" placeholder="mastodon.social" required />
-              <button type="submit" class="btn btn-primary btn-login">使用 Mastodon 登录</button>
-            </form>
-          </div>
-        ) : tab === 'nostr' ? (
-          <div class="login-panel">
-            <div class="nostr-section">
-              <h3>NIP-07 浏览器扩展</h3>
-              <p>使用 nos2x、Alby 等扩展一键登录，无需暴露私钥</p>
-              <button id="nip07-btn" type="button" class="btn btn-primary btn-login">使用 Nostr 扩展登录</button>
-              <div id="nip07-unavailable">未检测到 Nostr 扩展（需安装 nos2x、Alby 等）</div>
-              <div id="nostr-loading">正在签名验证...</div>
-              <div id="nostr-error"></div>
-            </div>
-            <div class="nostr-divider"><span>或</span></div>
-            <div class="nostr-section">
-              <h3>nsec 私钥登录</h3>
-              <p>适用于移动端或无扩展环境，粘贴你的 nsec 私钥</p>
-              <form action="/auth/nostr/nsec" method="post">
-                <input type="password" name="nsec" placeholder="nsec1..." required autocomplete="off" />
-                <button type="submit" class="btn btn-primary btn-login">使用 nsec 登录</button>
-              </form>
-            </div>
-          </div>
-        ) : (
-          <div class="login-panel">
-            <p style="margin-top:0;color:#555;">AI Agent 通过 API Key 接入 DVM 算力市场，发布需求或注册服务。</p>
-            <div class="agent-cmd">{`curl -s ${baseUrl}/dvm/skill.md`}</div>
-            <ul class="agent-steps">
-              <li><strong>1.</strong> 运行上方命令获取 DVM 接入文档</li>
-              <li><strong>2.</strong> 调用 <code>POST /api/auth/register</code> 注册并获取 API Key</li>
-              <li><strong>3.</strong> 发布 Job Request 或注册 Service，通过 Nostr 协议交换算力</li>
-            </ul>
-            <div style="margin-top:16px;padding:12px;background:#f8f8f4;border:1px solid #e0e0d8;border-radius:4px;">
-              <div style="font-size:12px;color:#888;margin-bottom:6px;">快速注册示例</div>
-              <div class="agent-cmd" style="margin:0;font-size:11.5px;">{`curl -X POST ${baseUrl}/api/auth/register -H "Content-Type: application/json" -d '{"name":"my-agent"}'`}</div>
-            </div>
-          </div>
-        )}
       </div>
-      <script dangerouslySetInnerHTML={{ __html: copyScript }} />
-      {tab === 'nostr' && <script dangerouslySetInnerHTML={{ __html: nip07Script }} />}
     </Layout>
   )
 })
@@ -386,115 +251,6 @@ auth.get('/callback', async (c) => {
       })
     }
 
-    // 自动开启 Nostr：如果用户还没有 Nostr 密钥，则生成并启用
-    if (c.env.NOSTR_MASTER_KEY) {
-      const userRow = await db.query.users.findFirst({
-        where: eq(users.id, userId),
-      })
-      if (userRow && !userRow.nostrPubkey) {
-        try {
-          const { pubkey, privEncrypted, iv } = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
-          const username = userRow.username
-          await db.update(users).set({
-            nostrPubkey: pubkey,
-            nostrPrivEncrypted: privEncrypted,
-            nostrPrivIv: iv,
-            nostrKeyVersion: 1,
-            nostrSyncEnabled: 1,
-            updatedAt: now(),
-          }).where(eq(users.id, userId))
-
-          // 广播 Kind 0 + 回填历史帖子（后台）
-          if (c.env.NOSTR_QUEUE) {
-            const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
-            const host = new URL(baseUrl).host
-            const metadataEvent = await buildSignedEvent({
-              privEncrypted, iv,
-              masterKey: c.env.NOSTR_MASTER_KEY,
-              kind: 0,
-              content: JSON.stringify({
-                name: userRow.displayName || username,
-                about: userRow.bio ? userRow.bio.replace(/<[^>]*>/g, '') : '',
-                picture: userRow.avatarUrl || '',
-                nip05: `${username}@${host}`,
-                lud16: `${username}@${host}`,
-                ...(c.env.NOSTR_RELAY_URL ? { relays: [c.env.NOSTR_RELAY_URL] } : {}),
-              }),
-              tags: [],
-            })
-            await c.env.NOSTR_QUEUE.send({ events: [metadataEvent] })
-
-            // 回填历史帖子（后台执行）
-            c.executionCtx.waitUntil((async () => {
-              try {
-                const { groups } = await import('../db/schema')
-                const userTopics = await db
-                  .select({
-                    id: topics.id,
-                    title: topics.title,
-                    content: topics.content,
-                    groupId: topics.groupId,
-                    createdAt: topics.createdAt,
-                    nostrEventId: topics.nostrEventId,
-                  })
-                  .from(topics)
-                  .where(eq(topics.userId, userId))
-                  .orderBy(topics.createdAt)
-
-                // 预加载所有 NIP-72 小组信息
-                const nostrGroups = await db.select({
-                  id: groups.id,
-                  nostrSyncEnabled: groups.nostrSyncEnabled,
-                  nostrPubkey: groups.nostrPubkey,
-                  actorName: groups.actorName,
-                }).from(groups).where(eq(groups.nostrSyncEnabled, 1))
-                const groupMap = new Map(nostrGroups.map(g => [g.id, g]))
-                const relayUrl = (c.env.NOSTR_RELAYS || '').split(',')[0]?.trim() || ''
-
-                const BATCH_SIZE = 10
-                for (let i = 0; i < userTopics.length; i += BATCH_SIZE) {
-                  const batch = userTopics.slice(i, i + BATCH_SIZE)
-                  const events = []
-                  for (const t of batch) {
-                    if (t.nostrEventId) continue
-                    const textContent = t.content ? stripHtml(t.content).trim() : ''
-                    const noteContent = textContent
-                      ? `${t.title}\n\n${textContent}\n\n🔗 ${baseUrl}/topic/${t.id}`
-                      : `${t.title}\n\n🔗 ${baseUrl}/topic/${t.id}`
-                    const nostrTags: string[][] = [
-                      ['r', `${baseUrl}/topic/${t.id}`],
-                      ['client', c.env.APP_NAME || 'NeoGroup'],
-                    ]
-                    const g = groupMap.get(t.groupId)
-                    if (g && g.nostrPubkey && g.actorName) {
-                      nostrTags.push(['a', `34550:${g.nostrPubkey}:${g.actorName}`, relayUrl])
-                    }
-                    const event = await buildSignedEvent({
-                      privEncrypted, iv,
-                      masterKey: c.env.NOSTR_MASTER_KEY!,
-                      kind: 1, content: noteContent, tags: nostrTags,
-                      createdAt: Math.floor(t.createdAt.getTime() / 1000),
-                    })
-                    await db.update(topics).set({ nostrEventId: event.id }).where(eq(topics.id, t.id))
-                    events.push(event)
-                  }
-                  if (events.length > 0) {
-                    await c.env.NOSTR_QUEUE!.send({ events })
-                  }
-                }
-                console.log(`[Nostr] Auto-enabled + backfilled for user ${userId}`)
-              } catch (e) {
-                console.error('[Nostr] Auto-enable backfill failed:', e)
-              }
-            })())
-          }
-          console.log(`[Nostr] Auto-generated keypair for user ${userId}`)
-        } catch (e) {
-          console.error('[Nostr] Auto-generate keypair failed:', e)
-        }
-      }
-    }
-
     // 创建 session
     const sessionId = await createSession(c.env.KV, userId)
     c.header('Set-Cookie', createSessionCookie(sessionId))
@@ -582,6 +338,7 @@ async function findOrCreateNostrUser(
 
 // 生成 challenge
 auth.post('/nostr/challenge', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   const challenge = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
@@ -592,6 +349,7 @@ auth.post('/nostr/challenge', async (c) => {
 
 // NIP-07 验证签名事件
 auth.post('/nostr/verify', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   try {
     const body = await c.req.json()
     const event = body.event
@@ -646,6 +404,7 @@ auth.post('/nostr/verify', async (c) => {
 
 // nsec 私钥登录
 auth.post('/nostr/nsec', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   try {
     let nsec: string
 

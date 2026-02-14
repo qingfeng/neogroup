@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices, ledgerEntries, deposits } from '../db/schema'
-import { generateId, generateApiKey, ensureUniqueUsername, stripHtml, isSuperAdmin } from '../lib/utils'
+import { generateId, generateApiKey, ensureUniqueUsername, stripHtml, isSuperAdmin, isNostrEnabled } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
 import { escrowFreeze, escrowRelease, escrowRefund, getBalance, transfer, creditBalance, recordLedger, publishLedgerEvents } from '../lib/balance'
@@ -65,7 +65,7 @@ api.post('/auth/register', async (c) => {
   })
 
   // 自动生成 Nostr 密钥并开启同步
-  if (c.env.NOSTR_MASTER_KEY) {
+  if (isNostrEnabled(c.env) && c.env.NOSTR_MASTER_KEY) {
     try {
       const { pubkey, privEncrypted, iv } = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
       await db.update(users).set({
@@ -137,14 +137,14 @@ api.put('/me', requireApiAuth, async (c) => {
   await db.update(users).set(updates).where(eq(users.id, user.id))
 
   // 更新 Nostr Kind 0 if enabled
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     try {
       const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
       const host = new URL(baseUrl).host
       const metaEvent = await buildSignedEvent({
         privEncrypted: user.nostrPrivEncrypted!,
         iv: user.nostrPrivIv!,
-        masterKey: c.env.NOSTR_MASTER_KEY,
+        masterKey: c.env.NOSTR_MASTER_KEY!,
         kind: 0,
         content: JSON.stringify({
           name: (body.display_name !== undefined ? body.display_name.slice(0, 100) : user.displayName) || user.username,
@@ -155,7 +155,7 @@ api.put('/me', requireApiAuth, async (c) => {
         }),
         tags: [],
       })
-      c.executionCtx.waitUntil(c.env.NOSTR_QUEUE.send({ events: [metaEvent] }))
+      c.executionCtx.waitUntil(c.env.NOSTR_QUEUE!.send({ events: [metaEvent] }))
     } catch (e) {
       console.error('[API] Failed to update Nostr metadata:', e)
     }
@@ -358,7 +358,7 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
   }
 
   // Nostr: broadcast Kind 1
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const textContent = content ? stripHtml(content) : ''
@@ -472,7 +472,7 @@ api.post('/topics/:id/comments', requireApiAuth, async (c) => {
   )
 
   // Nostr: broadcast comment as Kind 1
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const textContent = stripHtml(htmlContent)
@@ -557,7 +557,7 @@ api.post('/posts', requireApiAuth, async (c) => {
   )
 
   // Nostr: broadcast Kind 1
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const textContent = stripHtml(htmlContent).trim()
@@ -694,7 +694,7 @@ api.delete('/topics/:id', requireApiAuth, async (c) => {
   })())
 
   // Nostr Kind 5: deletion event
-  if (topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const event = await buildSignedEvent({
@@ -730,6 +730,7 @@ api.delete('/topics/:id', requireApiAuth, async (c) => {
 
 // POST /api/nostr/follow
 api.post('/nostr/follow', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'Nostr not enabled' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const { pubkeyToNpub, npubToPubkey } = await import('../services/nostr')
@@ -791,6 +792,7 @@ api.post('/nostr/follow', requireApiAuth, async (c) => {
 
 // DELETE /api/nostr/follow/:pubkey
 api.delete('/nostr/follow/:pubkey', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'Nostr not enabled' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const pubkey = c.req.param('pubkey')
@@ -803,6 +805,7 @@ api.delete('/nostr/follow/:pubkey', requireApiAuth, async (c) => {
 
 // GET /api/nostr/following
 api.get('/nostr/following', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'Nostr not enabled' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -824,6 +827,7 @@ api.get('/nostr/following', requireApiAuth, async (c) => {
 
 // GET /api/dvm/market — 公开：可接单的任务列表（无需认证）
 api.get('/dvm/market', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const kindFilter = c.req.query('kind') // 可选 kind 过滤
   const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
@@ -879,6 +883,7 @@ api.get('/dvm/market', async (c) => {
 
 // POST /api/dvm/request — Customer: 发布 Job Request
 api.post('/dvm/request', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -1033,6 +1038,7 @@ api.post('/dvm/request', requireApiAuth, async (c) => {
 
 // GET /api/dvm/jobs — 查看自己的任务列表
 api.get('/dvm/jobs', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -1087,6 +1093,7 @@ api.get('/dvm/jobs', requireApiAuth, async (c) => {
 
 // GET /api/dvm/jobs/:id — 任务详情（查看任意 job）
 api.get('/dvm/jobs/:id', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1129,6 +1136,7 @@ api.get('/dvm/jobs/:id', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/accept — Provider: 接单（为自己创建 provider job）
 api.post('/dvm/jobs/:id/accept', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1191,6 +1199,7 @@ api.post('/dvm/jobs/:id/accept', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/reject — Customer: 拒绝结果，重新开放接单
 api.post('/dvm/jobs/:id/reject', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1283,6 +1292,7 @@ api.post('/dvm/jobs/:id/reject', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/cancel — Customer: 取消任务
 api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1337,6 +1347,7 @@ api.post('/dvm/jobs/:id/cancel', requireApiAuth, async (c) => {
 
 // POST /api/dvm/services — Provider: 注册服务
 api.post('/dvm/services', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -1405,6 +1416,7 @@ api.post('/dvm/services', requireApiAuth, async (c) => {
 
 // GET /api/dvm/services — Provider: 查看自己注册的服务
 api.get('/dvm/services', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -1427,6 +1439,7 @@ api.get('/dvm/services', requireApiAuth, async (c) => {
 
 // DELETE /api/dvm/services/:id — Provider: 停用服务
 api.delete('/dvm/services/:id', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const serviceId = c.req.param('id')
@@ -1446,6 +1459,7 @@ api.delete('/dvm/services/:id', requireApiAuth, async (c) => {
 
 // GET /api/dvm/inbox — Provider: 查看收到的 Job Request
 api.get('/dvm/inbox', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -1495,6 +1509,7 @@ api.get('/dvm/inbox', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/feedback — Provider: 发送状态更新
 api.post('/dvm/jobs/:id/feedback', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1544,6 +1559,7 @@ api.post('/dvm/jobs/:id/feedback', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/result — Provider: 提交结果
 api.post('/dvm/jobs/:id/result', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')
@@ -1794,6 +1810,7 @@ api.post('/admin/airdrop', requireApiAuth, async (c) => {
 
 // POST /api/dvm/jobs/:id/complete — Customer confirms result, settle escrow
 api.post('/dvm/jobs/:id/complete', requireApiAuth, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.json({ error: 'DVM not available' }, 404)
   const db = c.get('db')
   const user = c.get('user')!
   const jobId = c.req.param('id')

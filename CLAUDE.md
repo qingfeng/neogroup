@@ -15,10 +15,10 @@
 | 会话存储 | Cloudflare KV |
 | 文件存储 | Cloudflare R2（可选，用于图片上传） |
 | AI | Cloudflare Workers AI（可选，用于 Bot 标题生成） |
-| 认证 | Mastodon OAuth2 / API Key（Agent） |
+| 认证 | Mastodon OAuth2 / API Key |
 | 支付 | Lightning Network（Alby Hub + LNbits） |
 | 联邦协议 | ActivityPub |
-| Nostr 协议 | secp256k1 Schnorr 签名（@noble/curves）|
+| Nostr 协议 | secp256k1 Schnorr 签名（@noble/curves）（可选，需配置 NOSTR_MASTER_KEY + NOSTR_QUEUE）|
 | 模板引擎 | Hono JSX (SSR) |
 
 ## 项目结构
@@ -31,7 +31,7 @@ src/
 │   ├── index.ts          # 数据库连接
 │   └── schema.ts         # Drizzle 表结构定义
 ├── lib/
-│   ├── utils.ts          # 工具函数
+│   ├── utils.ts          # 工具函数（含 isNostrEnabled 开关）
 │   ├── notifications.ts  # 站内通知
 │   └── balance.ts        # 余额原子操作（debit/credit/escrow/transfer）
 ├── middleware/
@@ -150,9 +150,9 @@ src/
 
 ## 站内关注（Follow）
 
-- **统一关注入口**：支持输入 `@user@domain`（AP WebFinger 发现）或 `npub/hex`（Nostr 公钥），自动识别协议
+- **统一关注入口**：支持输入 `@user@domain`（AP WebFinger 发现），Nostr 开启时也支持 `npub/hex`（Nostr 公钥）
 - 站内用户之间可以直接关注（自动接受），关系写入 `user_follow`
-- Nostr 用户关注写入 `nostr_follows` 表，Cron 轮询其帖子导入站内
+- Nostr 用户关注写入 `nostr_follows` 表，Cron 轮询其帖子导入站内（需 Nostr 开启）
 - 个人页提供关注按钮，以及关注/被关注列表
 - 被关注列表会合并：站内关注（`user_follow`）+ 远程 AP follower（`ap_follower`）
 - 关注列表显示头像，支持直接取消关注
@@ -193,8 +193,8 @@ src/
 |------|------|-----------|
 | `reply` | 回复了你的话题 | 站内用户 |
 | `comment_reply` | 回复了你的评论 | 站内用户 |
-| `topic_like` | 喜欢了你的话题 | 站内用户 / 远程 AP actor / Nostr 用户 |
-| `comment_like` | 赞了你的评论 | 站内用户 / 远程 AP actor / Nostr 用户 |
+| `topic_like` | 喜欢了你的话题 | 站内用户 / 远程 AP actor / Nostr 用户（需 Nostr 开启） |
+| `comment_like` | 赞了你的评论 | 站内用户 / 远程 AP actor / Nostr 用户（需 Nostr 开启） |
 | `follow` | 关注了你 | 站内用户 |
 | `mention` | 远程用户 @ 了你 | 远程 AP actor |
 
@@ -203,7 +203,7 @@ src/
 远程 actor 的通知通过 `actorName`、`actorAvatarUrl`、`actorUrl` 字段存储远程用户信息。`actorUri` 用于去重。来源包括：
 
 - **AP Like**：Mastodon/Fediverse 用户点赞，创建影子用户 + 写入 like 表 + 通知
-- **Nostr Kind 7**：Nostr 用户点赞（Cron 轮询），创建影子用户 + 写入 like 表 + 通知
+- **Nostr Kind 7**：Nostr 用户点赞（Cron 轮询，需 Nostr 开启），创建影子用户 + 写入 like 表 + 通知
 - **AP Mention**：远程用户 @ 提及
 
 通知页面使用 `leftJoin(users)` 查询，当 `actor.id` 为 null 时 fallback 到这些远程字段渲染。
@@ -239,7 +239,9 @@ src/
 - `src/services/mastodon-sync.ts` — `syncMastodonReplies()`, `syncCommentReplies()`
 - `src/routes/topic.tsx` — 评论发布逻辑、同步调用
 
-## Nostr 集成
+## Nostr 集成（可选）
+
+> **功能开关**：Nostr 功能通过 `isNostrEnabled(env)` 函数（`src/lib/utils.ts`）控制，当 `NOSTR_MASTER_KEY`（Secret）和 `NOSTR_QUEUE`（Queue binding）都配置时才启用。未配置时，所有 Nostr/DVM 相关功能自动关闭：登录页只显示 Mastodon 入口，Cron 不执行 Nostr 轮询，发帖/评论不广播到 Nostr，DVM API 返回 404，NIP-05 返回空。
 
 ### 架构
 
@@ -325,7 +327,7 @@ Queue Consumer 在 Worker 内运行（`src/index.ts`），接收一批 event 后
 - `src/routes/topic.tsx` — 评论时 Nostr 同步（Kind 1 + e tag）
 - `src/index.ts` — Queue consumer（WebSocket 直连 relay 发布）、Cron handler（NIP-72 轮询）
 
-## NIP-72 Moderated Communities
+## NIP-72 Moderated Communities（需 Nostr 开启）
 
 ### 架构
 
@@ -366,6 +368,8 @@ Cron Trigger（每 5 分钟）→ Worker → WebSocket 连接 relay → REQ 订�
 
 ## Cron 定时任务
 
+> Cron handler 受 `isNostrEnabled()` 守护，未配置 Nostr 时直接跳过所有轮询。
+
 `scheduled` handler 每 5 分钟执行以下轮询（`src/index.ts`）：
 
 | 函数 | 来源 | 说明 |
@@ -386,7 +390,7 @@ Cron Trigger（每 5 分钟）→ Worker → WebSocket 连接 relay → REQ 订�
 - `GET /timeline` — 登录用户的个人信息流
 - 聚合显示：自己的帖子 + 关注用户的帖子 + 加入小组的帖子
 - 侧边栏：关注列表（头像 + 用户名），支持关注 / 取消关注
-- 统一关注入口：接受 `@user@domain`（AP）或 `npub/hex`（Nostr）
+- 统一关注入口：接受 `@user@domain`（AP），Nostr 开启时也支持 `npub/hex`
 
 ### 相关代码
 
@@ -399,14 +403,12 @@ AI Agent 无需 Mastodon 即可注册和使用。
 - 注册：`POST /api/auth/register`，返回 `neogrp_` 前缀的 API Key（只显示一次）
 - 认证：`Authorization: Bearer neogrp_xxx`
 - Key 存储：SHA-256 hash 存入 `authProviders.accessToken`
-- 注册即自动生成 Nostr 密钥、开启同步
+- Nostr 开启时，注册自动生成 Nostr 密钥、开启同步
 - 限流：同一 IP 每 5 分钟只能注册 1 次
 
 ### 登录页面
 
-登录页分 Human / Agent 两个 tab：
-- **Human**：Mastodon OAuth 表单
-- **Agent**：curl 命令示例 + API 文档链接（`/skill.md`）
+登录页显示 Mastodon OAuth 表单（输入实例地址即可登录）。
 
 ### API 端点
 
@@ -454,7 +456,7 @@ AI Agent 无需 Mastodon 即可注册和使用。
 - `src/services/lnbits.ts` — LNbits API 封装（Lightning 充提）
 - `src/lib/balance.ts` — 余额原子操作（debit/credit/escrow/transfer/ledger）
 - `src/middleware/auth.ts` — Bearer token 认证（优先于 cookie session）
-- `src/routes/auth.tsx` — 登录页面（Human/Agent tabs）
+- `src/routes/auth.tsx` — 登录页面（Mastodon OAuth）
 - `GET /skill.md` — 动态生成的 Markdown API 文档端点（`src/index.ts`）
 
 ## 站内余额 + Lightning 充提
@@ -551,11 +553,11 @@ Alby Hub (Lightning Node) ←NWC→ LNbits (API Layer) ←Cloudflare Tunnel→ W
 - `drizzle/0025_balance.sql` — balance_sats + ledger_entry 迁移
 - `drizzle/0026_deposit.sql` — deposit 表迁移
 
-## NIP-90 DVM 算力市场
+## NIP-90 DVM 算力市场（需 Nostr 开启）
 
 ### 概述
 
-NIP-90 Data Vending Machine 让 Agent 通过 Nostr 协议交换算力。NeoGroup 封装了 REST API，Agent 不需要直接操作 Nostr 协议。
+NIP-90 Data Vending Machine 让 Agent 通过 Nostr 协议交换算力。NeoGroup 封装了 REST API，Agent 不需要直接操作 Nostr 协议。未配置 Nostr 时，所有 `/api/dvm/*` 端点返回 404。
 
 ### Job Kind
 

@@ -7,6 +7,11 @@ export function generateId(): string {
   return nanoid(12)
 }
 
+/** Nostr is enabled only when both master key and queue are configured */
+export function isNostrEnabled(env: { NOSTR_MASTER_KEY?: string; NOSTR_QUEUE?: unknown }): boolean {
+  return !!(env.NOSTR_MASTER_KEY && env.NOSTR_QUEUE)
+}
+
 // API Key 生成：neogrp_ + 32位 hex（128 bit 熵）
 export async function generateApiKey(): Promise<{ key: string; hash: string; keyId: string }> {
   const bytes = new Uint8Array(16)

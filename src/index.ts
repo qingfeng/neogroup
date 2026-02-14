@@ -15,6 +15,7 @@ import apiRoutes from './routes/api'
 import timelineRoutes from './routes/timeline'
 import dvmRoutes from './routes/dvm'
 import type { AppContext, Bindings } from './types'
+import { isNostrEnabled } from './lib/utils'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
 
 // @ts-ignore - Workers Sites manifest
@@ -685,6 +686,7 @@ app.route('/', homeRoutes)
 // 管理端点：为所有无 Nostr 密钥的用户批量生成密钥并开启同步
 // 支持两种认证：session 登录站长 或 Bearer NOSTR_MASTER_KEY
 app.post('/admin/nostr-enable-all', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   if (!c.env.NOSTR_MASTER_KEY) return c.json({ error: 'NOSTR_MASTER_KEY not configured' }, 400)
 
@@ -777,6 +779,7 @@ app.post('/admin/nostr-enable-all', async (c) => {
 
 // POST /admin/nostr/rebroadcast-metadata — 重新广播所有用户 Kind 0（含 lud16）
 app.post('/admin/nostr/rebroadcast-metadata', loadUser, async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   if (!c.env.NOSTR_MASTER_KEY || !c.env.NOSTR_QUEUE) {
     return c.json({ error: 'Nostr not configured' }, 503)
@@ -847,6 +850,8 @@ export default {
   fetch: app.fetch,
   // Cron: NIP-72 community poll + Nostr follow sync
   scheduled: async (_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) => {
+    if (!isNostrEnabled(env)) return
+
     const { createDb } = await import('./db')
     const db = createDb(env.DB)
 

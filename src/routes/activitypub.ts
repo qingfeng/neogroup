@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes } from '../db/schema'
-import { generateId, stripHtml, truncate, now } from '../lib/utils'
+import { generateId, stripHtml, truncate, now, isNostrEnabled } from '../lib/utils'
 import { deposits } from '../db/schema'
 import { createInvoice } from '../services/lnbits'
 import { createNotification } from '../lib/notifications'
@@ -106,6 +106,7 @@ ap.get('/ap/users/:username', async (c) => {
 
 // --- NIP-05 Nostr Verification ---
 ap.get('/.well-known/nostr.json', async (c) => {
+  // Always serve NIP-05 for existing users, even when Nostr is disabled
   const name = c.req.query('name')
   if (!name) {
     return c.json({ names: {}, relays: {} }, 200, {
@@ -199,7 +200,7 @@ ap.get('/.well-known/lnurlp/:username', async (c) => {
   }
 
   // NIP-57 zap support
-  if (user[0].nostrPubkey) {
+  if (isNostrEnabled(c.env) && user[0].nostrPubkey) {
     resp.allowsNostr = true
     resp.nostrPubkey = user[0].nostrPubkey
   }

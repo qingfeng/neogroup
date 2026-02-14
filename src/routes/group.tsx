@@ -3,7 +3,7 @@ import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { groups, groupMembers, topics, users, comments, authProviders, remoteGroups } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage, stripHtml } from '../lib/utils'
+import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage, stripHtml, isNostrEnabled } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
 import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson, discoverRemoteGroup, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { buildSignedEvent, generateNostrKeypair, pubkeyToNpub, buildCommunityDefinitionEvent } from '../services/nostr'
@@ -148,7 +148,7 @@ group.post('/create', async (c) => {
   let nostrPubkey: string | null = null
   let nostrPrivEncrypted: string | null = null
   let nostrPrivIv: string | null = null
-  if (c.env.NOSTR_MASTER_KEY) {
+  if (isNostrEnabled(c.env) && c.env.NOSTR_MASTER_KEY) {
     try {
       const keypair = await generateNostrKeypair(c.env.NOSTR_MASTER_KEY)
       nostrPubkey = keypair.pubkey
@@ -185,7 +185,7 @@ group.post('/create', async (c) => {
   })
 
   // 发布 Kind 0 (group profile) + Kind 34550 社区定义事件
-  if (nostrPubkey && nostrPrivEncrypted && nostrPrivIv && c.env.NOSTR_QUEUE && c.env.NOSTR_MASTER_KEY) {
+  if (isNostrEnabled(c.env) && nostrPubkey && nostrPrivEncrypted && nostrPrivIv) {
     c.executionCtx.waitUntil((async () => {
       try {
         const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -579,7 +579,7 @@ group.get('/:id', async (c) => {
                 <span style="margin-left: 8px;">Mastodon 用户可以关注</span>
               </div>
             )}
-            {!isRemoteGroup && groupNostr?.nostrSyncEnabled === 1 && groupNostr?.nostrPubkey && (() => {
+            {isNostrEnabled(c.env) && !isRemoteGroup && groupNostr?.nostrSyncEnabled === 1 && groupNostr?.nostrPubkey && (() => {
               const npub = pubkeyToNpub(groupNostr.nostrPubkey!)
               return (
               <div class="group-nostr-badge" style="margin-top: 8px; font-size: 13px;">
@@ -1267,7 +1267,7 @@ group.post('/:id/topic/new', async (c) => {
   }
 
   // Nostr: broadcast topic as Kind 1 event
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -1498,6 +1498,7 @@ group.post('/:id/settings', async (c) => {
 
 // Nostr 设置页面
 group.get('/:id/nostr', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')
   const groupId = c.req.param('id')
@@ -1579,6 +1580,7 @@ group.get('/:id/nostr', async (c) => {
 
 // 开启 Nostr 社区
 group.post('/:id/nostr/enable', async (c) => {
+  if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')
   const groupId = c.req.param('id')

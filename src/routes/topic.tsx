@@ -3,7 +3,7 @@ import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups, apFollowers } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin } from '../lib/utils'
+import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin, isNostrEnabled } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sync'
@@ -181,7 +181,7 @@ topic.get('/:id', async (c) => {
     })
     hasMastodonAuth = !!(ap?.accessToken)
   }
-  const canRepost = hasMastodonAuth || !!(user?.nostrSyncEnabled)
+  const canRepost = hasMastodonAuth
 
   // 分页参数
   const PAGE_SIZE = 50
@@ -987,7 +987,7 @@ topic.post('/:id/comment', async (c) => {
   }
 
   // Nostr: broadcast comment as Kind 1 event with threading tags
-  if (user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -1056,7 +1056,7 @@ topic.post('/:id/comment', async (c) => {
           .set({ nostrEventId: event.id })
           .where(eq(comments.id, commentId))
 
-        await c.env.NOSTR_QUEUE.send({ events: [event] })
+        await c.env.NOSTR_QUEUE!.send({ events: [event] })
         console.log('[Nostr] Queued comment event:', event.id)
       } catch (e) {
         console.error('[Nostr] Failed to publish comment:', e)
@@ -1107,7 +1107,7 @@ topic.post('/:id/repost', async (c) => {
   }
 
   // Nostr Kind 6 repost
-  if (hasNostr && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && hasNostr) {
     const topicData = await db
       .select({ nostrEventId: topics.nostrEventId, nostrAuthorPubkey: topics.nostrAuthorPubkey })
       .from(topics)
@@ -1267,8 +1267,8 @@ topic.post('/:id/like', async (c) => {
       })
 
       // Nostr Kind 7 reaction
-      if (user.nostrSyncEnabled && user.nostrPrivEncrypted
-          && topicData[0].nostrEventId && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+      if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted
+          && topicData[0].nostrEventId) {
         c.executionCtx.waitUntil((async () => {
           try {
             const tags: string[][] = [
@@ -1512,8 +1512,8 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
     })
 
     // Nostr Kind 7 reaction for comment
-    if (user.nostrSyncEnabled && user.nostrPrivEncrypted
-        && commentResult[0].nostrEventId && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+    if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted
+        && commentResult[0].nostrEventId) {
       c.executionCtx.waitUntil((async () => {
         try {
           const event = await buildSignedEvent({
@@ -1765,7 +1765,7 @@ topic.post('/:id/delete', async (c) => {
   }
 
   // Nostr Kind 5: deletion event
-  if (topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted && c.env.NOSTR_MASTER_KEY && c.env.NOSTR_QUEUE) {
+  if (isNostrEnabled(c.env) && topicResult[0].nostrEventId && user.nostrSyncEnabled && user.nostrPrivEncrypted) {
     c.executionCtx.waitUntil((async () => {
       try {
         const event = await buildSignedEvent({
