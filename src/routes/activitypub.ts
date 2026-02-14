@@ -1933,9 +1933,35 @@ ap.post('/ap/inbox', async (c) => {
           }
 
           // Resolve author
-          const authorUri = typeof noteObject.attributedTo === 'string'
+          let authorUri = typeof noteObject.attributedTo === 'string'
             ? noteObject.attributedTo
             : (Array.isArray(noteObject.attributedTo) ? noteObject.attributedTo[0] : null)
+
+          // If attributedTo equals the Announce actor (Group), the sender has a bug —
+          // the Note author should be a Person, not the Group. Try to re-fetch the Note
+          // from its AP URL to get the real author.
+          if (authorUri && authorUri === announceActorUri && noteId) {
+            try {
+              const noteApUrl = noteId.replace(/\/topic\//, '/ap/notes/')
+              if (noteApUrl !== noteId) {
+                const refetched = await fetch(noteApUrl, {
+                  headers: { 'Accept': 'application/activity+json, application/ld+json' },
+                })
+                if (refetched.ok) {
+                  const refetchedNote = await refetched.json() as Record<string, any>
+                  const realAuthor = typeof refetchedNote.attributedTo === 'string'
+                    ? refetchedNote.attributedTo : null
+                  if (realAuthor && realAuthor !== announceActorUri) {
+                    authorUri = realAuthor
+                    if (refetchedNote.name) noteObject.name = refetchedNote.name
+                    console.log('[AP Announce] Re-resolved author from AP URL:', authorUri)
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('[AP Announce] Failed to re-fetch note for author resolution:', e)
+            }
+          }
 
           let authorActor: Record<string, any> | null = null
           if (authorUri) {
