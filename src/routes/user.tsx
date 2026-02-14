@@ -354,11 +354,13 @@ user.get('/:id', async (c) => {
                 <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${pubkeyToNpub(profileUser.nostrPubkey)}')`} title="复制 npub">📋</button>
               </div>
             )}
+            {c.env.LNBITS_URL && (
             <div class="profile-lightning">
               <span class="lightning-label">Lightning</span>
               <code>{profileUser.username}@{host}</code>
               <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${profileUser.username}@${host}')`} title="复制 Lightning Address">📋</button>
             </div>
+            )}
             {profileUser.bio && (
               <SafeHtml html={profileUser.bio} className="profile-bio" />
             )}
