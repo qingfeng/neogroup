@@ -15,6 +15,23 @@ import {
 
 const ap = new Hono<AppContext>()
 
+/** Extract title from AP Note: prefer `name` field, else first <p> text, else first line of plain text */
+function extractNoteTitle(noteObject: Record<string, any>, noteContent: string, maxLen = 100): string {
+  const pageName = noteObject.name as string | undefined
+  if (pageName) return truncate(pageName, maxLen)
+
+  // Try to extract text from the first <p> tag only
+  const firstPMatch = noteContent.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
+  if (firstPMatch) {
+    const inner = firstPMatch[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    if (inner) return truncate(inner.replace(/@[^\s]+/g, '').trim(), maxLen)
+  }
+
+  // Fallback: strip all HTML
+  const text = noteContent.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+  return truncate(text.replace(/@[^\s]+/g, '').trim() || 'Fediverse 帖子', maxLen)
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -635,10 +652,7 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
 
       // Not a reply - create new topic from @mention
       // Lemmy Page has a `name` field for the title
-      const pageTitle = obj.name as string | undefined
-      const textContent = stripHtml(content)
-      const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-      const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+      const title = extractNoteTitle(obj, content)
       const fullContent = content
 
       const topicId = generateId()
@@ -680,11 +694,8 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
           .where(eq(topics.mastodonStatusId, noteId))
           .limit(1)
         if (existingTopic.length > 0) {
-          const pageTitle = obj.name as string | undefined
           const content = obj.content || ''
-          const textContent = stripHtml(content)
-          const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-          const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+          const title = extractNoteTitle(obj, content)
           await db.update(topics).set({ title, content, updatedAt: new Date() }).where(eq(topics.id, existingTopic[0].id))
           console.log('[AP GroupInbox] Updated topic:', existingTopic[0].id)
           return c.json({ status: 'updated' }, 202)
@@ -1052,10 +1063,7 @@ ap.post('/ap/users/:username/inbox', async (c) => {
             }
           } else {
             // No inReplyTo — create as topic
-            const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
-            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+            const title = extractNoteTitle(noteObject, noteContent)
 
             const topicId = generateId()
             await db.insert(topics).values({
@@ -1446,10 +1454,7 @@ ap.post('/ap/inbox', async (c) => {
 
             // Not a reply - create new topic
             console.log('[AP SharedInbox] Creating topic from group mention:', mentionedUsername)
-            const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
-            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+            const title = extractNoteTitle(noteObject, noteContent)
 
             const topicId = generateId()
             const topicNow = new Date()
@@ -1619,10 +1624,7 @@ ap.post('/ap/inbox', async (c) => {
       }
 
       // Create new topic
-      const pageTitle = noteObject.name as string | undefined
-      const textContent = stripHtml(noteContent)
-      const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-      const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+      const title = extractNoteTitle(noteObject, noteContent)
 
       const topicId = generateId()
       const topicNow = new Date()
@@ -1661,11 +1663,8 @@ ap.post('/ap/inbox', async (c) => {
           .where(eq(topics.mastodonStatusId, noteId))
           .limit(1)
         if (existingTopic.length > 0) {
-          const pageTitle = obj.name as string | undefined
           const content = obj.content || ''
-          const textContent = stripHtml(content)
-          const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-          const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+          const title = extractNoteTitle(obj, content)
           await db.update(topics).set({ title, content, updatedAt: new Date() }).where(eq(topics.id, existingTopic[0].id))
           console.log('[AP SharedInbox] Updated topic:', existingTopic[0].id)
           return c.json({ status: 'updated' }, 202)
@@ -1699,11 +1698,8 @@ ap.post('/ap/inbox', async (c) => {
               const author = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
               const userId = author ? author.id : group.creatorId
 
-              const pageTitle = obj.name as string | undefined
               const noteContent = obj.content || ''
-              const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
-              const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-              const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+              const title = extractNoteTitle(obj, noteContent)
 
               const topicId = generateId()
               const topicNow = new Date()
@@ -2030,10 +2026,7 @@ ap.post('/ap/inbox', async (c) => {
               console.log('[AP SharedInbox] Created comment from Announce:', commentId)
             }
           } else {
-            const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
-            const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
-            const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
+            const title = extractNoteTitle(noteObject, noteContent)
 
             const topicId = generateId()
             await db.insert(topics).values({
