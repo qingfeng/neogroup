@@ -693,7 +693,7 @@ export async function getNoteJson(
     noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
   }
 
-  return {
+  const note: Record<string, unknown> = {
     '@context': 'https://www.w3.org/ns/activitystreams',
     id: noteId,
     type: 'Note',
@@ -705,6 +705,10 @@ export async function getNoteJson(
     to: ['https://www.w3.org/ns/activitystreams#Public'],
     cc: [`${actorUrl}/followers`],
   }
+  if (topic.title) {
+    note.name = topic.title
+  }
+  return note
 }
 
 // --- Comment Note JSON-LD ---

@@ -1053,7 +1053,7 @@ ap.post('/ap/users/:username/inbox', async (c) => {
           } else {
             // No inReplyTo — create as topic
             const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent)
+            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
             const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
             const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
 
@@ -1447,7 +1447,7 @@ ap.post('/ap/inbox', async (c) => {
             // Not a reply - create new topic
             console.log('[AP SharedInbox] Creating topic from group mention:', mentionedUsername)
             const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent)
+            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
             const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
             const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
 
@@ -1701,7 +1701,7 @@ ap.post('/ap/inbox', async (c) => {
 
               const pageTitle = obj.name as string | undefined
               const noteContent = obj.content || ''
-              const textContent = stripHtml(noteContent)
+              const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
               const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
               const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
 
@@ -2005,7 +2005,7 @@ ap.post('/ap/inbox', async (c) => {
             }
           } else {
             const pageTitle = noteObject.name as string | undefined
-            const textContent = stripHtml(noteContent)
+            const textContent = stripHtml(noteContent.replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'))
             const cleanedText = textContent.replace(/@[^\s]+/g, '').trim()
             const title = pageTitle ? truncate(pageTitle, 100) : truncate(cleanedText.split('\n')[0] || 'Fediverse 帖子', 100)
 
