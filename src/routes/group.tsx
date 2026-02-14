@@ -1247,16 +1247,19 @@ group.post('/:id/topic/new', async (c) => {
       const groupData = await db.select({ actorName: groups.actorName })
         .from(groups).where(eq(groups.id, groupId)).limit(1)
       if (groupData.length > 0 && groupData[0].actorName) {
+        const apUsername = await getApUsername(db, user.id)
+        const userActorUrl = apUsername ? `${baseUrl}/ap/users/${apUsername}` : `${baseUrl}/ap/groups/${groupData[0].actorName}`
         const noteUrl = `${baseUrl}/topic/${topicId}`
         const groupActorUrl = `${baseUrl}/ap/groups/${groupData[0].actorName}`
-        const noteJson = {
+        const noteJson: Record<string, unknown> = {
           '@context': 'https://www.w3.org/ns/activitystreams',
           id: noteUrl,
           type: 'Note',
-          attributedTo: groupActorUrl,
+          attributedTo: userActorUrl,
           audience: groupActorUrl,
           content: `<p><strong>${title.trim()}</strong></p>${content?.trim() ? `<p>${content.trim()}</p>` : ''}<p><a href="${noteUrl}">${noteUrl}</a></p>`,
           url: noteUrl,
+          name: title.trim(),
           published: new Date().toISOString(),
           to: ['https://www.w3.org/ns/activitystreams#Public'],
           cc: [`${groupActorUrl}/followers`],

@@ -339,16 +339,19 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
   // AP: Announce to group followers
   if (groupData[0].actorName) {
     c.executionCtx.waitUntil((async () => {
+      const apUsername = await getApUsername(db, user.id)
       const groupActorUrl = `${baseUrl}/ap/groups/${groupData[0].actorName}`
+      const userActorUrl = apUsername ? `${baseUrl}/ap/users/${apUsername}` : groupActorUrl
       const topicUrl = `${baseUrl}/topic/${topicId}`
-      const noteJson = {
+      const noteJson: Record<string, unknown> = {
         '@context': 'https://www.w3.org/ns/activitystreams',
         id: topicUrl,
         type: 'Note',
-        attributedTo: groupActorUrl,
+        attributedTo: userActorUrl,
         audience: groupActorUrl,
         content: `<p><strong>${title}</strong></p>${content ? `<p>${content}</p>` : ''}<p><a href="${topicUrl}">${topicUrl}</a></p>`,
         url: topicUrl,
+        name: title,
         published: new Date().toISOString(),
         to: ['https://www.w3.org/ns/activitystreams#Public'],
         cc: [`${groupActorUrl}/followers`],
