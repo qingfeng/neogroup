@@ -345,7 +345,7 @@ user.get('/:id', async (c) => {
                 via <a href={mastodonUrl} target="_blank" rel="noopener">{mastodonHandle}</a>
               </div>
             )}
-            {profileUser.nostrPubkey && (
+            {isNostrEnabled(c.env) && profileUser.nostrPubkey && (
               <div class="profile-nostr">
                 <span class="nostr-label">Nostr</span>
                 <a href={`https://yakihonne.com/profile/${pubkeyToNpub(profileUser.nostrPubkey)}`} target="_blank" rel="noopener" title="在 Nostr 上查看" class="nostr-npub-link">
