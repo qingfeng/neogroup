@@ -398,9 +398,11 @@ topic.get('/:id', async (c) => {
                 {repostCount} 人转发
               </button>
             )}
+            {c.env.LNBITS_URL && (
             <button type="button" class="topic-like-btn zap-btn" onclick="document.getElementById('zap-modal').style.display='flex'">
               Zap
             </button>
+            )}
           </div>
 
           {repostCount > 0 && (
@@ -422,6 +424,7 @@ topic.get('/:id', async (c) => {
             </div>
           )}
 
+          {c.env.LNBITS_URL && (<>
           {/* Zap Modal */}
           <div id="zap-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
             <div class="modal-content">
@@ -484,6 +487,7 @@ topic.get('/:id', async (c) => {
               }
             }
           `}} />
+          </>)}
 
           <div class="comments-section">
             <div class="comments-header">
