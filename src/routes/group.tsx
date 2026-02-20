@@ -10,6 +10,16 @@ import { buildSignedEvent, generateNostrKeypair, pubkeyToNpub, buildCommunityDef
 
 const group = new Hono<AppContext>()
 
+/** Resolve group ID or actorName to actual group ID */
+async function resolveGroupId(db: any, idOrSlug: string): Promise<string | null> {
+  // Try by ID first
+  const byId = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, idOrSlug)).limit(1)
+  if (byId.length > 0) return byId[0].id
+  // Fallback: try by actorName
+  const byActor = await db.select({ id: groups.id }).from(groups).where(eq(groups.actorName, idOrSlug)).limit(1)
+  return byActor.length > 0 ? byActor[0].id : null
+}
+
 // 按标签筛选小组
 group.get('/tag/:tag', async (c) => {
   const db = c.get('db')
@@ -21,6 +31,7 @@ group.get('/tag/:tag', async (c) => {
       id: groups.id,
       creatorId: groups.creatorId,
       name: groups.name,
+      actorName: groups.actorName,
       description: groups.description,
       tags: groups.tags,
       iconUrl: groups.iconUrl,
@@ -50,7 +61,7 @@ group.get('/tag/:tag', async (c) => {
                 <div class="tag-group-item">
                   <img src={g.iconUrl || '/static/img/default-group.svg'} alt="" class="tag-group-icon" />
                   <div class="tag-group-info">
-                    <a href={`/group/${g.id}`} class="tag-group-name">{g.name}</a>
+                    <a href={`/group/${g.actorName || g.id}`} class="tag-group-name">{g.name}</a>
                     {g.description && <p class="tag-group-desc">{truncate(g.description, 80)}</p>}
                     <span class="card-meta">{g.memberCount} 成员</span>
                   </div>
@@ -227,7 +238,7 @@ group.post('/create', async (c) => {
   return c.redirect(`/group/${groupId}`)
 })
 
-// 搜索远程社区
+// 搜索跨站小组
 group.get('/search', async (c) => {
   const user = c.get('user')
   if (!user) return c.redirect('/auth/login')
@@ -241,7 +252,7 @@ group.get('/search', async (c) => {
   if (query) {
     result = await discoverRemoteGroup(query)
     if (!result) {
-      error = '未找到远程社区，请检查地址格式（如 @board@other-instance.com）'
+      error = '未找到跨站小组，请检查地址格式（如 @board@other-instance.com）'
     } else {
       // Check if already mirrored
       const existing = await db.select({ localGroupId: remoteGroups.localGroupId })
@@ -268,11 +279,11 @@ group.get('/search', async (c) => {
     .orderBy(desc(remoteGroups.createdAt))
 
   return c.html(
-    <Layout user={user} title="搜索远程社区" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title="搜索跨站小组" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
-          <h1>搜索远程社区</h1>
-          <p class="page-subtitle">输入远程社区的联邦地址</p>
+          <h1>搜索跨站小组</h1>
+          <p class="page-subtitle">输入跨站小组的联邦地址</p>
         </div>
 
         <form action="/group/search" method="get" class="topic-form" style="margin-bottom: 2rem;">
@@ -315,7 +326,7 @@ group.get('/search', async (c) => {
 
         {existingRemoteGroups.length > 0 && (
           <div style="margin-top: 2rem;">
-            <h2 style="margin-bottom: 1rem;">已关注的远程社区</h2>
+            <h2 style="margin-bottom: 1rem;">已关注的跨站小组</h2>
             <div class="group-list">
               {existingRemoteGroups.map(rg => (
                 <a href={`/group/${rg.localGroupId}`} class="group-card" key={rg.localGroupId}>
@@ -337,7 +348,7 @@ group.get('/search', async (c) => {
   )
 })
 
-// 执行关注远程社区
+// 执行关注跨站小组
 group.post('/search', async (c) => {
   const user = c.get('user')
   if (!user) return c.redirect('/auth/login')
@@ -433,8 +444,8 @@ group.get('/:id', async (c) => {
   const user = c.get('user')
   const groupId = c.req.param('id')
 
-  // 获取小组详情
-  const groupResult = await db
+  // 获取小组详情（支持 ID 或 actorName 查询）
+  let groupResult = await db
     .select({
       id: groups.id,
       creatorId: groups.creatorId,
@@ -456,30 +467,59 @@ group.get('/:id', async (c) => {
     .where(eq(groups.id, groupId))
     .limit(1)
 
+  // Fallback: try actorName if not found by ID
+  if (groupResult.length === 0) {
+    groupResult = await db
+      .select({
+        id: groups.id,
+        creatorId: groups.creatorId,
+        name: groups.name,
+        description: groups.description,
+        tags: groups.tags,
+        actorName: groups.actorName,
+        iconUrl: groups.iconUrl,
+        createdAt: groups.createdAt,
+        creator: {
+          id: users.id,
+          username: users.username,
+          displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+        },
+      })
+      .from(groups)
+      .innerJoin(users, eq(groups.creatorId, users.id))
+      .where(eq(groups.actorName, groupId))
+      .limit(1)
+  }
+
   if (groupResult.length === 0) {
     return c.notFound()
   }
 
   const groupData = groupResult[0]
+  // Use resolved group ID for all subsequent queries (param could be actorName)
+  const resolvedGroupId = groupData.id
+  // URL slug: prefer actorName, fallback to ID
+  const groupSlug = groupData.actorName || resolvedGroupId
 
   // Fetch Nostr community info for this group
   const groupNostrResult = await db.select({
     nostrSyncEnabled: groups.nostrSyncEnabled,
     nostrPubkey: groups.nostrPubkey,
-  }).from(groups).where(eq(groups.id, groupId)).limit(1)
+  }).from(groups).where(eq(groups.id, resolvedGroupId)).limit(1)
   const groupNostr = groupNostrResult[0] || null
 
   // 获取成员数
   const memberCountResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(groupMembers)
-    .where(eq(groupMembers.groupId, groupId))
+    .where(eq(groupMembers.groupId, resolvedGroupId))
   const memberCount = memberCountResult[0]?.count || 0
 
   // 检查是否是镜像（远程）小组
   const remoteGroupResult = await db.select()
     .from(remoteGroups)
-    .where(eq(remoteGroups.localGroupId, groupId))
+    .where(eq(remoteGroups.localGroupId, resolvedGroupId))
     .limit(1)
   const isRemoteGroup = remoteGroupResult.length > 0
   const remoteGroupInfo = remoteGroupResult[0] || null
@@ -491,7 +531,7 @@ group.get('/:id', async (c) => {
     const membership = await db
       .select({ id: groupMembers.id, followStatus: groupMembers.followStatus })
       .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, user.id)))
+      .where(and(eq(groupMembers.groupId, resolvedGroupId), eq(groupMembers.userId, user.id)))
       .limit(1)
     isMember = membership.length > 0
     memberFollowStatus = membership.length > 0 ? membership[0].followStatus : null
@@ -516,7 +556,7 @@ group.get('/:id', async (c) => {
     })
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
-    .where(eq(topics.groupId, groupId))
+    .where(eq(topics.groupId, resolvedGroupId))
     .orderBy(desc(topics.updatedAt))
     .limit(50)
 
@@ -531,7 +571,7 @@ group.get('/:id', async (c) => {
     : `${groupData.name} - ${appName} 小组`
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
   const host = new URL(baseUrl).host
-  const groupUrl = `${baseUrl}/group/${groupId}`
+  const groupUrl = `${baseUrl}/group/${groupSlug}`
 
   return c.html(
     <Layout
@@ -551,7 +591,7 @@ group.get('/:id', async (c) => {
             {isRemoteGroup && remoteGroupInfo && (
               <div style="margin-bottom: 8px;">
                 <span style="background: #e8f0fe; padding: 2px 8px; border-radius: 4px; font-size: 12px; color: #1a73e8;">
-                  远程社区 from {remoteGroupInfo.domain}
+                  跨站小组 from {remoteGroupInfo.domain}
                 </span>
               </div>
             )}
@@ -587,7 +627,7 @@ group.get('/:id', async (c) => {
                 <span style="margin-left: 6px; color: #666;">NIP-72 社区</span>
                 <code class="npub-code" title={npub} onclick={`navigator.clipboard.writeText('${npub}');this.textContent='已复制!';setTimeout(()=>this.textContent='${npub.slice(0, 16)}…',1000)`} style="margin-left: 8px; cursor: pointer; font-size: 12px; background: #f3f0ff; padding: 2px 6px; border-radius: 4px; color: #8e44ad;">{npub.slice(0, 16)}…</code>
                 {isCreator && (
-                  <a href={`/group/${groupId}/nostr`} style="margin-left: 8px; color: #8e44ad; font-size: 12px;">设置</a>
+                  <a href={`/group/${groupSlug}/nostr`} style="margin-left: 8px; color: #8e44ad; font-size: 12px;">设置</a>
                 )}
               </div>
               )
@@ -595,7 +635,7 @@ group.get('/:id', async (c) => {
           </div>
           <div class="group-actions">
             {user && !isMember && (
-              <form action={`/group/${groupId}/join`} method="post">
+              <form action={`/group/${resolvedGroupId}/join`} method="post">
                 <button type="submit" class="btn btn-primary">{isRemoteGroup ? '关注' : '加入小组'}</button>
               </form>
             )}
@@ -604,8 +644,8 @@ group.get('/:id', async (c) => {
                 <span class="member-badge" style={memberFollowStatus === 'pending' ? 'background: #fff3cd; color: #856404;' : ''}>
                   {memberFollowStatus === 'pending' ? '等待确认' : '已关注'}
                 </span>
-                <form action={`/group/${groupId}/leave`} method="post" style="display: inline; margin-left: 8px;">
-                  <button type="submit" class="btn" onclick="return confirm('确定要取消关注该远程社区吗？')">取消关注</button>
+                <form action={`/group/${resolvedGroupId}/leave`} method="post" style="display: inline; margin-left: 8px;">
+                  <button type="submit" class="btn" onclick="return confirm('确定要取消关注该跨站小组吗？')">取消关注</button>
                 </form>
               </div>
             )}
@@ -613,7 +653,7 @@ group.get('/:id', async (c) => {
               <span class="member-badge">已加入</span>
             )}
             {isCreator && (
-              <a href={`/group/${groupId}/settings`} class="btn" style="margin-left: 10px;">小组设置</a>
+              <a href={`/group/${groupSlug}/settings`} class="btn" style="margin-left: 10px;">小组设置</a>
             )}
           </div>
         </div>
@@ -623,7 +663,7 @@ group.get('/:id', async (c) => {
             <div class="section-header">
               <h2>话题</h2>
               {user && isMember && (!(isRemoteGroup && memberFollowStatus === 'pending')) && (
-                <a href={`/group/${groupId}/topic/new`} class="btn btn-primary">发布话题</a>
+                <a href={`/group/${groupSlug}/topic/new`} class="btn btn-primary">发布话题</a>
               )}
             </div>
 
@@ -792,13 +832,16 @@ group.post('/:id/leave', async (c) => {
 group.get('/:id/topic/new', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
-  const groupId = c.req.param('id')
+  const groupIdParam = c.req.param('id')
 
   if (!user) {
     return c.redirect('/auth/login')
   }
 
-  // 获取小组信息
+  // 获取小组信息（支持 ID 或 actorName）
+  const groupId = await resolveGroupId(db, groupIdParam)
+  if (!groupId) return c.notFound()
+
   const groupResult = await db
     .select()
     .from(groups)
@@ -810,6 +853,7 @@ group.get('/:id/topic/new', async (c) => {
   }
 
   const groupData = groupResult[0]
+  const groupSlug = groupData.actorName || groupId
 
   // 检查是否是成员
   const membership = await db
@@ -819,7 +863,7 @@ group.get('/:id/topic/new', async (c) => {
     .limit(1)
 
   if (membership.length === 0) {
-    return c.redirect(`/group/${groupId}`)
+    return c.redirect(`/group/${groupSlug}`)
   }
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
@@ -830,7 +874,7 @@ group.get('/:id/topic/new', async (c) => {
       <div class="new-topic-page">
         <div class="page-header">
           <h1>发布新话题</h1>
-          <p class="page-subtitle">发布到 <a href={`/group/${groupId}`}>{groupData.name}</a></p>
+          <p class="page-subtitle">发布到 <a href={`/group/${groupSlug}`}>{groupData.name}</a></p>
         </div>
 
         <form action={`/group/${groupId}/topic/new`} method="POST" class="topic-form" id="topic-form">
@@ -1324,13 +1368,16 @@ group.post('/:id/topic/new', async (c) => {
 group.get('/:id/settings', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
-  const groupId = c.req.param('id')
+  const groupIdParam = c.req.param('id')
 
   if (!user) {
     return c.redirect('/auth/login')
   }
 
-  // 获取小组信息
+  // 获取小组信息（支持 ID 或 actorName）
+  const groupId = await resolveGroupId(db, groupIdParam)
+  if (!groupId) return c.notFound()
+
   const groupResult = await db
     .select()
     .from(groups)
@@ -1345,7 +1392,7 @@ group.get('/:id/settings', async (c) => {
 
   // 检查是否是创建者
   if (groupData.creatorId !== user.id) {
-    return c.redirect(`/group/${groupId}`)
+    return c.redirect(`/group/${groupData.actorName || groupId}`)
   }
 
   return c.html(
@@ -1398,13 +1445,13 @@ group.get('/:id/settings', async (c) => {
 
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">保存设置</button>
-            <a href={`/group/${groupId}`} class="btn">取消</a>
+            <a href={`/group/${groupData.actorName || groupId}`} class="btn">取消</a>
           </div>
         </form>
 
-        {c.env.NOSTR_MASTER_KEY && (
+        {isNostrEnabled(c.env) && (
           <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">
-            <a href={`/group/${groupId}/nostr`} style="color: #8e44ad;">
+            <a href={`/group/${groupData.actorName || groupId}/nostr`} style="color: #8e44ad;">
               <span class="nostr-label">NOSTR</span>
               <span style="margin-left: 6px;">NIP-72 社区设置</span>
             </a>
@@ -1494,7 +1541,7 @@ group.post('/:id/settings', async (c) => {
     })
     .where(eq(groups.id, groupId))
 
-  return c.redirect(`/group/${groupId}`)
+  return c.redirect(`/group/${actorName || groupId}`)
 })
 
 // --- Nostr 社区设置 ---
@@ -1504,15 +1551,19 @@ group.get('/:id/nostr', async (c) => {
   if (!isNostrEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')
-  const groupId = c.req.param('id')
+  const groupIdParam = c.req.param('id')
 
   if (!user) return c.redirect('/auth/login')
+
+  const groupId = await resolveGroupId(db, groupIdParam)
+  if (!groupId) return c.notFound()
 
   const groupResult = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1)
   if (groupResult.length === 0) return c.notFound()
 
   const groupData = groupResult[0]
-  if (groupData.creatorId !== user.id) return c.redirect(`/group/${groupId}`)
+  const groupSlug = groupData.actorName || groupId
+  if (groupData.creatorId !== user.id) return c.redirect(`/group/${groupSlug}`)
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
   const host = new URL(baseUrl).host
@@ -1527,7 +1578,7 @@ group.get('/:id/nostr', async (c) => {
       <div class="new-topic-page">
         <div class="page-header">
           <h1>Nostr 社区设置</h1>
-          <p class="page-subtitle"><a href={`/group/${groupId}`}>{groupData.name}</a> / <a href={`/group/${groupId}/settings`}>小组设置</a></p>
+          <p class="page-subtitle"><a href={`/group/${groupSlug}`}>{groupData.name}</a> / <a href={`/group/${groupSlug}/settings`}>小组设置</a></p>
         </div>
 
         {!hasNostrMasterKey && (

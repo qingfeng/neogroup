@@ -42,6 +42,7 @@ topic.get('/:id', async (c) => {
         id: groups.id,
         name: groups.name,
         description: groups.description,
+        actorName: groups.actorName,
         iconUrl: groups.iconUrl,
       },
     })
@@ -318,7 +319,7 @@ topic.get('/:id', async (c) => {
         <div class="topic-detail">
           {topicData.group && (
             <div class="topic-header">
-              <a href={`/group/${topicData.group.id}`} class="topic-group">
+              <a href={`/group/${topicData.group.actorName || topicData.group.id}`} class="topic-group">
                 <img src={resizeImage(topicData.group.iconUrl, 40) || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
                 <span>{topicData.group.name}</span>
               </a>
@@ -676,7 +677,7 @@ topic.get('/:id', async (c) => {
                     class="sidebar-group-icon"
                   />
                   <div class="sidebar-group-info">
-                    <a href={`/group/${groupId}`} class="sidebar-group-name">{topicData.group.name}</a>
+                    <a href={`/group/${topicData.group.actorName || groupId}`} class="sidebar-group-name">{topicData.group.name}</a>
                     {topicData.group.description && (
                       <p class="sidebar-group-desc">{truncate(topicData.group.description, 50)}</p>
                     )}
@@ -700,7 +701,7 @@ topic.get('/:id', async (c) => {
                 <div class="sidebar-latest">
                   <div class="sidebar-latest-header">
                     <span>最新讨论</span>
-                    <a href={`/group/${groupId}`} class="sidebar-more">（更多）</a>
+                    <a href={`/group/${topicData.group.actorName || groupId}`} class="sidebar-more">（更多）</a>
                   </div>
                   <ul class="sidebar-latest-list">
                     {latestTopics.map((t) => (
@@ -1822,6 +1823,7 @@ topic.get('/:id/edit', async (c) => {
       group: {
         id: groups.id,
         name: groups.name,
+        actorName: groups.actorName,
       },
     })
     .from(topics)
@@ -1847,7 +1849,7 @@ topic.get('/:id/edit', async (c) => {
           <h1>编辑话题</h1>
           <p class="page-subtitle">
             {topicData.group && (
-              <><a href={`/group/${topicData.groupId}`}>{topicData.group.name}</a>{' · '}</>
+              <><a href={`/group/${topicData.group.actorName || topicData.groupId}`}>{topicData.group.name}</a>{' · '}</>
             )}
             <a href={`/topic/${topicId}`}>返回话题</a>
           </p>

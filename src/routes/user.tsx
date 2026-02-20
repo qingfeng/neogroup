@@ -203,6 +203,7 @@ user.get('/:id', async (c) => {
       .select({
         id: groups.id,
         name: groups.name,
+        actorName: groups.actorName,
         iconUrl: groups.iconUrl,
         description: groups.description,
       })
@@ -223,6 +224,7 @@ user.get('/:id', async (c) => {
         group: {
           id: groups.id,
           name: groups.name,
+          actorName: groups.actorName,
         },
       })
       .from(topics)
@@ -262,6 +264,7 @@ user.get('/:id', async (c) => {
         group: {
           id: groups.id,
           name: groups.name,
+          actorName: groups.actorName,
         },
       })
       .from(topicLikes)
@@ -393,7 +396,7 @@ user.get('/:id', async (c) => {
               <ul class="group-simple-list">
                 {createdGroups.map((group) => (
                   <li key={group.id}>
-                    <a href={`/group/${group.id}`} class="group-item">
+                    <a href={`/group/${group.actorName || group.id}`} class="group-item">
                       <img src={group.iconUrl || '/static/img/default-group.svg'} alt="" class="group-icon-sm" />
                       <div>
                         <span class="group-name">{group.name}</span>
@@ -417,7 +420,7 @@ user.get('/:id', async (c) => {
                     <a href={`/topic/${topic.id}`}>{topic.title || truncate(stripHtml(topic.content || ''), 50) || '个人动态'}</a>
                     <span class="meta">
                       {topic.group ? (
-                        <><a href={`/group/${topic.group.id}`}>{topic.group.name}</a> · </>
+                        <><a href={`/group/${topic.group.actorName || topic.group.id}`}>{topic.group.name}</a> · </>
                       ) : null}
                       {formatDate(topic.createdAt)}
                     </span>
@@ -457,7 +460,7 @@ user.get('/:id', async (c) => {
                     <a href={`/topic/${topic.id}`}>{topic.title || truncate(stripHtml(topic.content || ''), 50) || '个人动态'}</a>
                     <span class="meta">
                       {topic.group ? (
-                        <><a href={`/group/${topic.group.id}`}>{topic.group.name}</a> · </>
+                        <><a href={`/group/${topic.group.actorName || topic.group.id}`}>{topic.group.name}</a> · </>
                       ) : null}
                       {formatDate(topic.likedAt)}
                     </span>
@@ -725,9 +728,11 @@ user.get('/:id/edit', async (c) => {
           </div>
         </form>
 
-        <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
-          <a href={`/user/${userId}/nostr`} class="link">Nostr 设置 &rarr;</a>
-        </div>
+        {isNostrEnabled(c.env) && (
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+            <a href={`/user/${userId}/nostr`} class="link">Nostr 设置 &rarr;</a>
+          </div>
+        )}
       </div>
 
       <script dangerouslySetInnerHTML={{

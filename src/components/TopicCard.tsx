@@ -32,7 +32,7 @@ export const TopicCard: FC<TopicCardProps> = ({ topic }) => {
         )}
         <div class="topic-card-meta">
           {topic.group ? (
-            <>来自<a href={`/group/${topic.group.id}`}>{topic.group.name}</a></>
+            <>来自<a href={`/group/${topic.group.actorName || topic.group.id}`}>{topic.group.name}</a></>
           ) : (
             <span>个人动态</span>
           )}

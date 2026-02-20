@@ -4,7 +4,7 @@ import type { AppContext } from '../types'
 import type { User } from '../db/schema'
 import { topics, users, groups, comments, topicLikes, topicReposts, groupMembers, userFollows, nostrFollows, authProviders } from '../db/schema'
 import { Layout } from '../components/Layout'
-import { generateId, stripHtml, truncate, resizeImage, processContentImages } from '../lib/utils'
+import { generateId, stripHtml, truncate, resizeImage, processContentImages, isNostrEnabled } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { deliverTopicToFollowers, discoverRemoteUser, getOrCreateRemoteUser, fetchActor } from '../services/activitypub'
 import { resolveStatusByUrl, reblogStatus } from '../services/mastodon'
@@ -50,6 +50,7 @@ timeline.get('/', async (c) => {
       group: {
         id: groups.id,
         name: groups.name,
+        actorName: groups.actorName,
         iconUrl: groups.iconUrl,
       },
     })
@@ -180,7 +181,7 @@ timeline.get('/', async (c) => {
                       <span class="timeline-item-time">{formatDate(item.createdAt)}</span>
                       {item.group && (
                         <span class="timeline-item-group">
-                          来自 <a href={`/group/${item.group.id}`}>{item.group.name}</a>
+                          来自 <a href={`/group/${item.group.actorName || item.group.id}`}>{item.group.name}</a>
                         </span>
                       )}
                     </div>
@@ -254,7 +255,7 @@ timeline.get('/', async (c) => {
               <input
                 type="text"
                 name="target"
-                placeholder="@user@mastodon.social 或 npub..."
+                placeholder={isNostrEnabled(c.env) ? "@user@mastodon.social 或 npub..." : "@user@mastodon.social"}
                 required
                 style="width:100%;margin-bottom:8px;"
               />

@@ -29,9 +29,11 @@ interface HomePageProps {
   baseUrl: string
   unreadCount?: number
   siteName?: string
+  source?: string
+  hasRemoteGroups?: boolean
 }
 
-export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount, siteName }) => {
+export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount, siteName, source, hasRemoteGroups }) => {
   const name = siteName || 'NeoGroup'
   const jsonLd = {
     '@context': 'https://schema.org',
@@ -54,7 +56,16 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
     >
       <div class="grid grid-3">
         <div>
-          <h2 style="margin-bottom: 1rem;">最新话题</h2>
+          <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 1rem;">
+            <h2 style="margin: 0;">最新话题</h2>
+            {hasRemoteGroups && (
+              <div style="display: flex; gap: 8px; font-size: 14px;">
+                <a href="/" style={source !== 'remote' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>本地小组</a>
+                <span style="color: #ccc;">|</span>
+                <a href="/?source=remote" style={source === 'remote' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>跨站小组</a>
+              </div>
+            )}
+          </div>
           {topics.length > 0 ? (
             topics.map((topic) => <TopicCard topic={topic} />)
           ) : (
@@ -92,7 +103,7 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
                     )}
                     <div class="feed-item-meta">
                       {item.group ? (
-                        <a href={`/group/${item.group.id}`}>{item.group.name}</a>
+                        <a href={`/group/${(item.group as any).actorName || item.group.id}`}>{item.group.name}</a>
                       ) : (
                         <span>个人动态</span>
                       )}

@@ -19,7 +19,7 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, ne
           <ul class="sidebar-list">
             {userGroups.map((group) => (
               <li>
-                <a href={`/group/${group.id}`}>{group.name}</a>
+                <a href={`/group/${group.actorName || group.id}`}>{group.name}</a>
                 {remoteGroupDomains?.[group.id] && (
                   <span style="font-size: 11px; color: #888; margin-left: 4px;">({remoteGroupDomains[group.id]})</span>
                 )}
@@ -45,7 +45,7 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, ne
         <ul class="sidebar-list">
           {hotGroups.map((group) => (
             <li>
-              <a href={`/group/${group.id}`}>{group.name}</a>
+              <a href={`/group/${group.actorName || group.id}`}>{group.name}</a>
               <span class="card-meta"> ({group.memberCount} 成员)</span>
             </li>
           ))}
@@ -58,7 +58,7 @@ export const Sidebar: FC<SidebarProps> = ({ hotGroups, topTags, randomGroups, ne
           <ul class="sidebar-list">
             {randomGroups.map((group) => (
               <li>
-                <a href={`/group/${group.id}`}>{group.name}</a>
+                <a href={`/group/${group.actorName || group.id}`}>{group.name}</a>
               </li>
             ))}
           </ul>

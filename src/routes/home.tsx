@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { desc, eq, sql } from 'drizzle-orm'
+import { desc, eq, sql, notInArray, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, groupMembers, comments, remoteGroups } from '../db/schema'
 import { HomePage } from '../components/HomePage'
@@ -9,9 +9,13 @@ const home = new Hono<AppContext>()
 home.get('/', async (c) => {
   const db = c.get('db')
   const user = c.get('user')
+  const source = c.req.query('source') || 'local'
 
-  // 最新话题（30条）
-  const latestTopics = await db
+  // Get remote group IDs for filtering
+  const remoteGroupIds = (await db.select({ localGroupId: remoteGroups.localGroupId }).from(remoteGroups)).map(r => r.localGroupId)
+
+  // 最新话题（30条）- filtered by source
+  const topicQuery = db
     .select({
       id: topics.id,
       groupId: topics.groupId,
@@ -37,6 +41,7 @@ home.get('/', async (c) => {
         creatorId: groups.creatorId,
         name: groups.name,
         description: groups.description,
+        actorName: groups.actorName,
         iconUrl: groups.iconUrl,
         createdAt: groups.createdAt,
         updatedAt: groups.updatedAt,
@@ -45,8 +50,25 @@ home.get('/', async (c) => {
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
     .leftJoin(groups, eq(topics.groupId, groups.id))
-    .orderBy(desc(topics.updatedAt))
-    .limit(30)
+
+  let latestTopics: any[]
+  if (source === 'remote' && remoteGroupIds.length > 0) {
+    latestTopics = await topicQuery
+      .where(inArray(topics.groupId, remoteGroupIds))
+      .orderBy(desc(topics.updatedAt))
+      .limit(30)
+  } else if (source === 'remote') {
+    latestTopics = []
+  } else if (remoteGroupIds.length > 0) {
+    latestTopics = await topicQuery
+      .where(sql`(${topics.groupId} IS NULL OR ${topics.groupId} NOT IN (${sql.raw(remoteGroupIds.map(id => `'${id}'`).join(','))}))`)
+      .orderBy(desc(topics.updatedAt))
+      .limit(30)
+  } else {
+    latestTopics = await topicQuery
+      .orderBy(desc(topics.updatedAt))
+      .limit(30)
+  }
 
   // 随机话题（5条）
   const randomTopics = await db
@@ -64,6 +86,7 @@ home.get('/', async (c) => {
       group: {
         id: groups.id,
         name: groups.name,
+        actorName: groups.actorName,
       },
     })
     .from(topics)
@@ -91,6 +114,7 @@ home.get('/', async (c) => {
       group: {
         id: groups.id,
         name: groups.name,
+        actorName: groups.actorName,
       },
     })
     .from(comments)
@@ -131,6 +155,7 @@ home.get('/', async (c) => {
       id: groups.id,
       creatorId: groups.creatorId,
       name: groups.name,
+      actorName: groups.actorName,
       description: groups.description,
       iconUrl: groups.iconUrl,
       createdAt: groups.createdAt,
@@ -149,6 +174,7 @@ home.get('/', async (c) => {
       id: groups.id,
       creatorId: groups.creatorId,
       name: groups.name,
+      actorName: groups.actorName,
       description: groups.description,
       tags: groups.tags,
       iconUrl: groups.iconUrl,
@@ -203,6 +229,8 @@ home.get('/', async (c) => {
       baseUrl={baseUrl}
       unreadCount={c.get('unreadNotificationCount')}
       siteName={c.env.APP_NAME}
+      source={source}
+      hasRemoteGroups={remoteGroupIds.length > 0}
     />
   )
 })
