@@ -303,12 +303,10 @@ topic.get('/:id', async (c) => {
     }
   }
 
-  // Fediverse creator attribution
-  const authorUsername = topicData.user.username
+  // Fediverse creator attribution — always use local AP identity
+  // so attributionDomains on our Actor matches
   const siteDomain = new URL(baseUrl).host
-  const fediverseCreator = authorUsername.includes('@')
-    ? `@${authorUsername}`
-    : `@${authorUsername}@${siteDomain}`
+  const fediverseCreator = `@${topicData.user.username}@${siteDomain}`
 
   return c.html(
     <Layout

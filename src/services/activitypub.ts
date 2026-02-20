@@ -88,10 +88,19 @@ export function getActorJson(
 ) {
   const actorUrl = `${baseUrl}/ap/users/${apUsername}`
 
+  const domain = new URL(baseUrl).host
+
   const actor: Record<string, unknown> = {
     '@context': [
       'https://www.w3.org/ns/activitystreams',
       'https://w3id.org/security/v1',
+      {
+        toot: 'http://joinmastodon.org/ns#',
+        attributionDomains: {
+          '@id': 'toot:attributionDomains',
+          '@type': '@id',
+        },
+      },
     ],
     id: actorUrl,
     type: 'Person',
@@ -101,6 +110,7 @@ export function getActorJson(
     inbox: `${actorUrl}/inbox`,
     outbox: `${actorUrl}/outbox`,
     followers: `${actorUrl}/followers`,
+    attributionDomains: [domain],
     endpoints: {
       sharedInbox: `${baseUrl}/ap/inbox`,
     },
