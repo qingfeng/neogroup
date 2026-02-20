@@ -95,7 +95,7 @@ NeoGroup 灵感来源于 [NeoDB](https://neodb.social)。NeoDB 几乎涵盖了�
 
 ## 联系
 
-- Nostr: `qingfeng@neogrp.club` (`npub1effxw0p7cjv2phuze4fa28596wcr9y3mxq7ttr9j96wm75vfu9qs8zf70y`)
+- Mastodon: `qingfeng@neogrp.club`
 - GitHub: [@qingfeng](https://github.com/qingfeng)
 
 ## License
