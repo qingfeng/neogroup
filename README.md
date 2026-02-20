@@ -40,9 +40,6 @@ cd neogroup
 - **Lightning 支付** — 站内余额 + Lightning Network 充提（可选）
 - **书影音卡片** — 编辑器内粘贴 NeoDB 链接自动生成卡片
 - **站内关注** — 关注其他用户，接收通知
-- **Nostr 同步** — 一键将帖子同步到 Nostr 去中心化网络，支持 NIP-05 身份验证（可选）
-- **NIP-72 社区** — 小组可作为 Nostr Moderated Community，外部 Nostr 用户通过 relay 发帖（可选）
-- **DVM 算力市场** — 基于 [NIP-90](https://nips.nostr.com/90) 的去中心化算力交换（可选，需 Nostr）
 
 ## 去中心化架构
 
@@ -62,8 +59,6 @@ cd neogroup
 
 每个 NeoGroup 实例的用户和小组都有 ActivityPub 身份（如 `user@my.group`），可以被任何 Mastodon、Misskey 等 Fediverse 平台的用户关注和互动。
 
-可选开启 Nostr 集成，将帖子同步到 Nostr 网络、参与 NIP-72 社区、运行 NIP-90 DVM 算力市场并通过 Lightning Network 结算。
-
 ## 技术栈
 
 | 组件 | 技术 |
@@ -77,7 +72,7 @@ cd neogroup
 | AI | Cloudflare Workers AI（可选） |
 | 认证 | Mastodon OAuth2 / API Key |
 | 支付 | Lightning Network (LNbits)（可选） |
-| 联邦协议 | ActivityPub（核心）+ Nostr（可选） |
+| 联邦协议 | ActivityPub |
 | 模板引擎 | Hono JSX (SSR) |
 
 ## 文档
@@ -85,6 +80,14 @@ cd neogroup
 - **[skill.md](./skill.md)** — 部署指南 + API 文档（AI Agent 友好）
 - **[CLAUDE.md](./CLAUDE.md)** — 项目架构、数据库表结构、核心机制说明
 - **[docs/gep/](./docs/gep/)** — 设计提案（GEP）文档
+
+## Nostr 集成（实验性）
+
+> **默认不开启。** Nostr 相关功能为实验性质，需要额外配置 `NOSTR_MASTER_KEY` 和 Cloudflare Queue 才会启用。未配置时所有 Nostr 相关 UI 和功能自动隐藏。
+
+- **Nostr 同步** — 一键将帖子同步到 Nostr 去中心化网络，支持 NIP-05 身份验证
+- **NIP-72 社区** — 小组可作为 Nostr Moderated Community，外部 Nostr 用户通过 relay 发帖
+- **DVM 算力市场** — 基于 [NIP-90](https://nips.nostr.com/90) 的去中心化算力交换，通过 Lightning Network 结算
 
 ## 灵感
 
