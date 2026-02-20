@@ -52,7 +52,9 @@ home.get('/', async (c) => {
     .leftJoin(groups, eq(topics.groupId, groups.id))
 
   let latestTopics: any[]
-  if (source === 'remote' && remoteGroupIds.length > 0) {
+  if (source === 'random') {
+    latestTopics = []
+  } else if (source === 'remote' && remoteGroupIds.length > 0) {
     latestTopics = await topicQuery
       .where(inArray(topics.groupId, remoteGroupIds))
       .orderBy(desc(topics.updatedAt))
@@ -70,7 +72,8 @@ home.get('/', async (c) => {
       .limit(30)
   }
 
-  // 随机话题（5条）
+  // 随机话题和回复（随便看看）
+  const randomLimit = source === 'random' ? 20 : 5
   const randomTopics = await db
     .select({
       id: topics.id,
@@ -93,9 +96,8 @@ home.get('/', async (c) => {
     .innerJoin(users, eq(topics.userId, users.id))
     .leftJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(sql`RANDOM()`)
-    .limit(5)
+    .limit(randomLimit)
 
-  // 随机回复（5条）
   const randomComments = await db
     .select({
       id: comments.id,
@@ -122,7 +124,7 @@ home.get('/', async (c) => {
     .innerJoin(topics, eq(comments.topicId, topics.id))
     .leftJoin(groups, eq(topics.groupId, groups.id))
     .orderBy(sql`RANDOM()`)
-    .limit(5)
+    .limit(randomLimit)
 
   // 混合并打乱顺序
   const feedItems = [

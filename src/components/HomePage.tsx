@@ -58,23 +58,26 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
         <div>
           <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 1rem;">
             <h2 style="margin: 0;">最新话题</h2>
-            {hasRemoteGroups && (
-              <div style="display: flex; gap: 8px; font-size: 14px;">
-                <a href="/" style={source !== 'remote' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>本地小组</a>
-                <span style="color: #ccc;">|</span>
-                <a href="/?source=remote" style={source === 'remote' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>跨站小组</a>
-              </div>
-            )}
+            <div style="display: flex; gap: 8px; font-size: 14px;">
+              {hasRemoteGroups && (
+                <>
+                  <a href="/" style={source === 'local' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>本地小组</a>
+                  <span style="color: #ccc;">|</span>
+                  <a href="/?source=remote" style={source === 'remote' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>跨站小组</a>
+                  <span style="color: #ccc;">|</span>
+                </>
+              )}
+              <a href="/?source=random" style={source === 'random' ? 'font-weight: bold; color: #333; text-decoration: none;' : 'color: #666; text-decoration: none;'}>随便看看</a>
+            </div>
           </div>
-          {topics.length > 0 ? (
-            topics.map((topic) => <TopicCard topic={topic} />)
-          ) : (
-            <p class="card">还没有话题，快去创建一个小组开始讨论吧！</p>
-          )}
-
-          {feedItems.length > 0 && (
+          {source !== 'random' ? (
+            topics.length > 0 ? (
+              topics.map((topic) => <TopicCard topic={topic} />)
+            ) : (
+              <p class="card">还没有话题，快去创建一个小组开始讨论吧！</p>
+            )
+          ) : feedItems.length > 0 ? (
             <div class="feed-section">
-              <h2 style="margin-bottom: 1rem;">随便看看</h2>
               {feedItems.map((item) => (
                 <div class="feed-item">
                   <div class="feed-item-avatar">
@@ -107,11 +110,14 @@ export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups
                       ) : (
                         <span>个人动态</span>
                       )}
+                      <span style="margin-left: 8px;">{new Date(item.createdAt).toLocaleDateString('zh-CN')}</span>
                     </div>
                   </div>
                 </div>
               ))}
             </div>
+          ) : (
+            <p class="card">暂无内容</p>
           )}
         </div>
         <Sidebar hotGroups={hotGroups} topTags={topTags} randomGroups={randomGroups} newUsers={newUsers} userGroups={user ? userGroups : undefined} remoteGroupDomains={remoteGroupDomains} />
