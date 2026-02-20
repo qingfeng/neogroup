@@ -12,9 +12,10 @@ interface LayoutProps {
   user: User | null
   unreadCount?: number
   siteName?: string
+  fediverseCreator?: string
 }
 
-export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, unreadCount, siteName: siteNameProp, children }) => {
+export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description, image, url, ogType = 'website', jsonLd, user, unreadCount, siteName: siteNameProp, fediverseCreator, children }) => {
   const siteName = siteNameProp || 'NeoGroup'
   const fullTitle = title ? `${title} - ${siteName}` : siteName
 
@@ -46,6 +47,9 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         <meta name="twitter:title" content={title || siteName} />
         {description && <meta name="twitter:description" content={description} />}
         {image && <meta name="twitter:image" content={image} />}
+
+        {/* Fediverse Creator Attribution */}
+        {fediverseCreator && <meta name="fediverse:creator" content={fediverseCreator} />}
 
         {/* JSON-LD Structured Data */}
         {jsonLd && (

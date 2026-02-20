@@ -303,6 +303,13 @@ topic.get('/:id', async (c) => {
     }
   }
 
+  // Fediverse creator attribution
+  const authorUsername = topicData.user.username
+  const siteDomain = new URL(baseUrl).host
+  const fediverseCreator = authorUsername.includes('@')
+    ? `@${authorUsername}`
+    : `@${authorUsername}@${siteDomain}`
+
   return c.html(
     <Layout
       user={user}
@@ -314,6 +321,7 @@ topic.get('/:id', async (c) => {
       jsonLd={jsonLd}
       unreadCount={c.get('unreadNotificationCount')}
       siteName={c.env.APP_NAME}
+      fediverseCreator={fediverseCreator}
     >
       <div class="topic-page-layout">
         <div class="topic-detail">
