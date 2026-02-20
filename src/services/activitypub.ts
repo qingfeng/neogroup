@@ -579,6 +579,65 @@ export async function getApUsername(db: Database, userId: string): Promise<strin
   }
 }
 
+// --- Mention parsing ---
+
+interface ResolvedMention {
+  handle: string   // @user@domain
+  actorUri: string
+  inboxUrl: string
+}
+
+async function resolveMentions(text: string): Promise<ResolvedMention[]> {
+  // Extract @user@domain patterns from text (strip HTML tags first)
+  const plain = text.replace(/<[^>]+>/g, ' ')
+  const mentionRegex = /@([a-zA-Z0-9_]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g
+  const handles = new Set<string>()
+  let match
+  while ((match = mentionRegex.exec(plain)) !== null) {
+    handles.add(`${match[1]}@${match[2]}`)
+  }
+
+  const resolved: ResolvedMention[] = []
+  for (const handle of handles) {
+    try {
+      const [username, domain] = handle.split('@')
+      const wfUrl = `https://${domain}/.well-known/webfinger?resource=acct:${handle}`
+      const wfRes = await fetch(wfUrl, {
+        headers: { 'Accept': 'application/jrd+json, application/json' },
+      })
+      if (!wfRes.ok) continue
+      const wfData = await wfRes.json() as any
+      const selfLink = wfData.links?.find((l: any) => l.rel === 'self' && l.type === 'application/activity+json')
+      if (!selfLink?.href) continue
+      const actor = await fetchActor(selfLink.href)
+      if (!actor?.inbox) continue
+      resolved.push({
+        handle: `@${handle}`,
+        actorUri: actor.id,
+        inboxUrl: actor.endpoints?.sharedInbox || actor.inbox,
+      })
+    } catch (e) {
+      console.error(`[resolveMentions] Failed for ${handle}:`, e)
+    }
+  }
+  return resolved
+}
+
+// Convert @user@domain in HTML content to clickable links
+function linkifyMentions(html: string, mentions: ResolvedMention[]): string {
+  let result = html
+  for (const m of mentions) {
+    const profileUrl = m.actorUri.replace('/ap/users/', '/user/').replace(/\/users\//, '/@')
+    // Replace @user@domain with a link (handle both with and without leading @)
+    const escapedHandle = m.handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    result = result.replace(
+      new RegExp(escapedHandle, 'g'),
+      `<a href="${m.actorUri}" class="mention">${m.handle}</a>`
+    )
+  }
+  return result
+}
+
 // --- Topic delivery to AP followers ---
 
 export async function deliverTopicToFollowers(
@@ -600,26 +659,38 @@ export async function deliverTopicToFollowers(
       .from(apFollowers)
       .where(eq(apFollowers.userId, userId))
 
-    if (followers.length === 0) return
-
     const actorUrl = `${baseUrl}/ap/users/${apUsername}`
     const noteId = `${baseUrl}/ap/notes/${topicId}`
     const topicUrl = `${baseUrl}/topic/${topicId}`
     const published = new Date().toISOString()
 
-    // Build note content: title as bold (if present), then content
+    // Resolve @user@domain mentions from content
+    const textToScan = (title || '') + ' ' + (content || '')
+    const mentions = await resolveMentions(textToScan)
+
+    // Build note content: title as bold (if present), then content with linkified mentions
     let noteContent = ''
     if (title) {
       noteContent += `<p><b>${escapeHtml(title)}</b></p>`
     }
     if (content) {
-      noteContent += content
+      noteContent += mentions.length > 0 ? linkifyMentions(content, mentions) : content
     }
     if (title) {
       noteContent += `<p><a href="${topicUrl}">${topicUrl}</a></p>`
     }
 
-    const note = {
+    // Build mention tags for AP Note
+    const mentionTags = mentions.map(m => ({
+      type: 'Mention',
+      href: m.actorUri,
+      name: m.handle,
+    }))
+
+    // CC list: followers + mentioned actors
+    const ccList = [`${actorUrl}/followers`, ...mentions.map(m => m.actorUri)]
+
+    const note: Record<string, unknown> = {
       id: noteId,
       type: 'Note',
       attributedTo: actorUrl,
@@ -628,7 +699,10 @@ export async function deliverTopicToFollowers(
       url: topicUrl,
       published,
       to: ['https://www.w3.org/ns/activitystreams#Public'],
-      cc: [`${actorUrl}/followers`],
+      cc: ccList,
+    }
+    if (mentionTags.length > 0) {
+      note.tag = mentionTags
     }
 
     const activity = {
@@ -638,20 +712,22 @@ export async function deliverTopicToFollowers(
       actor: actorUrl,
       published,
       to: ['https://www.w3.org/ns/activitystreams#Public'],
-      cc: [`${actorUrl}/followers`],
+      cc: ccList,
       object: note,
     }
 
-    // Deduplicate by sharedInbox
-    const inboxes = new Map<string, string>()
+    // Collect all inboxes: followers + mentioned actors
+    const inboxes = new Set<string>()
     for (const f of followers) {
-      const inbox = f.sharedInboxUrl || f.inboxUrl
-      if (!inboxes.has(inbox)) {
-        inboxes.set(inbox, inbox)
-      }
+      inboxes.add(f.sharedInboxUrl || f.inboxUrl)
+    }
+    for (const m of mentions) {
+      inboxes.add(m.inboxUrl)
     }
 
-    for (const inbox of inboxes.values()) {
+    if (inboxes.size === 0) return
+
+    for (const inbox of inboxes) {
       try {
         await signAndDeliver(actorUrl, privateKeyPem, inbox, activity)
       } catch (e) {
