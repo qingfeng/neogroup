@@ -1,4 +1,4 @@
-import { sanitizeHtml } from '../lib/utils'
+import { sanitizeHtml, linkifyMentions } from '../lib/utils'
 
 interface SafeHtmlProps {
     html: string | null | undefined
@@ -14,7 +14,7 @@ interface SafeHtmlProps {
 export function SafeHtml({ html, className, tag = 'div' }: SafeHtmlProps) {
     if (!html) return null
 
-    const sanitized = sanitizeHtml(html)
+    const sanitized = linkifyMentions(sanitizeHtml(html))
 
     if (tag === 'span') {
         return <span class={className} dangerouslySetInnerHTML={{ __html: sanitized }} />

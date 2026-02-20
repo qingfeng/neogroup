@@ -109,6 +109,19 @@ export function stripHtml(html: string): string {
  * - Allowed attributes are strictly filtered
  * - Event handlers and dangerous URLs are removed
  */
+
+/** Convert @user@domain mentions in HTML to clickable links (render-time only) */
+export function linkifyMentions(html: string): string {
+  // Match @user@domain that is NOT already inside an <a> tag
+  // Negative lookbehind for href=" or > to avoid double-linkifying
+  return html.replace(
+    /(?<!["\w])@([a-zA-Z0-9_]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
+    (match, user, domain) => {
+      return `<a href="https://${domain}/@${user}" target="_blank" rel="nofollow noopener">${match}</a>`
+    }
+  )
+}
+
 export function sanitizeHtml(html: string): string {
   if (!html) return ''
 
