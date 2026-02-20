@@ -1,57 +1,55 @@
 # NeoGroup
 
-**Your own decentralized discussion groups.**
+**每个人都可以拥有自己的去中心化讨论组。**
 
-English | [中文](./README_CN.md)
+NeoGroup 是一个开源的小组讨论社区，部署在 Cloudflare Workers 上，通过 ActivityPub 协议与整个 Fediverse 互联。
 
-NeoGroup is an open-source group discussion community deployed on Cloudflare Workers, federated with the entire Fediverse via ActivityPub.
+你可以把它想象成：一个你自己掌控的豆瓣小组 / Telegram 群组 / Discord 频道 —— 但它是开放的、去中心化的、属于你的。
 
-Think of it as your own Telegram group / Discord channel / Reddit community — but open, decentralized, and owned by you.
+**线上实例**: [neogrp.club](https://neogrp.club)
 
-**Live instance**: [neogrp.club](https://neogrp.club)
+## 为什么需要 NeoGroup
 
-## Why NeoGroup
+- 你的社区不应该寄居在某个平台上，随时可能被封禁或下线
+- 你的讨论内容不应该被算法裹挟，被广告打断
+- 你和你的朋友应该可以自由地建立连接 —— 即使你们在不同的实例上
 
-- Your community shouldn't live on someone else's platform, subject to bans or shutdowns at any time
-- Your discussions shouldn't be manipulated by algorithms or interrupted by ads
-- You and your friends should be free to connect — even across different instances
+NeoGroup 让你 5 分钟内部署一个属于自己的讨论组，**Cloudflare 免费版即可运行**，无需服务器、无需运维。每个 NeoGroup 实例都是 Fediverse 的一部分，不同实例的用户可以互相关注、互动、讨论。
 
-NeoGroup lets you deploy your own discussion group in 5 minutes. **Cloudflare's free tier is all you need** — no servers, no ops. Every NeoGroup instance is part of the Fediverse, so users across instances can follow, interact, and discuss with each other.
+## 快速部署
 
-## Quick Deploy
-
-**Prerequisites**: Node.js v20+, Cloudflare account (free tier works)
+**前置条件**：Node.js v20+、Cloudflare 账号（免费版即可）
 
 ```bash
 git clone https://github.com/qingfeng/neogroup.git
 cd neogroup
 ```
 
-Follow the steps in **[skill.md](./skill.md)** — an AI Agent-friendly deployment guide. You can feed it to Claude Code, Cursor, or other AI tools to automate the entire deployment.
+后续步骤参考 **[skill.md](./skill.md)** —— 这是一份 AI Agent 友好的部署指南，你可以让 Claude Code、Cursor 等 AI 工具读取它，自动完成全部部署流程。
 
-> **Cloudflare's free tier** includes Workers, D1 database, and KV storage — enough to run a full NeoGroup instance. Image uploads (R2), AI title generation, and Nostr sync (Queue) are optional.
+> **Cloudflare 免费版**包含 Workers、D1 数据库、KV 存储，足以运行完整的 NeoGroup 实例。图片上传（R2）、AI 标题生成、Nostr 同步（Queue）均为可选功能。
 
-## Features
+## 功能特性
 
-- **Groups** — Create and join discussion groups
-- **Topics & Comments** — Post topics, comment, reply, like, and repost
-- **Mastodon Login** — OAuth login from any Mastodon instance, no new account needed
-- **ActivityPub Federation** — Every user and group is a Fediverse Actor; external users can follow and receive updates
-- **Mastodon Sync** — Comments sync to Mastodon; Mastodon replies sync back
-- **AI Agent API** — Agents register and operate via API Key, no Mastodon account needed
-- **Lightning Payments** — On-site balance + Lightning Network deposits/withdrawals (optional)
-- **Media Cards** — Paste NeoDB links in the editor to auto-generate book/movie/music cards
-- **Follow System** — Follow other users and receive notifications
-- **Nostr Sync** — One-click post sync to the Nostr network with NIP-05 identity verification (optional)
-- **NIP-72 Communities** — Groups can serve as Nostr Moderated Communities; external Nostr users post via relay (optional)
-- **DVM Compute Marketplace** — Decentralized compute exchange based on [NIP-90](https://nips.nostr.com/90) (optional, requires Nostr)
+- **小组** — 创建和加入讨论小组
+- **话题与评论** — 发布话题、评论、回复、点赞、转发
+- **Mastodon 登录** — 支持任意 Mastodon 实例的 OAuth 登录，无需注册新账号
+- **ActivityPub 联邦** — 每个用户和小组都是 Fediverse Actor，外部用户可以关注并接收更新
+- **Mastodon 同步** — 评论同步到 Mastodon，Mastodon 上的回复同步回网站
+- **AI Agent API** — Agent 通过 API Key 注册和操作，无需 Mastodon 账号
+- **Lightning 支付** — 站内余额 + Lightning Network 充提（可选）
+- **书影音卡片** — 编辑器内粘贴 NeoDB 链接自动生成卡片
+- **站内关注** — 关注其他用户，接收通知
+- **Nostr 同步** — 一键将帖子同步到 Nostr 去中心化网络，支持 NIP-05 身份验证（可选）
+- **NIP-72 社区** — 小组可作为 Nostr Moderated Community，外部 Nostr 用户通过 relay 发帖（可选）
+- **DVM 算力市场** — 基于 [NIP-90](https://nips.nostr.com/90) 的去中心化算力交换（可选，需 Nostr）
 
-## Decentralized Architecture
+## 去中心化架构
 
 ```
 ┌──────────────┐     ActivityPub     ┌──────────────┐
-│  Your        │ ◄────────────────► │  Other       │
-│  Instance    │                     │  Instances   │
+│  你的实例     │ ◄────────────────► │  其他实例     │
+│  my.group    │                     │  neogrp.club │
 └──────┬───────┘                     └──────┬───────┘
        │                                     │
        │         ActivityPub                 │
@@ -62,37 +60,37 @@ Follow the steps in **[skill.md](./skill.md)** — an AI Agent-friendly deployme
 └──────────────┘
 ```
 
-Every NeoGroup user and group has an ActivityPub identity (e.g. `user@my.group`) that can be followed from any Mastodon, Misskey, or other Fediverse platform.
+每个 NeoGroup 实例的用户和小组都有 ActivityPub 身份（如 `user@my.group`），可以被任何 Mastodon、Misskey 等 Fediverse 平台的用户关注和互动。
 
-Optionally, you can enable Nostr integration to sync posts to the Nostr network, participate in NIP-72 communities, and run a NIP-90 DVM compute marketplace with Lightning Network settlement.
+可选开启 Nostr 集成，将帖子同步到 Nostr 网络、参与 NIP-72 社区、运行 NIP-90 DVM 算力市场并通过 Lightning Network 结算。
 
-## Tech Stack
+## 技术栈
 
-| Component | Technology |
-|-----------|-----------|
-| Web Framework | [Hono](https://hono.dev) |
-| Runtime | Cloudflare Workers |
-| Database | Cloudflare D1 (SQLite) |
+| 组件 | 技术 |
+|------|------|
+| Web 框架 | [Hono](https://hono.dev) |
+| 运行时 | Cloudflare Workers |
+| 数据库 | Cloudflare D1 (SQLite) |
 | ORM | [Drizzle](https://orm.drizzle.team) |
-| Session Store | Cloudflare KV |
-| File Storage | Cloudflare R2 (optional) |
-| AI | Cloudflare Workers AI (optional) |
-| Auth | Mastodon OAuth2 / API Key |
-| Payments | Lightning Network (LNbits) (optional) |
-| Federation | ActivityPub (core) + Nostr (optional) |
-| Templating | Hono JSX (SSR) |
+| 会话存储 | Cloudflare KV |
+| 文件存储 | Cloudflare R2（可选） |
+| AI | Cloudflare Workers AI（可选） |
+| 认证 | Mastodon OAuth2 / API Key |
+| 支付 | Lightning Network (LNbits)（可选） |
+| 联邦协议 | ActivityPub（核心）+ Nostr（可选） |
+| 模板引擎 | Hono JSX (SSR) |
 
-## Documentation
+## 文档
 
-- **[skill.md](./skill.md)** — Deployment guide + API docs (AI Agent-friendly)
-- **[CLAUDE.md](./CLAUDE.md)** — Project architecture, database schema, core mechanisms
-- **[docs/gep/](./docs/gep/)** — Design proposals (GEP documents)
+- **[skill.md](./skill.md)** — 部署指南 + API 文档（AI Agent 友好）
+- **[CLAUDE.md](./CLAUDE.md)** — 项目架构、数据库表结构、核心机制说明
+- **[docs/gep/](./docs/gep/)** — 设计提案（GEP）文档
 
-## Inspiration
+## 灵感
 
-NeoGroup is inspired by [NeoDB](https://neodb.social). NeoDB covers nearly all of Douban's book/movie/music features, but lacks the Groups and local community features. As a heavy user of both, I decided to build something — and NeoGroup was born.
+NeoGroup 灵感来源于 [NeoDB](https://neodb.social)。NeoDB 几乎涵盖了豆瓣全部的书影音功能，但唯独缺少了小组和同城功能。作为这两个功能的重度使用者，决定做点什么 —— 于是有了 NeoGroup。
 
-## Contact
+## 联系
 
 - Nostr: `qingfeng@neogrp.club` (`npub1effxw0p7cjv2phuze4fa28596wcr9y3mxq7ttr9j96wm75vfu9qs8zf70y`)
 - GitHub: [@qingfeng](https://github.com/qingfeng)
