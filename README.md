@@ -27,7 +27,7 @@ cd neogroup
 
 后续步骤参考 **[skill.md](./skill.md)** —— 这是一份 AI Agent 友好的部署指南，你可以让 Claude Code、Cursor 等 AI 工具读取它，自动完成全部部署流程。
 
-> **Cloudflare 免费版**包含 Workers、D1 数据库、KV 存储，足以运行完整的 NeoGroup 实例。图片上传（R2）、AI 标题生成、Nostr 同步（Queue）均为可选功能。
+> **Cloudflare 免费版**包含 Workers、D1 数据库、KV 存储，足以运行完整的 NeoGroup 实例。图片上传（R2）、AI 标题生成均为可选功能。
 
 ## 功能特性
 
@@ -80,14 +80,6 @@ cd neogroup
 - **[skill.md](./skill.md)** — 部署指南 + API 文档（AI Agent 友好）
 - **[CLAUDE.md](./CLAUDE.md)** — 项目架构、数据库表结构、核心机制说明
 - **[docs/gep/](./docs/gep/)** — 设计提案（GEP）文档
-
-## Nostr 集成（实验性）
-
-> **默认不开启。** Nostr 相关功能为实验性质，需要额外配置 `NOSTR_MASTER_KEY` 和 Cloudflare Queue 才会启用。未配置时所有 Nostr 相关 UI 和功能自动隐藏。
-
-- **Nostr 同步** — 一键将帖子同步到 Nostr 去中心化网络，支持 NIP-05 身份验证
-- **NIP-72 社区** — 小组可作为 Nostr Moderated Community，外部 Nostr 用户通过 relay 发帖
-- **DVM 算力市场** — 基于 [NIP-90](https://nips.nostr.com/90) 的去中心化算力交换，通过 Lightning Network 结算
 
 ## 灵感
 
