@@ -64,6 +64,10 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `reward_liked` | 被赞奖励 | 2 |
 | `daily_reward_cap` | 每人每日挖矿上限（0=无限） | 100 |
 | `airdrop_on_join` | 新成员入组自动空投 | true |
+| `airdrop_weighted` | 空投按历史贡献加权（否则均分） | false |
+| `halving_interval` | 每挖出多少枚触发减半（0=不减半） | 100,000 |
+| `halving_ratio` | 减半比例（百分比） | 50 |
+| `vesting_months` | 管理员锁仓期（月，0=立即全部到账） | 12 |
 
 #### 发行流程
 
@@ -77,9 +81,11 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
   │
   ▼
 创建 Token
-  ├── 管理员账户 +100,000（10% 留存）
-  ├── 现有 50 名组员各 +100（空投 5,000）
-  └── 剩余 895,000 进入矿池（通过行为挖矿释放）
+  ├── vesting_months = 0: 管理员账户 +100,000（10% 留存，立即到账）
+  │   vesting_months > 0: 管理员额度锁定，按月线性释放
+  ├── airdrop_weighted = false: 现有 50 名组员各 +100（均分空投 5,000）
+  │   airdrop_weighted = true: 按历史贡献加权分配空投总额
+  └── 剩余进入矿池（通过行为挖矿 / 管理员手动发放 释放）
 
 新成员入组（airdrop_on_join = true）：
   → 自动空投 airdrop_per_member 数量的 Token
@@ -91,6 +97,115 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 - `total_supply = 0`：无上限，行为奖励永不枯竭
 - `total_supply > 0`：有上限，`mined_total` 追踪已释放量，当 `mined_total >= total_supply - admin_allocated - airdropped` 时停止挖矿奖励
 - 管理员可以后续调整行为奖励数量（但不能增发总量）
+
+#### 减半机制
+
+借鉴比特币的减半设计，让早期参与者获得更多奖励。当 `halving_interval > 0` 时启用：
+
+```
+初始 reward_post = 10, halving_interval = 100,000, halving_ratio = 50%
+
+mined_total 0 ~ 99,999         → reward_post = 10
+mined_total 100,000 ~ 199,999  → reward_post = 5    (第一次减半)
+mined_total 200,000 ~ 299,999  → reward_post = 2    (第二次减半)
+mined_total 300,000 ~ 399,999  → reward_post = 1    (第三次减半)
+mined_total 400,000+           → reward_post = 0    (奖励耗尽)
+```
+
+实际奖励计算：
+
+```typescript
+function getEffectiveReward(baseReward: number, token: GroupToken): number {
+  if (token.halvingInterval === 0) return baseReward
+  const halvings = Math.floor(token.minedTotal / token.halvingInterval)
+  const ratio = token.halvingRatio / 100  // e.g. 0.5
+  return Math.floor(baseReward * Math.pow(ratio, halvings))
+}
+```
+
+当计算结果为 0 时，该行为不再产生奖励。减半比例可自定义，如 `halving_ratio = 75` 表示每次只减 25%，衰减更缓慢。
+
+#### 管理员手动分发
+
+管理员可以从矿池中手动分发 Token 给指定用户，不受行为挖矿规则限制：
+
+```
+管理员操作：从矿池分发 500 PHOTO 给用户 alice
+  → 检查矿池剩余量（total_supply - admin_allocated - airdropped - mined_total）
+  → 扣减矿池（mined_total += 500）
+  → creditToken(alice, token, 500, 'admin_distribute', null)
+  → 记录交易 + 通知 alice
+```
+
+适用场景：
+- 奖励优质内容创作者
+- 活动奖品发放
+- 补偿性发放
+- 管理员根据主观判断灵活激励社区成员
+
+#### 贡献加权空投
+
+`airdrop_weighted = true` 时，初始空投不再均分，而是按成员历史贡献加权分配：
+
+```
+空投总量 = airdrop_per_member × 成员数（如 100 × 50 = 5,000）
+
+贡献分计算：
+  score(user) = 发帖数 × 3 + 回复数 × 2 + 点赞数 × 1
+  total_score = Σ score(all members)
+
+  如果 total_score = 0（无历史数据）→ 退化为均分
+
+每人空投量：
+  amount(user) = 空投总量 × score(user) / total_score
+
+示例（3 名成员，空投 300）：
+  alice:  10帖 + 20回复 + 50赞 = 120 分 → 300 × 120/200 = 180
+  bob:    5帖 + 10回复 + 15赞 =  50 分 → 300 ×  50/200 =  75
+  carol:  3帖 + 5回复 + 7赞  =  30 分 → 300 ×  30/200 =  45
+```
+
+这样活跃贡献者获得更多初始 Token，鼓励在社区中积极参与。
+
+#### 管理员锁仓释放
+
+`vesting_months > 0` 时，管理员的初始分配不会一次性全部到账，而是按月线性释放：
+
+```
+total_supply = 1,000,000, admin_allocation_pct = 10% → 管理员总额度 = 100,000
+vesting_months = 12
+
+发行时：
+  → 管理员立即到账: 0
+  → vesting_start_at = 当前时间
+  → admin_vested_total = 0
+
+每月释放：
+  monthly_release = 100,000 / 12 ≈ 8,333
+
+  第 1 个月末 → +8,333 → admin_vested_total = 8,333
+  第 2 个月末 → +8,333 → admin_vested_total = 16,666
+  ...
+  第 12 个月末 → +8,334 → admin_vested_total = 100,000（释放完毕）
+```
+
+释放方式：管理员在 Token 管理页手动领取（claim），系统计算可领取量：
+
+```typescript
+function getClaimableAmount(token: GroupToken): number {
+  const adminTotal = Math.floor(token.totalSupply * token.adminAllocationPct / 100)
+  if (token.vestingMonths === 0) return adminTotal - token.adminVestedTotal
+
+  const monthsElapsed = Math.floor((Date.now()/1000 - token.vestingStartAt) / (30 * 86400))
+  const vestedSoFar = Math.min(
+    Math.floor(adminTotal * monthsElapsed / token.vestingMonths),
+    adminTotal
+  )
+  return vestedSoFar - token.adminVestedTotal
+}
+```
+
+这增加了社区对管理员的信任——管理员不会拿着全部 Token 跑路，而是和社区一起成长。
 
 ### 数据模型
 
@@ -113,6 +228,12 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `reward_liked` | INTEGER DEFAULT 0 | 被赞奖励 |
 | `daily_reward_cap` | INTEGER DEFAULT 0 | 每人每日挖矿上限（0=无限） |
 | `airdrop_on_join` | INTEGER DEFAULT 0 | 新成员入组自动空投（0/1） |
+| `airdrop_weighted` | INTEGER DEFAULT 0 | 空投按贡献加权（0/1） |
+| `halving_interval` | INTEGER DEFAULT 0 | 减半间隔（0=不减半） |
+| `halving_ratio` | INTEGER DEFAULT 50 | 减半比例 %（默认 50） |
+| `vesting_months` | INTEGER DEFAULT 0 | 管理员锁仓月数（0=立即） |
+| `vesting_start_at` | INTEGER | 锁仓起始时间 |
+| `admin_vested_total` | INTEGER DEFAULT 0 | 已释放的管理员额度 |
 | `created_at` | INTEGER | 创建时间 |
 
 #### 新表：`token_balance`（用户持有余额）
@@ -160,6 +281,8 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `reward_liked` | 被赞奖励 | NULL | author |
 | `tip` | 打赏 | tipper | author |
 | `transfer` | 转账 | sender | receiver |
+| `admin_distribute` | 管理员从矿池手动发放 | NULL | recipient |
+| `admin_vest_claim` | 管理员领取锁仓释放 | NULL | admin |
 | `tip_remote_in` | 收到跨站打赏 | NULL(remote) | local user |
 | `tip_remote_out` | 发出跨站打赏 | local user | NULL(remote) |
 
@@ -203,13 +326,18 @@ AND created_at >= <today_start_unix>
 
 #### 供应量检查
 
-有上限的 Token 在发放奖励前检查：
+有上限的 Token 在发放奖励前检查剩余量，同时应用减半系数：
 
 ```typescript
-function canMineReward(token: GroupToken, userId: string, amount: number): boolean {
-  if (token.totalSupply === 0) return true  // 无上限
+function getMineRewardAmount(token: GroupToken, baseReward: number): number {
+  // 减半计算
+  const effective = getEffectiveReward(baseReward, token)
+  if (effective === 0) return 0
+
+  // 供应量检查
+  if (token.totalSupply === 0) return effective  // 无上限
   const available = token.totalSupply - token.adminAllocated - token.airdropped - token.minedTotal
-  return available >= amount
+  return available >= effective ? effective : 0
 }
 ```
 
@@ -361,6 +489,8 @@ Token 通过 ActivityPub 的自定义 Activity 跨 NeoGroup 实例传输。
 | `PUT` | `/api/groups/:id/token` | 修改奖励规则 |
 | `GET` | `/api/groups/:id/token` | Token 信息（公开） |
 | `POST` | `/api/groups/:id/token/airdrop` | 补充空投给新成员 |
+| `POST` | `/api/groups/:id/token/distribute` | 从矿池手动发放 `{ to_username, amount, memo }` |
+| `POST` | `/api/groups/:id/token/claim` | 领取锁仓释放额度 |
 
 #### Token 操作（用户）
 
@@ -400,6 +530,13 @@ Token 通过 ActivityPub 的自定义 Activity 跨 NeoGroup 实例传输。
 │  ── 行为奖励 ──                  │
 │  发帖:  [10]  回复:  [5]        │
 │  点赞:  [1]   被赞:  [2]        │
+│  每日上限: [100] (0=无限)        │
+│                                 │
+│  ── 高级 ──                     │
+│  减半间隔: [100000] (0=不减半)    │
+│  减半比例: [50] %                │
+│  空投加权: [☑ 按历史贡献]         │
+│  管理员锁仓: [12] 个月 (0=立即)   │
 │                                 │
 │  [发行]                         │
 └─────────────────────────────────┘
@@ -483,6 +620,8 @@ DO UPDATE SET balance = balance + ?, updated_at = ?
 - **跨站回流验证**：收到 TokenTip 时检查 symbol 是否为本站发行，是则直接 creditToken 到本站 Token，避免同一 Token 在本站出现 local 和 remote 两份
 - **总量控制**：有上限的 Token 在发放前检查剩余可挖矿量，CAS 更新 `mined_total`
 - **管理员权限**：只有小组创建者/管理员可以发行和修改 Token
+- **管理员锁仓**：`vesting_months > 0` 时管理员额度按月线性释放，需手动 claim，增加社区信任
+- **手动分发审计**：`admin_distribute` 交易记录公开可查，管理员分发行为透明可追溯
 - **远程 Token 信任**：收到远程 Token 仅表示 "站1 某小组发行了这个积分"，本站只做展示和记录，不承诺兑现
 
 ## Alternatives Considered
@@ -545,6 +684,10 @@ DO UPDATE SET balance = balance + ?, updated_at = ?
 8. 站1 用户打赏站2 帖子 → AP Activity 发送成功 → 站2 用户收到远程 Token
 9. 站2 用户将站1 Token 打赏回站1 帖子 → 站1 识别为本站 Token → 直接 credit 本站余额
 10. 并发打赏 → CAS 防双花 → 余额正确
+11. 减半测试 → mined_total 越过 halving_interval → 实际奖励减半 → 减至 0 时停止
+12. 管理员手动分发 500 → 矿池减少 500 → 接收者余额 +500 → 交易记录可查
+13. 贡献加权空投 → 发帖多的用户获得更多 → 无历史数据时退化为均分
+14. 管理员锁仓 12 个月 → 发行时余额 = 0 → 第 1 个月后 claim → 到账 1/12 → 12 个月后全部可领
 
 ## References
 
