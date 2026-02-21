@@ -62,6 +62,8 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `reward_reply` | 回复奖励 | 5 |
 | `reward_like` | 点赞奖励 | 1 |
 | `reward_liked` | 被赞奖励 | 2 |
+| `daily_reward_cap` | 每人每日挖矿上限（0=无限） | 100 |
+| `airdrop_on_join` | 新成员入组自动空投 | true |
 
 #### 发行流程
 
@@ -78,6 +80,10 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
   ├── 管理员账户 +100,000（10% 留存）
   ├── 现有 50 名组员各 +100（空投 5,000）
   └── 剩余 895,000 进入矿池（通过行为挖矿释放）
+
+新成员入组（airdrop_on_join = true）：
+  → 自动空投 airdrop_per_member 数量的 Token
+  → 从矿池额度扣减（有上限时需检查余量）
 ```
 
 #### 供应量管理
@@ -105,6 +111,8 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `reward_reply` | INTEGER DEFAULT 0 | 回复奖励 |
 | `reward_like` | INTEGER DEFAULT 0 | 点赞奖励 |
 | `reward_liked` | INTEGER DEFAULT 0 | 被赞奖励 |
+| `daily_reward_cap` | INTEGER DEFAULT 0 | 每人每日挖矿上限（0=无限） |
+| `airdrop_on_join` | INTEGER DEFAULT 0 | 新成员入组自动空投（0/1） |
 | `created_at` | INTEGER | 创建时间 |
 
 #### 新表：`token_balance`（用户持有余额）
@@ -113,18 +121,22 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 |------|------|------|
 | `id` | TEXT PK | nanoid |
 | `user_id` | TEXT FK→user | 持有者 |
-| `token_id` | TEXT FK→group_token | 哪种 Token |
+| `token_id` | TEXT | 指向 `group_token.id` 或 `remote_token.id` |
+| `token_type` | TEXT | `local` / `remote` |
 | `balance` | INTEGER DEFAULT 0 | 余额 |
 | `updated_at` | INTEGER | 最后变动时间 |
 
-唯一索引：`(user_id, token_id)`
+唯一索引：`(user_id, token_id, token_type)`
+
+> **统一标识**：`token_id` + `token_type` 复合标识，`local` 指向 `group_token` 表，`remote` 指向 `remote_token` 表。避免单个外键指向两张表的问题。`token_tx` 表同理。
 
 #### 新表：`token_tx`（交易记录）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | TEXT PK | nanoid |
-| `token_id` | TEXT FK→group_token | Token |
+| `token_id` | TEXT | Token ID |
+| `token_type` | TEXT | `local` / `remote` |
 | `from_user_id` | TEXT NULL | 发送方（NULL = 系统发放） |
 | `to_user_id` | TEXT | 接收方 |
 | `amount` | INTEGER | 数量 |
@@ -133,6 +145,8 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
 | `memo` | TEXT | 备注 |
 | `remote_actor_uri` | TEXT | 跨站时远程 actor URI |
 | `created_at` | INTEGER | 时间戳 |
+
+**防刷唯一索引**：`(token_id, to_user_id, type, ref_id)` — 同一用户对同一帖子/评论的同类行为只奖励一次（如取消点赞再重新点赞不会重复获得 `reward_like`）。
 
 #### 交易类型
 
@@ -170,12 +184,29 @@ Token 不是加密货币，没有链上交易、没有 gas fee、没有合约。
   → 被赞者获得 reward_liked
 ```
 
+#### 防刷机制
+
+**行为去重**：`token_tx` 表的 `(token_id, to_user_id, type, ref_id)` 唯一索引确保同一行为只奖励一次。例如：
+- 用户对帖子 A 点赞 → 获得 `reward_like` → 取消点赞 → 再次点赞 → **不再奖励**（INSERT 因唯一冲突被忽略）
+- 用户删帖后重发 → 新帖子有新 `ref_id`，正常获得奖励（合理行为）
+
+**每日上限**：`daily_reward_cap > 0` 时，每次发放前查询用户当日已获得的挖矿奖励总量：
+
+```sql
+SELECT COALESCE(SUM(amount), 0) as today_total
+FROM token_tx
+WHERE token_id = ? AND to_user_id = ? AND type LIKE 'reward_%'
+AND created_at >= <today_start_unix>
+```
+
+如果 `today_total + amount > daily_reward_cap`，跳过奖励。
+
 #### 供应量检查
 
 有上限的 Token 在发放奖励前检查：
 
 ```typescript
-function canMineReward(token: GroupToken, amount: number): boolean {
+function canMineReward(token: GroupToken, userId: string, amount: number): boolean {
   if (token.totalSupply === 0) return true  // 无上限
   const available = token.totalSupply - token.adminAllocated - token.airdropped - token.minedTotal
   return available >= amount
@@ -183,6 +214,18 @@ function canMineReward(token: GroupToken, amount: number): boolean {
 ```
 
 不够时跳过奖励（不报错，静默停止挖矿）。
+
+#### 新成员自动空投
+
+`airdrop_on_join = true` 时，用户加入小组的逻辑（写入 `group_member` 后）自动触发：
+
+```
+用户加入小组
+  → 检查该组是否有 Token 且 airdrop_on_join = true 且 airdrop_per_member > 0
+  → 检查该用户是否已收到过该 Token 的 airdrop（token_tx 去重）
+  → 检查供应量是否充足
+  → creditToken(user, token, airdrop_per_member, 'airdrop', groupId)
+```
 
 ### Token 打赏
 
@@ -256,6 +299,24 @@ Token 通过 ActivityPub 的自定义 Activity 跨 NeoGroup 实例传输。
 
 首次收到来自其他站点的 Token 时，自动在本站创建一条 `remote_token` 记录（不占用本站 symbol 命名空间）。远程 Token 的完整标识始终是 `symbol@origin_domain`。
 
+**跨站 Token 回流**：
+
+站2 用户持有站1 的 `PHOTO@站1` Token，可以打赏回站1 的帖子：
+
+```
+站2 用户打赏站1 帖子 30 PHOTO@站1
+  │
+  ├── 1. debitToken(user, remote_PHOTO, 30)  ← 扣远程 Token 余额
+  ├── 2. 发送 TokenTip Activity 到站1
+  │
+  ▼
+站1 Inbox 收到 TokenTip
+  → 识别 symbol=PHOTO 是本站发行的 Token（匹配 group_token.symbol）
+  → creditToken(recipient, local_PHOTO, 30)  ← 直接加本站 Token 余额（不创建 remote_token）
+```
+
+这样 Token 可以双向流通：站1 发出 → 站2 持有 → 打赏回站1 → 回到本站 Token 池。
+
 #### 新表：`remote_token`（远程 Token 镜像）
 
 | 字段 | 类型 | 说明 |
@@ -269,8 +330,6 @@ Token 通过 ActivityPub 的自定义 Activity 跨 NeoGroup 实例传输。
 | `created_at` | INTEGER | 首次见到的时间 |
 
 唯一索引：`(symbol, origin_domain)`
-
-`token_balance` 和 `token_tx` 表通过 `token_id` 关联，本站 Token 指向 `group_token.id`，远程 Token 指向 `remote_token.id`。用一个 `token_type` 字段区分：`local` / `remote`。
 
 ### 用户资产页
 
@@ -417,11 +476,13 @@ DO UPDATE SET balance = balance + ?, updated_at = ?
 ## Security Considerations
 
 - **防双花**：CAS 模式，`WHERE balance >= ?` 确保并发安全
+- **防刷唯一索引**：`(token_id, to_user_id, type, ref_id)` 唯一索引，同一用户对同一内容的同类行为只奖励一次，取消后重做不会重复获得奖励
+- **每日挖矿上限**：`daily_reward_cap` 限制单用户每日获得的挖矿奖励总量，防止工业化刷帖
 - **Symbol 唯一性**：本站 symbol 全局唯一，远程 Token 用 `symbol@domain` 区分
 - **跨站验证**：TokenTip Activity 通过 HTTP 签名验证来源，防止伪造
+- **跨站回流验证**：收到 TokenTip 时检查 symbol 是否为本站发行，是则直接 creditToken 到本站 Token，避免同一 Token 在本站出现 local 和 remote 两份
 - **总量控制**：有上限的 Token 在发放前检查剩余可挖矿量，CAS 更新 `mined_total`
 - **管理员权限**：只有小组创建者/管理员可以发行和修改 Token
-- **防刷**：行为奖励和现有发帖/点赞限制共用，不额外增加刷 Token 渠道
 - **远程 Token 信任**：收到远程 Token 仅表示 "站1 某小组发行了这个积分"，本站只做展示和记录，不承诺兑现
 
 ## Alternatives Considered
@@ -437,10 +498,11 @@ DO UPDATE SET balance = balance + ?, updated_at = ?
 
 1. **每组多种 Token** — 第一版限制每组一种，是否有需求发多种？
 2. **Token 转让给其他管理员** — 管理员转让小组后 Token 管理权如何迁移？
-3. **远程 Token 回流** — 用户在站2 持有的站1 Token，能否转回站1？（可以，通过 AP Activity 反向发送）
+3. ~~**远程 Token 回流**~~ — **已解决**：站2 用户打赏回站1 时，站1 识别 symbol 为本站发行，直接 creditToken 到本站 Token，实现双向流通
 4. **Token 过期** — 是否支持 Token 有效期？（第一版不支持）
 5. **AP Activity 类型** — 使用自定义 `neogroup:TokenTip` 还是复用 `Offer` + 扩展属性？
 6. **与 sats 打赏共存** — UI 上如何同时展示 sats Zap 和 Token 打赏？（建议并排显示）
+7. **每日上限精度** — `daily_reward_cap` 基于 UTC 日还是用户时区？（建议 UTC，实现简单）
 
 ## Implementation Plan
 
@@ -474,11 +536,15 @@ DO UPDATE SET balance = balance + ?, updated_at = ?
 ## Verification
 
 1. 管理员发行 Token → 管理员余额 = 留存量 → 组员余额 = 空投量
-2. 用户发帖 → 自动获得 Token 奖励 → 余额增加
-3. 有上限 Token 挖完后 → 行为奖励停止 → 余额不变
-4. 用户 A 打赏用户 B → A 余额减少 → B 余额增加 → 帖子显示打赏
-5. 站1 用户打赏站2 帖子 → AP Activity 发送成功 → 站2 用户收到 Token
-6. 并发打赏 → CAS 防双花 → 余额正确
+2. 新用户加入小组（airdrop_on_join=true）→ 自动获得空投 → 余额 = airdrop_per_member
+3. 用户发帖 → 自动获得 Token 奖励 → 余额增加
+4. 用户点赞 → 取消 → 再点赞 → 只获得一次 reward_like（防刷）
+5. 用户当日挖矿达到 daily_reward_cap → 后续行为不再获得奖励
+6. 有上限 Token 挖完后 → 行为奖励停止 → 余额不变
+7. 用户 A 打赏用户 B → A 余额减少 → B 余额增加 → 帖子显示打赏
+8. 站1 用户打赏站2 帖子 → AP Activity 发送成功 → 站2 用户收到远程 Token
+9. 站2 用户将站1 Token 打赏回站1 帖子 → 站1 识别为本站 Token → 直接 credit 本站余额
+10. 并发打赏 → CAS 防双花 → 余额正确
 
 ## References
 
