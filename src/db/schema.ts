@@ -305,6 +305,69 @@ export const deposits = sqliteTable('deposit', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// Group Token 表
+export const groupTokens = sqliteTable('group_token', {
+  id: text('id').primaryKey(),
+  groupId: text('group_id').notNull().unique().references(() => groups.id),
+  name: text('name').notNull(),
+  symbol: text('symbol').notNull().unique(),
+  iconUrl: text('icon_url').notNull(),
+  totalSupply: integer('total_supply').notNull().default(0),
+  minedTotal: integer('mined_total').notNull().default(0),
+  adminAllocationPct: integer('admin_allocation_pct').notNull().default(0),
+  airdropPerMember: integer('airdrop_per_member').notNull().default(0),
+  rewardPost: integer('reward_post').notNull().default(0),
+  rewardReply: integer('reward_reply').notNull().default(0),
+  rewardLike: integer('reward_like').notNull().default(0),
+  rewardLiked: integer('reward_liked').notNull().default(0),
+  dailyRewardCap: integer('daily_reward_cap').notNull().default(0),
+  airdropOnJoin: integer('airdrop_on_join').notNull().default(0),
+  airdropWeighted: integer('airdrop_weighted').notNull().default(0),
+  halvingInterval: integer('halving_interval').notNull().default(0),
+  halvingRatio: integer('halving_ratio').notNull().default(50),
+  vestingMonths: integer('vesting_months').notNull().default(0),
+  vestingStartAt: integer('vesting_start_at'),
+  adminVestedTotal: integer('admin_vested_total').notNull().default(0),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Token 余额表
+export const tokenBalances = sqliteTable('token_balance', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  tokenId: text('token_id').notNull(),
+  tokenType: text('token_type').notNull().default('local'),
+  balance: integer('balance').notNull().default(0),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Token 交易记录表
+export const tokenTxs = sqliteTable('token_tx', {
+  id: text('id').primaryKey(),
+  tokenId: text('token_id').notNull(),
+  tokenType: text('token_type').notNull().default('local'),
+  fromUserId: text('from_user_id'),
+  toUserId: text('to_user_id').notNull(),
+  amount: integer('amount').notNull(),
+  type: text('type').notNull(),
+  refId: text('ref_id'),
+  refType: text('ref_type'),
+  memo: text('memo'),
+  remoteActorUri: text('remote_actor_uri'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// 远程 Token 镜像表
+export const remoteTokens = sqliteTable('remote_token', {
+  id: text('id').primaryKey(),
+  symbol: text('symbol').notNull(),
+  name: text('name').notNull(),
+  iconUrl: text('icon_url'),
+  originDomain: text('origin_domain').notNull(),
+  originGroupActor: text('origin_group_actor'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // 类型导出
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
@@ -330,3 +393,7 @@ export type DvmJob = typeof dvmJobs.$inferSelect
 export type DvmService = typeof dvmServices.$inferSelect
 export type LedgerEntry = typeof ledgerEntries.$inferSelect
 export type Deposit = typeof deposits.$inferSelect
+export type GroupToken = typeof groupTokens.$inferSelect
+export type TokenBalance = typeof tokenBalances.$inferSelect
+export type TokenTx = typeof tokenTxs.$inferSelect
+export type RemoteToken = typeof remoteTokens.$inferSelect

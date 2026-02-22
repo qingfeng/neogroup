@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices, ledgerEntries, deposits } from '../db/schema'
+import { users, authProviders, groups, groupMembers, topics, comments, topicLikes, topicReposts, commentLikes, commentReposts, userFollows, nostrFollows, apFollowers, dvmJobs, dvmServices, ledgerEntries, deposits, groupTokens, tokenBalances, tokenTxs, remoteTokens } from '../db/schema'
 import { generateId, generateApiKey, ensureUniqueUsername, stripHtml, isSuperAdmin, isNostrEnabled } from '../lib/utils'
 import { requireApiAuth } from '../middleware/auth'
 import { createNotification } from '../lib/notifications'
@@ -11,6 +11,7 @@ import { deliverTopicToFollowers, deliverCommentToFollowers, announceToGroupFoll
 import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub } from '../services/nostr'
 import { buildJobRequestEvent, buildJobResultEvent, buildJobFeedbackEvent, buildHandlerInfoEvent } from '../services/dvm'
 import { createInvoice, checkPayment, payInvoice, payLightningAddress } from '../services/lnbits'
+import { creditToken, debitToken, recordTokenTx } from '../lib/token'
 
 const api = new Hono<AppContext>()
 
@@ -313,6 +314,16 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
       userId: user.id,
       createdAt: new Date(),
     })
+
+    // Token airdrop on join
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { airdropOnJoin } = await import('../lib/token')
+        await airdropOnJoin(db, groupId, user.id)
+      } catch (e) {
+        console.error('[Token] Airdrop on join failed:', e)
+      }
+    })())
   }
 
   const topicId = generateId()
@@ -328,6 +339,16 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
     createdAt: now,
     updatedAt: now,
   })
+
+  // Token mining: reward_post
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const { tryMineReward } = await import('../lib/token')
+      await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
+    } catch (e) {
+      console.error('[Token] Mining reward_post failed:', e)
+    }
+  })())
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
@@ -454,18 +475,40 @@ api.post('/topics/:id/comments', requireApiAuth, async (c) => {
   })
 
   // 如果是回复评论，通知该评论作者
+  let replyCommentData: { userId: string } | null = null
   if (replyToId) {
     const replyComment = await db.select({ userId: comments.userId }).from(comments).where(eq(comments.id, replyToId)).limit(1)
-    if (replyComment.length > 0 && replyComment[0].userId !== topicResult[0].userId) {
-      await createNotification(db, {
-        userId: replyComment[0].userId,
-        actorId: user.id,
-        type: 'comment_reply',
-        topicId,
-        commentId: replyToId,
-      })
+    if (replyComment.length > 0) {
+      replyCommentData = replyComment[0]
+      if (replyComment[0].userId !== topicResult[0].userId) {
+        await createNotification(db, {
+          userId: replyComment[0].userId,
+          actorId: user.id,
+          type: 'comment_reply',
+          topicId,
+          commentId: replyToId,
+        })
+      }
     }
   }
+
+  // Token mining: reward_reply + reward_liked
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const { tryMineReward } = await import('../lib/token')
+      const groupId = topicResult[0].groupId
+      if (!groupId) return
+      // Commenter gets reward_reply
+      await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
+      // Author gets reward_liked (topic author or parent comment author)
+      const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
+      if (authorId !== user.id) {
+        await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+      }
+    } catch (e) {
+      console.error('[Token] Mining reward_reply failed:', e)
+    }
+  })())
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
@@ -615,7 +658,7 @@ api.post('/topics/:id/like', requireApiAuth, async (c) => {
   })
 
   // Notification
-  const topicData = await db.select({ userId: topics.userId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+  const topicData = await db.select({ userId: topics.userId, groupId: topics.groupId }).from(topics).where(eq(topics.id, topicId)).limit(1)
   if (topicData.length > 0) {
     await createNotification(db, {
       userId: topicData[0].userId,
@@ -623,6 +666,20 @@ api.post('/topics/:id/like', requireApiAuth, async (c) => {
       type: 'topic_like',
       topicId,
     })
+
+    // Token mining: reward_like + reward_liked
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        if (!topicData[0].groupId) return
+        await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
+        if (topicData[0].userId !== user.id) {
+          await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+        }
+      } catch (e) {
+        console.error('[Token] Mining reward_like failed:', e)
+      }
+    })())
   }
 
   return c.json({ liked: true })
@@ -2189,6 +2246,289 @@ api.post('/withdraw', requireApiAuth, async (c) => {
       balance_sats: await getBalance(db, user.id),
     }, 502)
   }
+})
+
+// ─── Token Tip & Portfolio ───
+
+// GET /api/me/tokens — 当前用户持有的所有 Token
+api.get('/me/tokens', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const balances = await db
+    .select({
+      tokenId: tokenBalances.tokenId,
+      tokenType: tokenBalances.tokenType,
+      balance: tokenBalances.balance,
+    })
+    .from(tokenBalances)
+    .where(eq(tokenBalances.userId, user.id))
+
+  const result: Array<{
+    tokenId: string; tokenType: string; balance: number
+    symbol: string; name: string; iconUrl: string | null; groupName?: string
+  }> = []
+
+  for (const b of balances) {
+    if (b.balance <= 0) continue
+    if (b.tokenType === 'local') {
+      const token = await db.select({
+        symbol: groupTokens.symbol,
+        name: groupTokens.name,
+        iconUrl: groupTokens.iconUrl,
+        groupId: groupTokens.groupId,
+      }).from(groupTokens).where(eq(groupTokens.id, b.tokenId)).limit(1)
+      if (token.length === 0) continue
+      // Get group name
+      let groupName: string | undefined
+      const grp = await db.select({ name: groups.name }).from(groups).where(eq(groups.id, token[0].groupId)).limit(1)
+      if (grp.length > 0) groupName = grp[0].name
+      result.push({
+        tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance,
+        symbol: token[0].symbol, name: token[0].name, iconUrl: token[0].iconUrl,
+        groupName,
+      })
+    } else {
+      const token = await db.select({
+        symbol: remoteTokens.symbol,
+        name: remoteTokens.name,
+        iconUrl: remoteTokens.iconUrl,
+      }).from(remoteTokens).where(eq(remoteTokens.id, b.tokenId)).limit(1)
+      if (token.length === 0) continue
+      result.push({
+        tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance,
+        symbol: token[0].symbol, name: token[0].name, iconUrl: token[0].iconUrl,
+      })
+    }
+  }
+
+  return c.json(result)
+})
+
+// POST /api/topics/:id/tip — 打赏话题
+api.post('/topics/:id/tip', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const topicId = c.req.param('id')
+
+  const body = await c.req.json().catch(() => ({})) as {
+    token_id?: string; token_type?: string; amount?: number
+  }
+  const tokenId = body.token_id
+  const tokenType = body.token_type || 'local'
+  const amount = body.amount
+
+  if (!tokenId) return c.json({ error: 'token_id is required' }, 400)
+  if (!amount || amount <= 0) return c.json({ error: 'amount must be positive' }, 400)
+
+  // Get topic and author
+  const topicResult = await db.select({ userId: topics.userId, groupId: topics.groupId })
+    .from(topics).where(eq(topics.id, topicId)).limit(1)
+  if (topicResult.length === 0) return c.json({ error: 'Topic not found' }, 404)
+  const authorId = topicResult[0].userId
+  if (authorId === user.id) return c.json({ error: 'Cannot tip yourself' }, 400)
+
+  // Debit sender
+  const ok = await debitToken(db, user.id, tokenId, tokenType, amount)
+  if (!ok) return c.json({ error: 'Insufficient token balance' }, 400)
+
+  // Credit author
+  await creditToken(db, authorId, tokenId, tokenType, amount)
+
+  // Record transaction
+  await recordTokenTx(db, {
+    tokenId, tokenType, fromUserId: user.id, toUserId: authorId,
+    amount, type: 'tip', refId: topicId, refType: 'topic',
+  })
+
+  // Get token info for notification
+  let symbol = ''; let iconUrl = ''
+  if (tokenType === 'local') {
+    const t = await db.select({ symbol: groupTokens.symbol, iconUrl: groupTokens.iconUrl })
+      .from(groupTokens).where(eq(groupTokens.id, tokenId)).limit(1)
+    if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl }
+  } else {
+    const t = await db.select({ symbol: remoteTokens.symbol, iconUrl: remoteTokens.iconUrl })
+      .from(remoteTokens).where(eq(remoteTokens.id, tokenId)).limit(1)
+    if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl || '' }
+  }
+
+  // Create notification
+  await createNotification(db, {
+    userId: authorId,
+    actorId: user.id,
+    type: 'token_tip',
+    topicId,
+    metadata: JSON.stringify({ symbol, amount, iconUrl }),
+  })
+
+  // TODO: Cross-site token tipping — if the topic author is a remote (shadow) user,
+  // check authProviders for providerType='activitypub', look up their inbox URL,
+  // record a 'tip_remote_out' tx for the sender, and call deliverTokenTip() in
+  // c.executionCtx.waitUntil() to send a neogroup:TokenTip activity to the remote server.
+
+  return c.json({ ok: true })
+})
+
+// POST /api/topics/:id/comments/:cid/tip — 打赏评论
+api.post('/topics/:id/comments/:cid/tip', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+  const topicId = c.req.param('id')
+  const commentId = c.req.param('cid')
+
+  const body = await c.req.json().catch(() => ({})) as {
+    token_id?: string; token_type?: string; amount?: number
+  }
+  const tokenId = body.token_id
+  const tokenType = body.token_type || 'local'
+  const amount = body.amount
+
+  if (!tokenId) return c.json({ error: 'token_id is required' }, 400)
+  if (!amount || amount <= 0) return c.json({ error: 'amount must be positive' }, 400)
+
+  // Get comment and author
+  const commentResult = await db.select({ userId: comments.userId, topicId: comments.topicId })
+    .from(comments).where(eq(comments.id, commentId)).limit(1)
+  if (commentResult.length === 0) return c.json({ error: 'Comment not found' }, 404)
+  if (commentResult[0].topicId !== topicId) return c.json({ error: 'Comment does not belong to this topic' }, 400)
+  const authorId = commentResult[0].userId
+  if (authorId === user.id) return c.json({ error: 'Cannot tip yourself' }, 400)
+
+  // Debit sender
+  const ok = await debitToken(db, user.id, tokenId, tokenType, amount)
+  if (!ok) return c.json({ error: 'Insufficient token balance' }, 400)
+
+  // Credit author
+  await creditToken(db, authorId, tokenId, tokenType, amount)
+
+  // Record transaction
+  await recordTokenTx(db, {
+    tokenId, tokenType, fromUserId: user.id, toUserId: authorId,
+    amount, type: 'tip', refId: commentId, refType: 'comment',
+  })
+
+  // Get token info for notification
+  let symbol = ''; let iconUrl = ''
+  if (tokenType === 'local') {
+    const t = await db.select({ symbol: groupTokens.symbol, iconUrl: groupTokens.iconUrl })
+      .from(groupTokens).where(eq(groupTokens.id, tokenId)).limit(1)
+    if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl }
+  } else {
+    const t = await db.select({ symbol: remoteTokens.symbol, iconUrl: remoteTokens.iconUrl })
+      .from(remoteTokens).where(eq(remoteTokens.id, tokenId)).limit(1)
+    if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl || '' }
+  }
+
+  // Create notification
+  await createNotification(db, {
+    userId: authorId,
+    actorId: user.id,
+    type: 'token_tip',
+    topicId,
+    commentId,
+    metadata: JSON.stringify({ symbol, amount, iconUrl }),
+  })
+
+  // TODO: Cross-site token tipping — if the comment author is a remote (shadow) user,
+  // check authProviders for providerType='activitypub', look up their inbox URL,
+  // record a 'tip_remote_out' tx for the sender, and call deliverTokenTip() in
+  // c.executionCtx.waitUntil() to send a neogroup:TokenTip activity to the remote server.
+
+  return c.json({ ok: true })
+})
+
+// POST /api/token/transfer — Token 转账
+api.post('/token/transfer', requireApiAuth, async (c) => {
+  const db = c.get('db')
+  const user = c.get('user')!
+
+  const body = await c.req.json().catch(() => ({})) as {
+    token_id?: string; token_type?: string; to_username?: string; amount?: number
+  }
+  const tokenId = body.token_id
+  const tokenType = body.token_type || 'local'
+  const toUsername = body.to_username?.trim()
+  const amount = body.amount
+
+  if (!tokenId) return c.json({ error: 'token_id is required' }, 400)
+  if (!toUsername) return c.json({ error: 'to_username is required' }, 400)
+  if (!amount || amount <= 0) return c.json({ error: 'amount must be positive' }, 400)
+
+  // Find recipient
+  const target = await db.select({ id: users.id }).from(users)
+    .where(eq(users.username, toUsername)).limit(1)
+  if (target.length === 0) return c.json({ error: 'User not found' }, 404)
+  if (target[0].id === user.id) return c.json({ error: 'Cannot transfer to yourself' }, 400)
+
+  // Debit sender
+  const ok = await debitToken(db, user.id, tokenId, tokenType, amount)
+  if (!ok) return c.json({ error: 'Insufficient token balance' }, 400)
+
+  // Credit recipient
+  await creditToken(db, target[0].id, tokenId, tokenType, amount)
+
+  // Record transaction
+  await recordTokenTx(db, {
+    tokenId, tokenType, fromUserId: user.id, toUserId: target[0].id,
+    amount, type: 'transfer', refType: 'transfer',
+  })
+
+  return c.json({ ok: true })
+})
+
+// GET /api/groups/:id/token — 小组 Token 信息（公开）
+api.get('/groups/:id/token', async (c) => {
+  const db = c.get('db')
+  const groupId = c.req.param('id')
+
+  const token = await db.select().from(groupTokens)
+    .where(eq(groupTokens.groupId, groupId)).limit(1)
+  if (token.length === 0) return c.json({ error: 'Token not found' }, 404)
+
+  const t = token[0]
+  return c.json({
+    id: t.id,
+    symbol: t.symbol,
+    name: t.name,
+    icon_url: t.iconUrl,
+    total_supply: t.totalSupply,
+    mined_total: t.minedTotal,
+    admin_allocation_pct: t.adminAllocationPct,
+    reward_post: t.rewardPost,
+    reward_reply: t.rewardReply,
+    reward_like: t.rewardLike,
+    reward_liked: t.rewardLiked,
+  })
+})
+
+// GET /api/groups/:id/token/leaderboard — Token 持有排行榜（公开）
+api.get('/groups/:id/token/leaderboard', async (c) => {
+  const db = c.get('db')
+  const groupId = c.req.param('id')
+
+  const token = await db.select({ id: groupTokens.id }).from(groupTokens)
+    .where(eq(groupTokens.groupId, groupId)).limit(1)
+  if (token.length === 0) return c.json({ error: 'Token not found' }, 404)
+
+  const leaderboard = await db
+    .select({
+      userId: tokenBalances.userId,
+      balance: tokenBalances.balance,
+      username: users.username,
+      displayName: users.displayName,
+      avatarUrl: users.avatarUrl,
+    })
+    .from(tokenBalances)
+    .innerJoin(users, eq(tokenBalances.userId, users.id))
+    .where(and(
+      eq(tokenBalances.tokenId, token[0].id),
+      eq(tokenBalances.tokenType, 'local'),
+    ))
+    .orderBy(desc(tokenBalances.balance))
+    .limit(20)
+
+  return c.json(leaderboard.filter(e => e.balance > 0))
 })
 
 export default api

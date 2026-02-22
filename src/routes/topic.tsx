@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, and, sql, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups, apFollowers } from '../db/schema'
+import { topics, users, groups, comments, commentLikes, commentReposts, topicLikes, topicReposts, groupMembers, authProviders, remoteGroups, apFollowers, groupTokens, tokenBalances, tokenTxs, remoteTokens } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, stripHtml, truncate, parseJson, resizeImage, processContentImages, isSuperAdmin, isNostrEnabled } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
@@ -184,6 +184,50 @@ topic.get('/:id', async (c) => {
   }
   const canRepost = hasMastodonAuth
 
+  // ── Token Tip 数据 ──
+  // 用户持有的 Token（供打赏弹窗选择）
+  type UserTokenInfo = { tokenId: string; tokenType: string; balance: number; symbol: string; name: string; iconUrl: string }
+  let userTokens: UserTokenInfo[] = []
+  if (user) {
+    const balances = await db.select({
+      tokenId: tokenBalances.tokenId,
+      tokenType: tokenBalances.tokenType,
+      balance: tokenBalances.balance,
+    }).from(tokenBalances).where(eq(tokenBalances.userId, user.id))
+    for (const b of balances) {
+      if (b.balance <= 0) continue
+      if (b.tokenType === 'local') {
+        const t = await db.select({ symbol: groupTokens.symbol, name: groupTokens.name, iconUrl: groupTokens.iconUrl })
+          .from(groupTokens).where(eq(groupTokens.id, b.tokenId)).limit(1)
+        if (t.length > 0) userTokens.push({ tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance, symbol: t[0].symbol, name: t[0].name, iconUrl: t[0].iconUrl })
+      } else {
+        const t = await db.select({ symbol: remoteTokens.symbol, name: remoteTokens.name, iconUrl: remoteTokens.iconUrl })
+          .from(remoteTokens).where(eq(remoteTokens.id, b.tokenId)).limit(1)
+        if (t.length > 0) userTokens.push({ tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance, symbol: t[0].symbol, name: t[0].name, iconUrl: t[0].iconUrl || '' })
+      }
+    }
+  }
+
+  // 话题收到的打赏汇总
+  type TipSummary = { tokenId: string; symbol: string; iconUrl: string; total: number }
+  const topicTipRows = await db.all<{ token_id: string; token_type: string; total: number }>(
+    sql`SELECT token_id, token_type, SUM(amount) as total FROM token_tx
+        WHERE ref_id = ${topicId} AND ref_type = 'topic' AND type = 'tip'
+        GROUP BY token_id, token_type`
+  )
+  const topicTipSummary: TipSummary[] = []
+  for (const row of topicTipRows) {
+    if (row.token_type === 'local') {
+      const t = await db.select({ symbol: groupTokens.symbol, iconUrl: groupTokens.iconUrl })
+        .from(groupTokens).where(eq(groupTokens.id, row.token_id)).limit(1)
+      if (t.length > 0) topicTipSummary.push({ tokenId: row.token_id, symbol: t[0].symbol, iconUrl: t[0].iconUrl, total: row.total })
+    } else {
+      const t = await db.select({ symbol: remoteTokens.symbol, iconUrl: remoteTokens.iconUrl })
+        .from(remoteTokens).where(eq(remoteTokens.id, row.token_id)).limit(1)
+      if (t.length > 0) topicTipSummary.push({ tokenId: row.token_id, symbol: t[0].symbol, iconUrl: t[0].iconUrl || '', total: row.total })
+    }
+  }
+
   // 分页参数
   const PAGE_SIZE = 50
   const page = Math.max(1, parseInt(c.req.query('page') || '1') || 1)
@@ -249,6 +293,33 @@ topic.get('/:id', async (c) => {
 
   // 构建评论ID到评论的映射（用于引用回复显示）
   const commentMap = new Map(commentList.map(c => [c.id, c]))
+
+  // 评论收到的打赏汇总（按评论 ID 分组）
+  const commentTipMap = new Map<string, TipSummary[]>()
+  if (commentList.length > 0) {
+    const commentIds = commentList.map(c => c.id)
+    const commentTipRows = await db.all<{ ref_id: string; token_id: string; token_type: string; total: number }>(
+      sql`SELECT ref_id, token_id, token_type, SUM(amount) as total FROM token_tx
+          WHERE ref_id IN (${sql.join(commentIds.map(id => sql`${id}`), sql`, `)}) AND ref_type = 'comment' AND type = 'tip'
+          GROUP BY ref_id, token_id, token_type`
+    )
+    for (const row of commentTipRows) {
+      let symbol = ''; let iconUrl = ''
+      if (row.token_type === 'local') {
+        const t = await db.select({ symbol: groupTokens.symbol, iconUrl: groupTokens.iconUrl })
+          .from(groupTokens).where(eq(groupTokens.id, row.token_id)).limit(1)
+        if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl }
+      } else {
+        const t = await db.select({ symbol: remoteTokens.symbol, iconUrl: remoteTokens.iconUrl })
+          .from(remoteTokens).where(eq(remoteTokens.id, row.token_id)).limit(1)
+        if (t.length > 0) { symbol = t[0].symbol; iconUrl = t[0].iconUrl || '' }
+      }
+      if (!symbol) continue
+      const existing = commentTipMap.get(row.ref_id) || []
+      existing.push({ tokenId: row.token_id, symbol, iconUrl, total: row.total })
+      commentTipMap.set(row.ref_id, existing)
+    }
+  }
 
   const formatDate = (date: Date) => {
     return date.toLocaleDateString('zh-CN', {
@@ -410,6 +481,25 @@ topic.get('/:id', async (c) => {
               Zap
             </button>
             )}
+            {user && userTokens.length > 0 && user.id !== topicData.userId && (
+              <button type="button" class="topic-like-btn tip-btn" onclick="document.getElementById('topic-tip-modal').style.display='flex'">
+                打赏
+              </button>
+            )}
+            {topicTipSummary.length > 0 && (
+              <span class="tip-summary">
+                {topicTipSummary.map((tip) => (
+                  <span class="tip-badge" key={tip.tokenId}>
+                    {tip.iconUrl.startsWith('http') ? (
+                      <img src={tip.iconUrl} alt="" style="width:14px;height:14px;vertical-align:middle;margin-right:2px" />
+                    ) : (
+                      <span style="margin-right:2px">{tip.iconUrl}</span>
+                    )}
+                    {tip.total} {tip.symbol}
+                  </span>
+                ))}
+              </span>
+            )}
           </div>
 
           {repostCount > 0 && (
@@ -495,6 +585,81 @@ topic.get('/:id', async (c) => {
             }
           `}} />
           </>)}
+
+          {user && userTokens.length > 0 && user.id !== topicData.userId && (
+          <>
+          {/* Topic Tip Modal */}
+          <div id="topic-tip-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+            <div class="modal-content">
+              <div class="modal-header">
+                <span class="modal-title">打赏 {topicData.user.displayName || topicData.user.username}</span>
+                <button type="button" class="modal-close" onclick="document.getElementById('topic-tip-modal').style.display='none'">&times;</button>
+              </div>
+              <div class="zap-modal-body">
+                <div class="form-group" style="margin-bottom:12px">
+                  <label style="font-size:13px;color:#666;margin-bottom:4px;display:block">选择 Token</label>
+                  <select id="topic-tip-token" class="form-control" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px">
+                    {userTokens.map((t) => (
+                      <option value={`${t.tokenId}|${t.tokenType}`} key={t.tokenId}>
+                        {t.iconUrl && !t.iconUrl.startsWith('http') ? t.iconUrl + ' ' : ''}{t.symbol} (余额: {t.balance.toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div class="form-group" style="margin-bottom:12px">
+                  <label style="font-size:13px;color:#666;margin-bottom:4px;display:block">数量</label>
+                  <input type="number" id="topic-tip-amount" class="form-control" min="1" placeholder="输入打赏数量" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px" />
+                </div>
+                <button type="button" class="zap-send-btn" id="topic-tip-send" onclick={`sendTokenTip('topic', '${topicId}')`}>
+                  发送打赏
+                </button>
+                <div id="topic-tip-status" class="zap-status"></div>
+              </div>
+            </div>
+          </div>
+          </>
+          )}
+
+          <script dangerouslySetInnerHTML={{ __html: `
+            async function sendTokenTip(type, id, commentId) {
+              var prefix = type === 'comment' ? 'comment-tip-' + commentId : 'topic-tip';
+              var tokenSelect = document.getElementById(prefix + '-token');
+              var amountInput = document.getElementById(prefix + '-amount');
+              var sendBtn = document.getElementById(prefix + '-send');
+              var statusEl = document.getElementById(prefix + '-status');
+              if (!tokenSelect || !amountInput) return;
+              var parts = tokenSelect.value.split('|');
+              var tokenId = parts[0], tokenType = parts[1];
+              var amount = parseInt(amountInput.value);
+              if (!amount || amount <= 0) { statusEl.textContent = '请输入有效数量'; return; }
+              sendBtn.disabled = true;
+              sendBtn.textContent = '发送中...';
+              statusEl.textContent = '';
+              try {
+                var url = type === 'comment'
+                  ? '/api/topics/' + id + '/comments/' + commentId + '/tip'
+                  : '/api/topics/' + id + '/tip';
+                var res = await fetch(url, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ token_id: tokenId, token_type: tokenType, amount: amount }),
+                });
+                var data = await res.json();
+                if (data.ok) {
+                  statusEl.style.color = '#3ba726';
+                  statusEl.textContent = '打赏成功！';
+                  setTimeout(function() { location.reload(); }, 1000);
+                } else {
+                  throw new Error(data.error || '打赏失败');
+                }
+              } catch (e) {
+                statusEl.style.color = '#c00';
+                statusEl.textContent = e.message || '打赏失败';
+                sendBtn.textContent = '发送打赏';
+                sendBtn.disabled = false;
+              }
+            }
+          `}} />
 
           <div class="comments-section">
             <div class="comments-header">
@@ -637,7 +802,65 @@ topic.get('/:id', async (c) => {
                               <button type="submit" class="comment-action-btn" style="color: #c00;">删除</button>
                             </form>
                           )}
+                          {user && userTokens.length > 0 && user.id !== comment.user.id && (
+                            <button
+                              type="button"
+                              class="comment-action-btn tip-btn"
+                              onclick={`document.getElementById('comment-tip-modal-${comment.id}').style.display='flex'`}
+                            >
+                              打赏
+                            </button>
+                          )}
+                          {(() => {
+                            const tips = commentTipMap.get(comment.id)
+                            if (!tips || tips.length === 0) return null
+                            return (
+                              <span class="tip-summary" style="margin-left:4px">
+                                {tips.map((tip) => (
+                                  <span class="tip-badge" key={tip.tokenId}>
+                                    {tip.iconUrl.startsWith('http') ? (
+                                      <img src={tip.iconUrl} alt="" style="width:12px;height:12px;vertical-align:middle;margin-right:1px" />
+                                    ) : (
+                                      <span style="margin-right:1px;font-size:12px">{tip.iconUrl}</span>
+                                    )}
+                                    {tip.total} {tip.symbol}
+                                  </span>
+                                ))}
+                              </span>
+                            )
+                          })()}
                         </div>
+                        {/* Comment Tip Modal */}
+                        {user && userTokens.length > 0 && user.id !== comment.user.id && (
+                          <div id={`comment-tip-modal-${comment.id}`} class="modal-overlay" style="display:none" onclick={`if(event.target===this)this.style.display='none'`}>
+                            <div class="modal-content">
+                              <div class="modal-header">
+                                <span class="modal-title">打赏 {comment.user.displayName || comment.user.username}</span>
+                                <button type="button" class="modal-close" onclick={`document.getElementById('comment-tip-modal-${comment.id}').style.display='none'`}>&times;</button>
+                              </div>
+                              <div class="zap-modal-body">
+                                <div class="form-group" style="margin-bottom:12px">
+                                  <label style="font-size:13px;color:#666;margin-bottom:4px;display:block">选择 Token</label>
+                                  <select id={`comment-tip-${comment.id}-token`} class="form-control" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px">
+                                    {userTokens.map((t) => (
+                                      <option value={`${t.tokenId}|${t.tokenType}`} key={t.tokenId}>
+                                        {t.iconUrl && !t.iconUrl.startsWith('http') ? t.iconUrl + ' ' : ''}{t.symbol} (余额: {t.balance.toLocaleString()})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div class="form-group" style="margin-bottom:12px">
+                                  <label style="font-size:13px;color:#666;margin-bottom:4px;display:block">数量</label>
+                                  <input type="number" id={`comment-tip-${comment.id}-amount`} class="form-control" min="1" placeholder="输入打赏数量" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px" />
+                                </div>
+                                <button type="button" class="zap-send-btn" id={`comment-tip-${comment.id}-send`} onclick={`sendTokenTip('comment', '${topicId}', '${comment.id}')`}>
+                                  发送打赏
+                                </button>
+                                <div id={`comment-tip-${comment.id}-status`} class="zap-status"></div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         {user && user.id === comment.user.id && (
                           <div class="comment-edit-form" id={`edit-form-${comment.id}`} style="display: none;">
                             <form action={`/topic/${topicId}/comment/${comment.id}/edit`} method="POST">
@@ -806,18 +1029,40 @@ topic.post('/:id/comment', async (c) => {
   })
 
   // 如果是回复某条评论，提醒该评论作者
+  let replyCommentData: { userId: string } | null = null
   if (replyToId) {
     const replyComment = await db.select({ userId: comments.userId }).from(comments).where(eq(comments.id, replyToId)).limit(1)
-    if (replyComment.length > 0 && replyComment[0].userId !== topicResult[0].userId) {
-      await createNotification(db, {
-        userId: replyComment[0].userId,
-        actorId: user.id,
-        type: 'comment_reply',
-        topicId,
-        commentId: replyToId,
-      })
+    if (replyComment.length > 0) {
+      replyCommentData = replyComment[0]
+      if (replyComment[0].userId !== topicResult[0].userId) {
+        await createNotification(db, {
+          userId: replyComment[0].userId,
+          actorId: user.id,
+          type: 'comment_reply',
+          topicId,
+          commentId: replyToId,
+        })
+      }
     }
   }
+
+  // Token mining: reward_reply + reward_liked
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const { tryMineReward } = await import('../lib/token')
+      const groupId = topicResult[0].groupId
+      if (!groupId) return
+      // Commenter gets reward_reply
+      await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
+      // Author gets reward_liked (topic author or parent comment author)
+      const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
+      if (authorId !== user.id) {
+        await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+      }
+    } catch (e) {
+      console.error('[Token] Mining reward_reply failed:', e)
+    }
+  })())
 
   // AP: deliver Create(Note) to followers
   const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
@@ -1268,7 +1513,7 @@ topic.post('/:id/like', async (c) => {
     })
 
     // 提醒话题作者
-    const topicData = await db.select({ userId: topics.userId, nostrEventId: topics.nostrEventId, nostrAuthorPubkey: topics.nostrAuthorPubkey }).from(topics).where(eq(topics.id, topicId)).limit(1)
+    const topicData = await db.select({ userId: topics.userId, groupId: topics.groupId, nostrEventId: topics.nostrEventId, nostrAuthorPubkey: topics.nostrAuthorPubkey }).from(topics).where(eq(topics.id, topicId)).limit(1)
     if (topicData.length > 0) {
       await createNotification(db, {
         userId: topicData[0].userId,
@@ -1276,6 +1521,20 @@ topic.post('/:id/like', async (c) => {
         type: 'topic_like',
         topicId,
       })
+
+      // Token mining: reward_like + reward_liked
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { tryMineReward } = await import('../lib/token')
+          if (!topicData[0].groupId) return
+          await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
+          if (topicData[0].userId !== user.id) {
+            await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+          }
+        } catch (e) {
+          console.error('[Token] Mining reward_like failed:', e)
+        }
+      })())
 
       // Nostr Kind 7 reaction
       if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted
@@ -1521,6 +1780,23 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
       topicId,
       commentId,
     })
+
+    // Token mining: reward_like + reward_liked
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        // Get topic's groupId
+        const topicForMining = await db.select({ groupId: topics.groupId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+        if (topicForMining.length === 0 || !topicForMining[0].groupId) return
+        const groupId = topicForMining[0].groupId
+        await tryMineReward(db, groupId, user.id, 'reward_like', commentId)
+        if (commentResult[0].userId !== user.id) {
+          await tryMineReward(db, groupId, commentResult[0].userId, 'reward_liked', commentId)
+        }
+      } catch (e) {
+        console.error('[Token] Mining reward_like (comment) failed:', e)
+      }
+    })())
 
     // Nostr Kind 7 reaction for comment
     if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted

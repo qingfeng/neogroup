@@ -1,6 +1,7 @@
 import { eq, sql, and } from 'drizzle-orm'
-import { users, authProviders, apFollowers, topics, comments, groups, groupFollowers, remoteGroups } from '../db/schema'
+import { users, authProviders, apFollowers, topics, comments, groups, groupFollowers, remoteGroups, groupActivities } from '../db/schema'
 import type { Database } from '../db'
+import { generateId } from '../lib/utils'
 
 // --- Key Pair Generation (Web Crypto API) ---
 
@@ -1182,5 +1183,57 @@ export async function boostToGroupFollowers(
 
   } catch (e) {
     console.error('boostToGroupFollowers error:', e)
+  }
+}
+
+// --- Cross-site Token Tipping via AP ---
+
+export async function deliverTokenTip(params: {
+  db: Database
+  env: any
+  senderUserId: string
+  recipientActorUri: string
+  recipientInbox: string
+  topicOrCommentApUrl: string
+  token: { symbol: string; name: string; iconUrl: string; issuerActorUrl: string }
+  amount: number
+}): Promise<void> {
+  const { db, env, senderUserId, recipientInbox, topicOrCommentApUrl, token, amount } = params
+  const baseUrl = env.APP_URL
+
+  try {
+    // 1. Get sender AP identity
+    const apUsername = await getApUsername(db, senderUserId)
+    if (!apUsername) {
+      console.error('[AP TokenTip] Sender has no AP username:', senderUserId)
+      return
+    }
+    const { privateKeyPem } = await ensureKeyPair(db, senderUserId)
+    const actorUrl = `${baseUrl}/ap/users/${apUsername}`
+
+    // 2. Build the TokenTip Activity
+    const activity: Record<string, unknown> = {
+      '@context': [
+        'https://www.w3.org/ns/activitystreams',
+        { 'neogroup': 'https://neogrp.club/ns#' },
+      ],
+      type: 'neogroup:TokenTip',
+      id: `${baseUrl}/ap/activities/${generateId()}`,
+      actor: actorUrl,
+      object: topicOrCommentApUrl,
+      'neogroup:token': {
+        symbol: token.symbol,
+        name: token.name,
+        icon: token.iconUrl,
+        issuer: token.issuerActorUrl,
+      },
+      'neogroup:amount': amount,
+    }
+
+    // 3. Sign and deliver
+    const response = await signAndDeliver(actorUrl, privateKeyPem, recipientInbox, activity)
+    console.log('[AP TokenTip] Delivered to', recipientInbox, 'status:', response.status)
+  } catch (e) {
+    console.error('[AP TokenTip] deliverTokenTip error:', e)
   }
 }

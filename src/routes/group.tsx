@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { groups, groupMembers, topics, users, comments, authProviders, remoteGroups } from '../db/schema'
+import { groups, groupMembers, topics, users, comments, authProviders, remoteGroups, groupTokens, tokenBalances } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeImage, stripHtml, isNostrEnabled } from '../lib/utils'
 import { postStatus } from '../services/mastodon'
@@ -564,6 +564,23 @@ group.get('/:id', async (c) => {
     return date.toLocaleDateString('zh-CN')
   }
 
+  // ── Token Info ──
+  const groupTokenResult = await db.select().from(groupTokens)
+    .where(eq(groupTokens.groupId, resolvedGroupId)).limit(1)
+  const groupToken = groupTokenResult.length > 0 ? groupTokenResult[0] : null
+
+  let tokenHolderCount = 0
+  if (groupToken) {
+    const holderResult = await db
+      .select({ count: sql<number>`count(DISTINCT user_id)` })
+      .from(tokenBalances)
+      .where(and(eq(tokenBalances.tokenId, groupToken.id), eq(tokenBalances.tokenType, 'local')))
+    tokenHolderCount = holderResult[0]?.count || 0
+  }
+
+  // ── circulating supply ──
+  const circulatingSupply = groupToken ? groupToken.minedTotal + groupToken.adminVestedTotal : 0
+
   // 生成 metadata
   const appName = c.env.APP_NAME || 'NeoGroup'
   const description = groupData.description
@@ -698,6 +715,41 @@ group.get('/:id', async (c) => {
               </table>
             )}
           </div>
+
+          {groupToken && (
+            <div class="group-token-card" style="margin-top:20px;padding:16px;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+                {groupToken.iconUrl.startsWith('http') ? (
+                  <img src={groupToken.iconUrl} alt="" style="width:28px;height:28px" />
+                ) : (
+                  <span style="font-size:24px">{groupToken.iconUrl}</span>
+                )}
+                <div>
+                  <strong style="font-size:15px">{groupToken.symbol}</strong>
+                  <span style="color:#666;margin-left:6px;font-size:13px">{groupToken.name}</span>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;color:#555">
+                {groupToken.totalSupply > 0 && (
+                  <div>
+                    <span style="color:#999">总量:</span> {groupToken.totalSupply.toLocaleString()}
+                  </div>
+                )}
+                <div>
+                  <span style="color:#999">已流通:</span> {circulatingSupply.toLocaleString()}
+                </div>
+                <div>
+                  <span style="color:#999">持有人:</span> {tokenHolderCount}
+                </div>
+                <div>
+                  <span style="color:#999">奖励:</span>{' '}
+                  {groupToken.rewardPost > 0 && <span>发帖 +{groupToken.rewardPost}</span>}
+                  {groupToken.rewardPost > 0 && groupToken.rewardReply > 0 && <span> · </span>}
+                  {groupToken.rewardReply > 0 && <span>回复 +{groupToken.rewardReply}</span>}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </Layout>
@@ -776,6 +828,16 @@ group.post('/:id/join', async (c) => {
         userId: user.id,
         createdAt: new Date(),
       })
+
+      // Token airdrop on join
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { airdropOnJoin } = await import('../lib/token')
+          await airdropOnJoin(db, groupId, user.id)
+        } catch (e) {
+          console.error('[Token] Airdrop on join failed:', e)
+        }
+      })())
     }
   }
 
@@ -1189,6 +1251,16 @@ group.post('/:id/topic/new', async (c) => {
     createdAt: topicNow,
     updatedAt: topicNow,
   })
+
+  // Token mining: reward_post
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const { tryMineReward } = await import('../lib/token')
+      await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
+    } catch (e) {
+      console.error('[Token] Mining reward_post failed:', e)
+    }
+  })())
 
   // 同步发布到 Mastodon
   if (syncMastodon === '1') {

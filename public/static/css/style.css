@@ -2926,3 +2926,85 @@ a.dvm-card:hover {
   border-radius: 2px;
   font-size: 12px;
 }
+
+/* ─── Token Tip ─── */
+
+.tip-btn {
+  color: #e67e22 !important;
+}
+.tip-btn:hover {
+  color: #d35400 !important;
+}
+
+.tip-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.tip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: #fef9e7;
+  color: #b7950b;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ─── Token Portfolio (User Profile) ─── */
+
+.token-portfolio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-portfolio-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.token-portfolio-icon {
+  flex-shrink: 0;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.token-portfolio-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.token-portfolio-symbol {
+  font-weight: 600;
+  font-size: 14px;
+  color: #333;
+}
+
+.token-portfolio-name {
+  display: block;
+  font-size: 12px;
+  color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-portfolio-balance {
+  font-weight: 600;
+  font-size: 15px;
+  color: #333;
+  white-space: nowrap;
+}

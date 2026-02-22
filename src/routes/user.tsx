@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and, or, ne } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { users, topics, groups, comments, topicLikes, authProviders, userFollows, apFollowers } from '../db/schema'
+import { users, topics, groups, comments, topicLikes, authProviders, userFollows, apFollowers, groupTokens, tokenBalances, remoteTokens } from '../db/schema'
 import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub, decryptNostrPrivkey, privkeyToNsec } from '../services/nostr'
 import { Layout } from '../components/Layout'
 import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml, generateId, isNostrEnabled } from '../lib/utils'
@@ -311,6 +311,41 @@ user.get('/:id', async (c) => {
   )
   const followingCount = followingCountRow[0]?.count || 0
 
+  // ── Token Portfolio ──
+  type ProfileTokenInfo = { tokenId: string; tokenType: string; balance: number; symbol: string; name: string; iconUrl: string; groupName?: string }
+  const profileTokens: ProfileTokenInfo[] = []
+  const balances = await applyLimit(
+    db.select({
+      tokenId: tokenBalances.tokenId,
+      tokenType: tokenBalances.tokenType,
+      balance: tokenBalances.balance,
+    }).from(tokenBalances).where(eq(tokenBalances.userId, userId)),
+    50
+  )
+  for (const b of balances) {
+    if (b.balance <= 0) continue
+    if (b.tokenType === 'local') {
+      const t = await applyLimit(
+        db.select({ symbol: groupTokens.symbol, name: groupTokens.name, iconUrl: groupTokens.iconUrl, groupId: groupTokens.groupId })
+          .from(groupTokens).where(eq(groupTokens.id, b.tokenId)),
+        1
+      )
+      if (t.length === 0) continue
+      let groupName: string | undefined
+      const grp = await applyLimit(db.select({ name: groups.name }).from(groups).where(eq(groups.id, t[0].groupId)), 1)
+      if (grp.length > 0) groupName = grp[0].name
+      profileTokens.push({ tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance, symbol: t[0].symbol, name: t[0].name, iconUrl: t[0].iconUrl, groupName })
+    } else {
+      const t = await applyLimit(
+        db.select({ symbol: remoteTokens.symbol, name: remoteTokens.name, iconUrl: remoteTokens.iconUrl })
+          .from(remoteTokens).where(eq(remoteTokens.id, b.tokenId)),
+        1
+      )
+      if (t.length === 0) continue
+      profileTokens.push({ tokenId: b.tokenId, tokenType: b.tokenType, balance: b.balance, symbol: t[0].symbol, name: t[0].name, iconUrl: t[0].iconUrl || '' })
+    }
+  }
+
   // 生成 metadata
   const appName = c.env.APP_NAME || 'NeoGroup'
   const displayName = profileUser.displayName || profileUser.username
@@ -389,6 +424,32 @@ user.get('/:id', async (c) => {
             <span class="divider">·</span>
             <a class="link" href={`/user/${profileUser.username}/followers`}>查看被关注 ({followerCount})</a>
           </div>
+
+          {profileTokens.length > 0 && (
+            <div class="profile-section">
+              <h2>Token</h2>
+              <div class="token-portfolio">
+                {profileTokens.map((t) => (
+                  <div class="token-portfolio-item" key={t.tokenId}>
+                    <div class="token-portfolio-icon">
+                      {t.iconUrl.startsWith('http') ? (
+                        <img src={t.iconUrl} alt="" style="width:24px;height:24px;vertical-align:middle" />
+                      ) : (
+                        <span style="font-size:20px">{t.iconUrl}</span>
+                      )}
+                    </div>
+                    <div class="token-portfolio-info">
+                      <span class="token-portfolio-symbol">{t.symbol}</span>
+                      <span class="token-portfolio-name">{t.name}{t.groupName ? ` \u00b7 ${t.groupName}` : ''}</span>
+                    </div>
+                    <div class="token-portfolio-balance">
+                      {t.balance.toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {createdGroups.length > 0 && (
             <div class="profile-section">

@@ -1,16 +1,17 @@
 import { Hono } from 'hono'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { AppContext } from '../types'
-import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes } from '../db/schema'
+import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes, groupTokens, remoteTokens } from '../db/schema'
 import { generateId, stripHtml, truncate, now, isNostrEnabled } from '../lib/utils'
 import { deposits } from '../db/schema'
 import { createInvoice } from '../services/lnbits'
 import { createNotification } from '../lib/notifications'
+import { creditToken, recordTokenTx } from '../lib/token'
 import {
   ensureKeyPair, getWebFingerJson, getActorJson, getNodeInfoJson,
   fetchActor, signAndDeliver, getNoteJson, getCommentNoteJson, getApUsername,
   getGroupWebFingerJson, getGroupActorJson, ensureGroupKeyPair, getOrCreateRemoteUser,
-  boostToGroupFollowers
+  boostToGroupFollowers, deliverTokenTip
 } from '../services/activitypub'
 
 const ap = new Hono<AppContext>()
@@ -50,6 +51,144 @@ async function findUserByApUsername(db: ReturnType<typeof import('../db').create
 
   if (userResult.length === 0) return null
   return userResult[0]
+}
+
+// --- Handle incoming neogroup:TokenTip activity ---
+async function handleIncomingTokenTip(
+  db: ReturnType<typeof import('../db').createDb>,
+  baseUrl: string,
+  activity: Record<string, any>
+): Promise<{ handled: boolean; error?: string }> {
+  try {
+    const tokenInfo = activity['neogroup:token']
+    const amount = activity['neogroup:amount']
+    const objectUrl = typeof activity.object === 'string' ? activity.object : activity.object?.id
+
+    if (!tokenInfo || !amount || !objectUrl) {
+      return { handled: false, error: 'Missing token info, amount, or object' }
+    }
+
+    const { symbol, name, icon, issuer } = tokenInfo as { symbol: string; name: string; icon: string; issuer: string }
+    if (!symbol || !amount || amount <= 0) {
+      return { handled: false, error: 'Invalid token symbol or amount' }
+    }
+
+    // 1. Resolve the object URL to find the local topic/comment and its author
+    const topicNoteMatch = objectUrl.match(/\/ap\/notes\/([a-zA-Z0-9_-]+)/)
+    const commentNoteMatch = objectUrl.match(/\/ap\/comments\/([a-zA-Z0-9_-]+)/)
+
+    let authorUserId: string | null = null
+    let refId: string | null = null
+    let refType: string | null = null
+    let notifyTopicId: string | null = null
+    let notifyCommentId: string | null = null
+
+    if (topicNoteMatch) {
+      const topicResult = await db.select({ id: topics.id, userId: topics.userId })
+        .from(topics).where(eq(topics.id, topicNoteMatch[1])).limit(1)
+      if (topicResult.length > 0) {
+        authorUserId = topicResult[0].userId
+        refId = topicResult[0].id
+        refType = 'topic'
+        notifyTopicId = topicResult[0].id
+      }
+    } else if (commentNoteMatch) {
+      const commentResult = await db.select({ id: comments.id, userId: comments.userId, topicId: comments.topicId })
+        .from(comments).where(eq(comments.id, commentNoteMatch[1])).limit(1)
+      if (commentResult.length > 0) {
+        authorUserId = commentResult[0].userId
+        refId = commentResult[0].id
+        refType = 'comment'
+        notifyTopicId = commentResult[0].topicId
+        notifyCommentId = commentResult[0].id
+      }
+    }
+
+    if (!authorUserId || !refId) {
+      console.log('[AP TokenTip] Could not resolve object to local topic/comment:', objectUrl)
+      return { handled: false, error: 'Object not found locally' }
+    }
+
+    // 2. Check if symbol matches a local groupToken
+    const localToken = await db.select({ id: groupTokens.id, symbol: groupTokens.symbol })
+      .from(groupTokens).where(eq(groupTokens.symbol, symbol)).limit(1)
+
+    let tokenId: string
+    let tokenType: string
+
+    if (localToken.length > 0) {
+      // Known local token — credit directly
+      tokenId = localToken[0].id
+      tokenType = 'local'
+    } else {
+      // Remote token — find or create in remoteTokens
+      const originDomain = (() => { try { return new URL(issuer).hostname } catch { return 'unknown' } })()
+      const existingRemote = await db.select({ id: remoteTokens.id })
+        .from(remoteTokens)
+        .where(and(eq(remoteTokens.symbol, symbol), eq(remoteTokens.originDomain, originDomain)))
+        .limit(1)
+
+      if (existingRemote.length > 0) {
+        tokenId = existingRemote[0].id
+      } else {
+        // Create new remote token entry
+        tokenId = generateId()
+        await db.insert(remoteTokens).values({
+          id: tokenId,
+          symbol,
+          name: name || symbol,
+          iconUrl: icon || null,
+          originDomain,
+          originGroupActor: issuer || null,
+          createdAt: new Date(),
+        })
+        console.log('[AP TokenTip] Created remote token:', { tokenId, symbol, originDomain })
+      }
+      tokenType = 'remote'
+    }
+
+    // 3. Credit tokens to the author
+    await creditToken(db, authorUserId, tokenId, tokenType, amount)
+
+    // 4. Record transaction
+    const remoteActorUri = activity.actor || null
+    await recordTokenTx(db, {
+      tokenId,
+      tokenType,
+      toUserId: authorUserId,
+      amount,
+      type: 'tip_remote_in',
+      refId,
+      refType,
+      remoteActorUri,
+    })
+
+    // 5. Create shadow user for the remote actor (if needed)
+    let shadowUser: any = null
+    if (remoteActorUri) {
+      const remoteActor = await fetchActor(remoteActorUri)
+      shadowUser = await getOrCreateRemoteUser(db, remoteActorUri, remoteActor)
+    }
+
+    // 6. Create notification for the author
+    await createNotification(db, {
+      userId: authorUserId,
+      actorId: shadowUser?.id || null,
+      actorName: shadowUser ? undefined : (remoteActorUri || 'Remote user'),
+      actorUrl: shadowUser ? undefined : remoteActorUri,
+      actorUri: remoteActorUri || undefined,
+      type: 'token_tip',
+      topicId: notifyTopicId || undefined,
+      commentId: notifyCommentId || undefined,
+      metadata: JSON.stringify({ symbol, amount, iconUrl: icon || '' }),
+    })
+
+    console.log('[AP TokenTip] Processed tip:', { symbol, amount, authorUserId, refId, refType, from: remoteActorUri })
+    return { handled: true }
+  } catch (e) {
+    console.error('[AP TokenTip] handleIncomingTokenTip error:', e)
+    return { handled: false, error: String(e) }
+  }
 }
 
 // --- WebFinger ---
@@ -715,6 +854,16 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
+  if (type === 'neogroup:TokenTip') {
+    // Handle cross-site token tip to a topic/comment in this group
+    const result = await handleIncomingTokenTip(db, baseUrl, activity)
+    if (result.handled) {
+      return c.json({ status: 'accepted' }, 202)
+    }
+    console.log('[AP GroupInbox] TokenTip not handled:', result.error)
+    return c.json({ status: 'accepted' }, 202)
+  }
+
   // Unknown activity type - accept silently
   return c.json({ status: 'accepted' }, 202)
 })
@@ -940,6 +1089,16 @@ ap.post('/ap/users/:username/inbox', async (c) => {
         }
       }
     }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'neogroup:TokenTip') {
+    // Handle cross-site token tip
+    const result = await handleIncomingTokenTip(db, baseUrl, activity)
+    if (result.handled) {
+      return c.json({ status: 'accepted' }, 202)
+    }
+    console.log('[AP Inbox] TokenTip not handled:', result.error)
     return c.json({ status: 'accepted' }, 202)
   }
 
@@ -2046,6 +2205,16 @@ ap.post('/ap/inbox', async (c) => {
         }
       }
     }
+    return c.json({ status: 'accepted' }, 202)
+  }
+
+  if (type === 'neogroup:TokenTip') {
+    // Handle cross-site token tip via shared inbox
+    const result = await handleIncomingTokenTip(db, baseUrl, activity)
+    if (result.handled) {
+      return c.json({ status: 'accepted' }, 202)
+    }
+    console.log('[AP SharedInbox] TokenTip not handled:', result.error)
     return c.json({ status: 'accepted' }, 202)
   }
 

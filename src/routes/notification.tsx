@@ -90,6 +90,30 @@ notification.get('/', async (c) => {
         const summary = meta.content ? `：${truncate(meta.content, 80)}` : ''
         return `提到了你${summary}`
       }
+      case 'token_tip': {
+        let meta: { symbol?: string; amount?: number; iconUrl?: string } = {}
+        try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
+        const icon = meta.iconUrl?.startsWith('http')
+          ? <img src={meta.iconUrl} alt="" style="width:16px;height:16px;vertical-align:middle" />
+          : <span>{meta.iconUrl || ''}</span>
+        return <>打赏了你 {meta.amount || 0} {icon} {meta.symbol || ''}</>
+      }
+      case 'token_airdrop': {
+        let meta: { symbol?: string; amount?: number; iconUrl?: string } = {}
+        try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
+        const icon = meta.iconUrl?.startsWith('http')
+          ? <img src={meta.iconUrl} alt="" style="width:16px;height:16px;vertical-align:middle" />
+          : <span>{meta.iconUrl || ''}</span>
+        return <>加入小组获得空投 {meta.amount || 0} {icon} {meta.symbol || ''}</>
+      }
+      case 'token_transfer': {
+        let meta: { symbol?: string; amount?: number; iconUrl?: string } = {}
+        try { if (n.metadata) meta = JSON.parse(n.metadata) } catch {}
+        const icon = meta.iconUrl?.startsWith('http')
+          ? <img src={meta.iconUrl} alt="" style="width:16px;height:16px;vertical-align:middle" />
+          : <span>{meta.iconUrl || ''}</span>
+        return <>向你转账 {meta.amount || 0} {icon} {meta.symbol || ''}</>
+      }
       default: return '与你互动了'
     }
   }
@@ -98,6 +122,21 @@ notification.get('/', async (c) => {
     if (n.type === 'follow') {
       if (n.actor?.id) return `/user/${n.actor.username}`
       return n.actorUrl || '#'
+    }
+    if (n.type === 'token_tip' || n.type === 'token_transfer') {
+      if (n.topicId) return `/topic/${n.topicId}`
+      if (n.actor?.id) return `/user/${n.actor.username}`
+      return n.actorUrl || '#'
+    }
+    if (n.type === 'token_airdrop') {
+      try {
+        if (n.metadata) {
+          const meta = JSON.parse(n.metadata) as { groupId?: string }
+          if (meta.groupId) return `/group/${meta.groupId}`
+        }
+      } catch {}
+      if (n.topicId) return `/topic/${n.topicId}`
+      return '#'
     }
     if (n.type === 'mention') {
       try {

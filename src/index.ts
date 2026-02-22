@@ -14,6 +14,7 @@ import activitypubRoutes from './routes/activitypub'
 import apiRoutes from './routes/api'
 import timelineRoutes from './routes/timeline'
 import dvmRoutes from './routes/dvm'
+import tokenRoutes from './routes/token'
 import type { AppContext, Bindings } from './types'
 import { isNostrEnabled } from './lib/utils'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
@@ -679,6 +680,7 @@ app.route('/timeline', timelineRoutes)
 app.route('/dvm', dvmRoutes)
 app.route('/topic', topicRoutes)
 app.route('/group', groupRoutes)
+app.route('/group', tokenRoutes)
 app.route('/user', userRoutes)
 app.route('/notifications', notificationRoutes)
 app.route('/', homeRoutes)
