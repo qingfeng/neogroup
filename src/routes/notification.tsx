@@ -75,6 +75,30 @@ notification.get('/', async (c) => {
     })
   }
 
+  const getTypeBadge = (type: string) => {
+    switch (type) {
+      case 'reply':
+      case 'comment_reply':
+        return <span class="notification-type-badge type-reply">回复</span>
+      case 'topic_like':
+      case 'comment_like':
+        return <span class="notification-type-badge type-like">喜欢</span>
+      case 'topic_repost':
+      case 'comment_repost':
+        return <span class="notification-type-badge type-repost">转发</span>
+      case 'follow':
+        return <span class="notification-type-badge type-follow">关注</span>
+      case 'mention':
+        return <span class="notification-type-badge type-mention">提及</span>
+      case 'token_tip':
+      case 'token_airdrop':
+      case 'token_transfer':
+        return <span class="notification-type-badge type-token">打赏</span>
+      default:
+        return null
+    }
+  }
+
   const getTypeText = (n: typeof notificationList[0], topicTitle: string) => {
     switch (n.type) {
       case 'reply': return `回复了你的话题「${topicTitle}」`
@@ -189,6 +213,7 @@ notification.get('/', async (c) => {
                   />
                   <div class="notification-body">
                     <span class="notification-text">
+                      {getTypeBadge(n.type)}
                       <strong>{displayName}</strong>
                       {' '}{getTypeText(n, topicTitle)}
                     </span>

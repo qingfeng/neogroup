@@ -2007,50 +2007,86 @@ button.ql-neodb:hover::after {
 }
 
 .notification-list {
-  display: flex;
-  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
 }
 
 .notification-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  padding: 12px;
-  border-bottom: 1px solid #eee;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f0f0f0;
   text-decoration: none;
   color: inherit;
   transition: background 0.15s;
 }
 
+.notification-item:last-child {
+  border-bottom: none;
+}
+
 .notification-item:hover {
-  background: #f9f9f9;
+  background: #fafafa;
 }
 
 .notification-item.unread {
-  background: #f0f7ff;
+  background: #f7fbff;
+  border-left: 3px solid #4a9eff;
+  padding-left: 13px;
 }
 
 .notification-item.unread:hover {
-  background: #e5f0fa;
+  background: #eef5fc;
+}
+
+.notification-item .avatar-sm {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
 }
 
 .notification-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .notification-text {
-  font-size: 14px;
+  font-size: 13px;
   color: #333;
-  line-height: 1.5;
+  line-height: 1.6;
+}
+
+.notification-text strong {
+  color: #111;
 }
 
 .notification-time {
   font-size: 12px;
-  color: #999;
+  color: #aaa;
 }
+
+.notification-type-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 6px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.notification-type-badge.type-reply { background: #e8f5e9; color: #2e7d32; }
+.notification-type-badge.type-like { background: #fce4ec; color: #c62828; }
+.notification-type-badge.type-repost { background: #e3f2fd; color: #1565c0; }
+.notification-type-badge.type-follow { background: #f3e5f5; color: #7b1fa2; }
+.notification-type-badge.type-mention { background: #fff3e0; color: #e65100; }
+.notification-type-badge.type-token { background: #fff8e1; color: #f57f17; }
 
 /* 评论区头部 */
 .comments-header {
