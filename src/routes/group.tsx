@@ -564,23 +564,6 @@ group.get('/:id', async (c) => {
     return date.toLocaleDateString('zh-CN')
   }
 
-  // ── Token Info ──
-  const groupTokenResult = await db.select().from(groupTokens)
-    .where(eq(groupTokens.groupId, resolvedGroupId)).limit(1)
-  const groupToken = groupTokenResult.length > 0 ? groupTokenResult[0] : null
-
-  let tokenHolderCount = 0
-  if (groupToken) {
-    const holderResult = await db
-      .select({ count: sql<number>`count(DISTINCT user_id)` })
-      .from(tokenBalances)
-      .where(and(eq(tokenBalances.tokenId, groupToken.id), eq(tokenBalances.tokenType, 'local')))
-    tokenHolderCount = holderResult[0]?.count || 0
-  }
-
-  // ── circulating supply ──
-  const circulatingSupply = groupToken ? groupToken.minedTotal + groupToken.adminVestedTotal : 0
-
   // 生成 metadata
   const appName = c.env.APP_NAME || 'NeoGroup'
   const description = groupData.description
@@ -716,40 +699,6 @@ group.get('/:id', async (c) => {
             )}
           </div>
 
-          {groupToken && (
-            <div class="group-token-card" style="margin-top:20px;padding:16px;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-                {groupToken.iconUrl.startsWith('http') ? (
-                  <img src={groupToken.iconUrl} alt="" style="width:28px;height:28px" />
-                ) : (
-                  <span style="font-size:24px">{groupToken.iconUrl}</span>
-                )}
-                <div>
-                  <strong style="font-size:15px">{groupToken.symbol}</strong>
-                  <span style="color:#666;margin-left:6px;font-size:13px">{groupToken.name}</span>
-                </div>
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;color:#555">
-                {groupToken.totalSupply > 0 && (
-                  <div>
-                    <span style="color:#999">总量:</span> {groupToken.totalSupply.toLocaleString()}
-                  </div>
-                )}
-                <div>
-                  <span style="color:#999">已流通:</span> {circulatingSupply.toLocaleString()}
-                </div>
-                <div>
-                  <span style="color:#999">持有人:</span> {tokenHolderCount}
-                </div>
-                <div>
-                  <span style="color:#999">奖励:</span>{' '}
-                  {groupToken.rewardPost > 0 && <span>发帖 +{groupToken.rewardPost}</span>}
-                  {groupToken.rewardPost > 0 && groupToken.rewardReply > 0 && <span> · </span>}
-                  {groupToken.rewardReply > 0 && <span>回复 +{groupToken.rewardReply}</span>}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </Layout>
@@ -1467,6 +1416,24 @@ group.get('/:id/settings', async (c) => {
     return c.redirect(`/group/${groupData.actorName || groupId}`)
   }
 
+  // ── Token Info ──
+  const groupTokenResult = await db.select().from(groupTokens)
+    .where(eq(groupTokens.groupId, groupId)).limit(1)
+  const groupToken = groupTokenResult.length > 0 ? groupTokenResult[0] : null
+
+  let tokenHolderCount = 0
+  let circulatingSupply = 0
+  if (groupToken) {
+    const holderResult = await db
+      .select({ count: sql<number>`count(DISTINCT user_id)` })
+      .from(tokenBalances)
+      .where(and(eq(tokenBalances.tokenId, groupToken.id), eq(tokenBalances.tokenType, 'local')))
+    tokenHolderCount = holderResult[0]?.count || 0
+    circulatingSupply = groupToken.minedTotal + groupToken.adminVestedTotal
+  }
+
+  const groupSlug = groupData.actorName || groupId
+
   return c.html(
     <Layout user={user} title={`小组设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
@@ -1521,9 +1488,49 @@ group.get('/:id/settings', async (c) => {
           </div>
         </form>
 
+        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">
+          <a href={`/group/${groupSlug}/token`} style="color: #e67e22; font-weight: 500;">
+            <span style="margin-right: 6px;">&#x1fa99;</span>打赏设置
+          </a>
+          {groupToken && (
+            <div class="group-token-card" style="margin-top:12px;padding:16px;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+                {groupToken.iconUrl.startsWith('http') ? (
+                  <img src={groupToken.iconUrl} alt="" style="width:28px;height:28px" />
+                ) : (
+                  <span style="font-size:24px">{groupToken.iconUrl}</span>
+                )}
+                <div>
+                  <strong style="font-size:15px">{groupToken.symbol}</strong>
+                  <span style="color:#666;margin-left:6px;font-size:13px">{groupToken.name}</span>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;color:#555">
+                {groupToken.totalSupply > 0 && (
+                  <div>
+                    <span style="color:#999">总量:</span> {groupToken.totalSupply.toLocaleString()}
+                  </div>
+                )}
+                <div>
+                  <span style="color:#999">已流通:</span> {circulatingSupply.toLocaleString()}
+                </div>
+                <div>
+                  <span style="color:#999">持有人:</span> {tokenHolderCount}
+                </div>
+                <div>
+                  <span style="color:#999">奖励:</span>{' '}
+                  {groupToken.rewardPost > 0 && <span>发帖 +{groupToken.rewardPost}</span>}
+                  {groupToken.rewardPost > 0 && groupToken.rewardReply > 0 && <span> · </span>}
+                  {groupToken.rewardReply > 0 && <span>回复 +{groupToken.rewardReply}</span>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {isNostrEnabled(c.env) && (
           <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">
-            <a href={`/group/${groupData.actorName || groupId}/nostr`} style="color: #8e44ad;">
+            <a href={`/group/${groupSlug}/nostr`} style="color: #8e44ad;">
               <span class="nostr-label">NOSTR</span>
               <span style="margin-left: 6px;">NIP-72 社区设置</span>
             </a>
