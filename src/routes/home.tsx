@@ -63,11 +63,12 @@ home.get('/', async (c) => {
     latestTopics = []
   } else if (remoteGroupIds.length > 0) {
     latestTopics = await topicQuery
-      .where(sql`(${topics.groupId} IS NULL OR ${topics.groupId} NOT IN (${sql.raw(remoteGroupIds.map(id => `'${id}'`).join(','))}))`)
+      .where(sql`${topics.groupId} IS NOT NULL AND ${topics.groupId} NOT IN (${sql.raw(remoteGroupIds.map(id => `'${id}'`).join(','))})`)
       .orderBy(desc(topics.updatedAt))
       .limit(30)
   } else {
     latestTopics = await topicQuery
+      .where(sql`${topics.groupId} IS NOT NULL`)
       .orderBy(desc(topics.updatedAt))
       .limit(30)
   }
@@ -95,6 +96,7 @@ home.get('/', async (c) => {
     .from(topics)
     .innerJoin(users, eq(topics.userId, users.id))
     .leftJoin(groups, eq(topics.groupId, groups.id))
+    .where(sql`${topics.groupId} IS NOT NULL`)
     .orderBy(sql`RANDOM()`)
     .limit(randomLimit)
 
