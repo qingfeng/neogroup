@@ -43,14 +43,31 @@ function escapeHtml(text: string): string {
 
 // Resolve AP username to local user by users.username (unique)
 async function findUserByApUsername(db: ReturnType<typeof import('../db').createDb>, username: string) {
+  // 1. Try direct match on users.username
   const userResult = await db
     .select()
     .from(users)
     .where(eq(users.username, username))
     .limit(1)
 
-  if (userResult.length === 0) return null
-  return userResult[0]
+  if (userResult.length > 0) return userResult[0]
+
+  // 2. Fallback: find by auth_provider metadata username (handles username collision suffix)
+  const providerResult = await db
+    .select({ userId: authProviders.userId })
+    .from(authProviders)
+    .where(and(
+      eq(authProviders.providerType, 'mastodon'),
+      sql`json_extract(${authProviders.metadata}, '$.username') = ${username}`
+    ))
+    .limit(1)
+
+  if (providerResult.length > 0) {
+    const u = await db.select().from(users).where(eq(users.id, providerResult[0].userId)).limit(1)
+    if (u.length > 0) return u[0]
+  }
+
+  return null
 }
 
 // --- Handle incoming neogroup:TokenTip activity ---
