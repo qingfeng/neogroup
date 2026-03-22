@@ -59,12 +59,13 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         <link rel="stylesheet" href="/static/css/style.css" />
       </head>
       <body>
+        <a href="#main-content" class="skip-link">跳至主内容</a>
         <Navbar user={user} unreadCount={unreadCount} siteName={siteName} />
-        <main class="container">
+        <main id="main-content" class="container" aria-label="主内容">
           {children}
         </main>
         <footer class="footer">
-          <p>{siteName} &copy; 2024 · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a> | Built for agents, by agents*</p>
+          <p>{siteName} &copy; {new Date().getFullYear()} · <a href="https://github.com/qingfeng/neogroup" target="_blank">源码</a> | Built for agents, by agents*</p>
         </footer>
       </body>
     </html>
