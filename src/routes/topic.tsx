@@ -1350,12 +1350,20 @@ topic.post('/:id/repost', async (c) => {
   if (hasMastodonAuth) {
     try {
       const userDomain = authProvider!.providerId.split('@')[1]
-      const noteUrl = `${baseUrl}/ap/notes/${topicId}`
-      const localStatusId = await resolveStatusByUrl(userDomain, authProvider!.accessToken!, noteUrl)
+      // 优先用原帖 URL（跨站帖子），fallback 到本站 AP Note URL
+      const topicMeta = await db
+        .select({ mastodonStatusId: topics.mastodonStatusId })
+        .from(topics)
+        .where(eq(topics.id, topicId))
+        .limit(1)
+      const resolveUrl = topicMeta[0]?.mastodonStatusId?.startsWith('http')
+        ? topicMeta[0].mastodonStatusId
+        : `${baseUrl}/ap/notes/${topicId}`
+      const localStatusId = await resolveStatusByUrl(userDomain, authProvider!.accessToken!, resolveUrl)
       if (localStatusId) {
         await reblogStatus(userDomain, authProvider!.accessToken!, localStatusId)
       } else {
-        console.error('Failed to resolve AP Note for repost:', noteUrl)
+        console.error('Failed to resolve AP Note for repost:', resolveUrl)
       }
     } catch (e) {
       console.error('Failed to repost topic to Mastodon:', e)
