@@ -44,7 +44,7 @@ auth.get('/login', (c) => {
   `
 
   return c.html(
-    <Layout user={null} title="登录" siteName={appName}>
+    <Layout user={null} title="登录" robots="noindex, follow" siteName={appName}>
       <style dangerouslySetInnerHTML={{ __html: loginCss }} />
       <div class="login-container">
         <h1>登录 {appName}</h1>

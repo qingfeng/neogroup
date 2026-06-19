@@ -8,6 +8,7 @@ import { postStatus } from '../services/mastodon'
 import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson, discoverRemoteGroup, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { buildSignedEvent, generateNostrKeypair, pubkeyToNpub, buildCommunityDefinitionEvent } from '../services/nostr'
 import { isSocialPaymentEnabled } from '../lib/features'
+import { buildBreadcrumbJsonLd, normalizeSiteUrl } from '../lib/seo'
 
 const group = new Hono<AppContext>()
 
@@ -47,8 +48,18 @@ group.get('/tag/:tag', async (c) => {
     g.tags!.split(/\s+/).some(t => t === tag)
   )
 
+  const appName = c.env.APP_NAME || 'NeoGroup'
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
+
   return c.html(
-    <Layout user={user} title={`标签: ${tag}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout
+      user={user}
+      title={`标签: ${tag}`}
+      description={`${appName} 中带有「${tag}」标签的小组`}
+      url={`${baseUrl}/group/tag/${encodeURIComponent(tag)}`}
+      unreadCount={c.get('unreadNotificationCount')}
+      siteName={appName}
+    >
       <div class="group-detail">
         <div class="group-content">
           <div class="section-header">
@@ -82,7 +93,7 @@ group.get('/create', async (c) => {
   if (!user) return c.redirect('/auth/login')
 
   return c.html(
-    <Layout user={user} title="创建小组" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title="创建小组" robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>创建小组</h1>
@@ -280,7 +291,7 @@ group.get('/search', async (c) => {
     .orderBy(desc(remoteGroups.createdAt))
 
   return c.html(
-    <Layout user={user} title="搜索跨站小组" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title="搜索跨站小组" robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>搜索跨站小组</h1>
@@ -363,7 +374,7 @@ group.post('/search', async (c) => {
   const info = await discoverRemoteGroup(handle)
   if (!info) return c.redirect('/group/search?q=' + encodeURIComponent(handle))
 
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
 
   // Check if remote_group already exists
   const existing = await db.select({ localGroupId: remoteGroups.localGroupId })
@@ -570,9 +581,37 @@ group.get('/:id', async (c) => {
   const description = groupData.description
     ? truncate(groupData.description, 160)
     : `${groupData.name} - ${appName} 小组`
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
   const host = new URL(baseUrl).host
   const groupUrl = `${baseUrl}/group/${groupSlug}`
+  const groupJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: groupData.name,
+    url: groupUrl,
+    description,
+    image: groupData.iconUrl || `${baseUrl}/static/img/default-group.svg`,
+    isPartOf: {
+      '@type': 'WebSite',
+      name: appName,
+      url: baseUrl,
+    },
+    mainEntity: {
+      '@type': 'ItemList',
+      name: `${groupData.name} 最新讨论`,
+      numberOfItems: topicList.length,
+      itemListElement: topicList.slice(0, 10).map((topic, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: `${baseUrl}/topic/${topic.id}`,
+        name: topic.title,
+      })),
+    },
+  }
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd([
+    { name: appName, url: baseUrl },
+    { name: groupData.name, url: groupUrl },
+  ])
 
   return c.html(
     <Layout
@@ -581,6 +620,8 @@ group.get('/:id', async (c) => {
       description={description}
       image={groupData.iconUrl || `${baseUrl}/static/img/default-group.svg`}
       url={groupUrl}
+      imageAlt={`${groupData.name} 小组图标`}
+      jsonLd={[groupJsonLd, breadcrumbJsonLd]}
       unreadCount={c.get('unreadNotificationCount')}
       siteName={appName}
     >
@@ -882,7 +923,7 @@ group.get('/:id/topic/new', async (c) => {
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
   return c.html(
-    <Layout user={user} title={`发布话题 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title={`发布话题 - ${groupData.name}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">
@@ -1439,7 +1480,7 @@ group.get('/:id/settings', async (c) => {
   const groupSlug = groupData.actorName || groupId
 
   return c.html(
-    <Layout user={user} title={`小组设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title={`小组设置 - ${groupData.name}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>小组设置</h1>
@@ -1659,7 +1700,7 @@ group.get('/:id/nostr', async (c) => {
     : null
 
   return c.html(
-    <Layout user={user} title={`Nostr 设置 - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title={`Nostr 设置 - ${groupData.name}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>Nostr 社区设置</h1>

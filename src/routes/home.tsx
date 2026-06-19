@@ -3,6 +3,7 @@ import { desc, eq, sql, notInArray, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { topics, users, groups, groupMembers, comments, remoteGroups } from '../db/schema'
 import { HomePage } from '../components/HomePage'
+import { normalizeSiteUrl } from '../lib/seo'
 
 const home = new Hono<AppContext>()
 
@@ -217,7 +218,7 @@ home.get('/', async (c) => {
     }
   }
 
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
 
   return c.html(
     <HomePage

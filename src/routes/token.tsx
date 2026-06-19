@@ -82,7 +82,7 @@ token.get('/:id/token', async (c) => {
   if (!tokenData) {
     // ─── Issue Form (no token yet) ───
     return c.html(
-      <Layout user={user} title={`发行 Token - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+      <Layout user={user} title={`发行 Token - ${groupData.name}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
         <div class="new-topic-page">
           <div class="page-header">
             <h1>发行小组 Token</h1>
@@ -242,7 +242,7 @@ token.get('/:id/token', async (c) => {
   const holderCount = holderCountResult[0]?.count || 0
 
   return c.html(
-    <Layout user={user} title={`${tokenData.symbol} Token - ${groupData.name}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title={`${tokenData.symbol} Token - ${groupData.name}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <div class="new-topic-page">
         <div class="page-header">
           <h1>

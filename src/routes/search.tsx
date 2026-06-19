@@ -5,6 +5,7 @@ import { groups, topics, users } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { TopicCard } from '../components/TopicCard'
 import { normalizeSearchQuery, toSearchLikePattern } from '../lib/search'
+import { normalizeSiteUrl } from '../lib/seo'
 
 const search = new Hono<AppContext>()
 
@@ -14,6 +15,8 @@ search.get('/search', async (c) => {
   const query = normalizeSearchQuery(c.req.query('q'))
   const pattern = toSearchLikePattern(query)
   const escapeChar = '\\'
+  const appName = c.env.APP_NAME || 'NeoGroup'
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
 
   const results = pattern ? await db
     .select({
@@ -79,7 +82,15 @@ search.get('/search', async (c) => {
     .limit(50) : []
 
   return c.html(
-    <Layout user={user} title={query ? `搜索：${query}` : '站内搜索'} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout
+      user={user}
+      title={query ? `搜索：${query}` : '站内搜索'}
+      description={`搜索 ${appName} 的小组话题和讨论内容`}
+      url={`${baseUrl}/search`}
+      robots="noindex, follow"
+      unreadCount={c.get('unreadNotificationCount')}
+      siteName={appName}
+    >
       <section class="search-page">
         <h1>站内搜索</h1>
         <form action="/search" method="get" class="search-page-form">

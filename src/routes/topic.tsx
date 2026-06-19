@@ -11,6 +11,7 @@ import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblog
 import { deliverCommentToFollowers, announceToUserFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
 import { buildSignedEvent } from '../services/nostr'
 import { isSocialPaymentEnabled } from '../lib/features'
+import { buildBreadcrumbJsonLd, normalizeSiteUrl } from '../lib/seo'
 
 const topic = new Hono<AppContext>()
 
@@ -341,7 +342,7 @@ topic.get('/:id', async (c) => {
     : undefined
 
   const images = parseJson<string[]>(topicData.images, [])
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
   // 优先使用帖子图片，否则使用小组图标
   const ogImage = images.length > 0
     ? images[0]
@@ -377,6 +378,12 @@ topic.get('/:id', async (c) => {
       url: `${baseUrl}/group/${topicData.group.id}`,
     }
   }
+  const breadcrumbItems = [
+    { name: c.env.APP_NAME || 'NeoGroup', url: baseUrl },
+    ...(topicData.group ? [{ name: topicData.group.name, url: `${baseUrl}/group/${topicData.group.id}` }] : []),
+    { name: topicData.title || '个人动态', url: topicUrl },
+  ]
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd(breadcrumbItems)
 
   // Fediverse creator attribution — always use local AP identity
   // so attributionDomains on our Actor matches
@@ -391,7 +398,8 @@ topic.get('/:id', async (c) => {
       image={ogImage}
       url={topicUrl}
       ogType="article"
-      jsonLd={jsonLd}
+      imageAlt={topicData.title || 'NeoGroup 话题图片'}
+      jsonLd={[jsonLd, breadcrumbJsonLd]}
       unreadCount={c.get('unreadNotificationCount')}
       siteName={c.env.APP_NAME}
       fediverseCreator={fediverseCreator}
@@ -2138,7 +2146,7 @@ topic.get('/:id/edit', async (c) => {
   }
 
   return c.html(
-    <Layout user={user} title={`编辑话题 - ${topicData.title}`} unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
+    <Layout user={user} title={`编辑话题 - ${topicData.title}`} robots="noindex, follow" unreadCount={c.get('unreadNotificationCount')} siteName={c.env.APP_NAME}>
       <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" />
       <div class="new-topic-page">
         <div class="page-header">

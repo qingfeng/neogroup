@@ -8,6 +8,7 @@ import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, 
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
 import { isSocialPaymentEnabled } from '../lib/features'
+import { buildBreadcrumbJsonLd, normalizeSiteUrl } from '../lib/seo'
 
 const user = new Hono<AppContext>()
 
@@ -126,7 +127,7 @@ user.get('/:id', async (c) => {
   const db = c.get('db')
   const currentUser = c.get('user')
   const rawId = c.req.param('id')
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
   const host = new URL(baseUrl).host
 
   // Support multiple lookup formats:
@@ -355,6 +356,26 @@ user.get('/:id', async (c) => {
     ? truncate(stripHtml(profileUser.bio), 160)
     : `${displayName} 的个人主页 - ${appName}`
   const userUrl = `${baseUrl}/user/${profileUser.username}`
+  const userJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'ProfilePage',
+    name: displayName,
+    url: userUrl,
+    description,
+    dateCreated: profileUser.createdAt.toISOString(),
+    dateModified: profileUser.updatedAt.toISOString(),
+    mainEntity: {
+      '@type': 'Person',
+      name: displayName,
+      alternateName: profileUser.username,
+      url: userUrl,
+      ...(profileUser.avatarUrl ? { image: profileUser.avatarUrl } : {}),
+    },
+  }
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd([
+    { name: appName, url: baseUrl },
+    { name: displayName, url: userUrl },
+  ])
 
   return c.html(
     <Layout
@@ -362,7 +383,9 @@ user.get('/:id', async (c) => {
       title={displayName}
       description={description}
       image={profileUser.avatarUrl || `${baseUrl}/static/img/default-avatar.svg`}
+      imageAlt={`${displayName} 的头像`}
       url={userUrl}
+      jsonLd={[userJsonLd, breadcrumbJsonLd]}
       unreadCount={c.get('unreadNotificationCount')}
       siteName={appName}
     >
@@ -728,6 +751,7 @@ user.get('/:id/edit', async (c) => {
     <Layout
       user={currentUser}
       title="编辑资料"
+      robots="noindex, follow"
       unreadCount={c.get('unreadNotificationCount')}
       siteName={c.env.APP_NAME}
     >
@@ -958,6 +982,7 @@ user.get('/:id/nostr', async (c) => {
     <Layout
       user={currentUser}
       title="Nostr 设置"
+      robots="noindex, follow"
       unreadCount={c.get('unreadNotificationCount')}
       siteName={appName}
     >
@@ -1210,6 +1235,7 @@ user.get('/:id/nostr/export', async (c) => {
     <Layout
       user={currentUser}
       title="导出 Nostr 密钥"
+      robots="noindex, follow"
       unreadCount={c.get('unreadNotificationCount')}
       siteName={c.env.APP_NAME}
     >

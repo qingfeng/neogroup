@@ -4,6 +4,7 @@ import { TopicCard } from './TopicCard'
 import { Sidebar } from './Sidebar'
 import type { Topic, User, Group } from '../db/schema'
 import { stripHtml, truncate } from '../lib/utils'
+import { buildWebsiteJsonLd } from '../lib/seo'
 
 interface FeedItem {
   type: 'topic' | 'comment'
@@ -35,13 +36,7 @@ interface HomePageProps {
 
 export const HomePage: FC<HomePageProps> = ({ user, feedItems, topics, hotGroups, topTags, randomGroups, newUsers, userGroups, remoteGroupDomains, baseUrl, unreadCount, siteName, source, hasRemoteGroups }) => {
   const name = siteName || 'NeoGroup'
-  const jsonLd = {
-    '@context': 'https://schema.org',
-    '@type': 'WebSite',
-    name,
-    url: baseUrl,
-    description: `${name} 是一个基于 Mastodon 登录的去中心化小组讨论社区`,
-  }
+  const jsonLd = buildWebsiteJsonLd(name, baseUrl)
 
   return (
     <Layout

@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { serveStatic } from 'hono/cloudflare-workers'
 import { desc, eq } from 'drizzle-orm'
 import { createDb } from './db'
-import { groups as groupsTable, topics as topicsTable } from './db/schema'
+import { groups as groupsTable, topics as topicsTable, users as usersTable } from './db/schema'
 import { loadUser } from './middleware/auth'
 import authRoutes from './routes/auth'
 import homeRoutes from './routes/home'
@@ -18,6 +18,7 @@ import tokenRoutes from './routes/token'
 import searchRoutes from './routes/search'
 import type { AppContext, Bindings } from './types'
 import { isNostrEnabled } from './lib/utils'
+import { escapeXml, normalizeSiteUrl } from './lib/seo'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
 
 // @ts-ignore - Workers Sites manifest
@@ -30,11 +31,15 @@ app.use('/static/*', serveStatic({ root: './', manifest }))
 
 // robots.txt
 app.get('/robots.txt', (c) => {
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
   return c.text(`User-agent: *
 Allow: /
+Allow: /static/
 Disallow: /auth/
 Disallow: /api/
+Disallow: /admin/
+Disallow: /notifications
+Disallow: /timeline
 
 Sitemap: ${baseUrl}/sitemap.xml
 `)
@@ -43,22 +48,39 @@ Sitemap: ${baseUrl}/sitemap.xml
 // sitemap.xml
 app.get('/sitemap.xml', async (c) => {
   const db = createDb(c.env.DB)
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
 
-  const allGroups = await db.select({ id: groupsTable.id, updatedAt: groupsTable.updatedAt }).from(groupsTable)
+  const allGroups = await db
+    .select({ id: groupsTable.id, actorName: groupsTable.actorName, updatedAt: groupsTable.updatedAt })
+    .from(groupsTable)
   const recentTopics = await db
     .select({ id: topicsTable.id, updatedAt: topicsTable.updatedAt })
     .from(topicsTable)
     .orderBy(desc(topicsTable.updatedAt))
     .limit(500)
+  const recentUsers = await db
+    .select({ username: usersTable.username, updatedAt: usersTable.updatedAt })
+    .from(usersTable)
+    .orderBy(desc(usersTable.updatedAt))
+    .limit(500)
+
+  const urlEntry = (loc: string, options: { lastmod?: Date; changefreq?: string; priority?: string } = {}) => {
+    const lastmod = options.lastmod ? `<lastmod>${options.lastmod.toISOString().split('T')[0]}</lastmod>` : ''
+    const changefreq = options.changefreq ? `<changefreq>${options.changefreq}</changefreq>` : ''
+    const priority = options.priority ? `<priority>${options.priority}</priority>` : ''
+    return `<url><loc>${escapeXml(loc)}</loc>${lastmod}${changefreq}${priority}</url>`
+  }
 
   const urls = [
-    `<url><loc>${baseUrl}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+    urlEntry(`${baseUrl}/`, { changefreq: 'daily', priority: '1.0' }),
     ...allGroups.map(g =>
-      `<url><loc>${baseUrl}/group/${g.id}</loc><lastmod>${g.updatedAt.toISOString().split('T')[0]}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>`
+      urlEntry(`${baseUrl}/group/${g.actorName || g.id}`, { lastmod: g.updatedAt, changefreq: 'daily', priority: '0.8' })
     ),
     ...recentTopics.map(t =>
-      `<url><loc>${baseUrl}/topic/${t.id}</loc><lastmod>${t.updatedAt.toISOString().split('T')[0]}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>`
+      urlEntry(`${baseUrl}/topic/${t.id}`, { lastmod: t.updatedAt, changefreq: 'weekly', priority: '0.6' })
+    ),
+    ...recentUsers.map(u =>
+      urlEntry(`${baseUrl}/user/${u.username}`, { lastmod: u.updatedAt, changefreq: 'weekly', priority: '0.5' })
     ),
   ]
 
@@ -67,7 +89,7 @@ app.get('/sitemap.xml', async (c) => {
 ${urls.join('\n')}
 </urlset>`
 
-  return c.body(xml, 200, { 'Content-Type': 'application/xml' })
+  return c.body(xml, 200, { 'Content-Type': 'application/xml; charset=UTF-8' })
 })
 
 // R2 文件访问（支持图片裁剪）

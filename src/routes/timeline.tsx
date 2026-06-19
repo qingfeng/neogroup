@@ -10,6 +10,7 @@ import { deliverTopicToFollowers, discoverRemoteUser, getOrCreateRemoteUser, fet
 import { resolveStatusByUrl, reblogStatus } from '../services/mastodon'
 import { buildSignedEvent, pubkeyToNpub, npubToPubkey } from '../services/nostr'
 import { getOrCreateNostrUser, fetchAndUpdateNostrProfile, backfillNostrUserPosts } from '../services/nostr-community'
+import { normalizeSiteUrl } from '../lib/seo'
 
 const timeline = new Hono<AppContext>()
 
@@ -120,13 +121,16 @@ timeline.get('/', async (c) => {
     return date.toLocaleDateString('zh-CN')
   }
 
-  const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
+  const baseUrl = normalizeSiteUrl(c.env.APP_URL || new URL(c.req.url).origin)
   const appName = c.env.APP_NAME || 'NeoGroup'
 
   return c.html(
     <Layout
       user={user}
       title="Timeline"
+      description={`${appName} 个人时间线`}
+      url={`${baseUrl}/timeline`}
+      robots="noindex, follow"
       siteName={appName}
       unreadCount={c.get('unreadNotificationCount')}
     >
