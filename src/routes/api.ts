@@ -12,6 +12,7 @@ import { generateNostrKeypair, buildSignedEvent, pubkeyToNpub } from '../service
 import { buildJobRequestEvent, buildJobResultEvent, buildJobFeedbackEvent, buildHandlerInfoEvent } from '../services/dvm'
 import { createInvoice, checkPayment, payInvoice, payLightningAddress } from '../services/lnbits'
 import { creditToken, debitToken, recordTokenTx } from '../lib/token'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const api = new Hono<AppContext>()
 
@@ -315,15 +316,16 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
       createdAt: new Date(),
     })
 
-    // Token airdrop on join
-    c.executionCtx.waitUntil((async () => {
-      try {
-        const { airdropOnJoin } = await import('../lib/token')
-        await airdropOnJoin(db, groupId, user.id)
-      } catch (e) {
-        console.error('[Token] Airdrop on join failed:', e)
-      }
-    })())
+    if (isSocialPaymentEnabled(c.env)) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { airdropOnJoin } = await import('../lib/token')
+          await airdropOnJoin(db, groupId, user.id)
+        } catch (e) {
+          console.error('[Token] Airdrop on join failed:', e)
+        }
+      })())
+    }
   }
 
   const topicId = generateId()
@@ -340,15 +342,16 @@ api.post('/groups/:id/topics', requireApiAuth, async (c) => {
     updatedAt: now,
   })
 
-  // Token mining: reward_post
-  c.executionCtx.waitUntil((async () => {
-    try {
-      const { tryMineReward } = await import('../lib/token')
-      await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
-    } catch (e) {
-      console.error('[Token] Mining reward_post failed:', e)
-    }
-  })())
+  if (isSocialPaymentEnabled(c.env)) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
+      } catch (e) {
+        console.error('[Token] Mining reward_post failed:', e)
+      }
+    })())
+  }
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
@@ -492,23 +495,22 @@ api.post('/topics/:id/comments', requireApiAuth, async (c) => {
     }
   }
 
-  // Token mining: reward_reply + reward_liked
-  c.executionCtx.waitUntil((async () => {
-    try {
-      const { tryMineReward } = await import('../lib/token')
-      const groupId = topicResult[0].groupId
-      if (!groupId) return
-      // Commenter gets reward_reply
-      await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
-      // Author gets reward_liked (topic author or parent comment author)
-      const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
-      if (authorId !== user.id) {
-        await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+  if (isSocialPaymentEnabled(c.env)) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        const groupId = topicResult[0].groupId
+        if (!groupId) return
+        await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
+        const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
+        if (authorId !== user.id) {
+          await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+        }
+      } catch (e) {
+        console.error('[Token] Mining reward_reply failed:', e)
       }
-    } catch (e) {
-      console.error('[Token] Mining reward_reply failed:', e)
-    }
-  })())
+    })())
+  }
 
   const baseUrl = c.env.APP_URL || new URL(c.req.url).origin
 
@@ -667,19 +669,20 @@ api.post('/topics/:id/like', requireApiAuth, async (c) => {
       topicId,
     })
 
-    // Token mining: reward_like + reward_liked
-    c.executionCtx.waitUntil((async () => {
-      try {
-        const { tryMineReward } = await import('../lib/token')
-        if (!topicData[0].groupId) return
-        await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
-        if (topicData[0].userId !== user.id) {
-          await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+    if (isSocialPaymentEnabled(c.env)) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { tryMineReward } = await import('../lib/token')
+          if (!topicData[0].groupId) return
+          await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
+          if (topicData[0].userId !== user.id) {
+            await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+          }
+        } catch (e) {
+          console.error('[Token] Mining reward_like failed:', e)
         }
-      } catch (e) {
-        console.error('[Token] Mining reward_like failed:', e)
-      }
-    })())
+      })())
+    }
   }
 
   return c.json({ liked: true })
@@ -2252,6 +2255,7 @@ api.post('/withdraw', requireApiAuth, async (c) => {
 
 // GET /api/me/tokens — 当前用户持有的所有 Token
 api.get('/me/tokens', requireApiAuth, async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -2307,6 +2311,7 @@ api.get('/me/tokens', requireApiAuth, async (c) => {
 
 // POST /api/topics/:id/tip — 打赏话题
 api.post('/topics/:id/tip', requireApiAuth, async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')!
   const topicId = c.req.param('id')
@@ -2372,6 +2377,7 @@ api.post('/topics/:id/tip', requireApiAuth, async (c) => {
 
 // POST /api/topics/:id/comments/:cid/tip — 打赏评论
 api.post('/topics/:id/comments/:cid/tip', requireApiAuth, async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')!
   const topicId = c.req.param('id')
@@ -2440,6 +2446,7 @@ api.post('/topics/:id/comments/:cid/tip', requireApiAuth, async (c) => {
 
 // POST /api/token/transfer — Token 转账
 api.post('/token/transfer', requireApiAuth, async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const user = c.get('user')!
 
@@ -2479,6 +2486,7 @@ api.post('/token/transfer', requireApiAuth, async (c) => {
 
 // GET /api/groups/:id/token — 小组 Token 信息（公开）
 api.get('/groups/:id/token', async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const groupId = c.req.param('id')
 
@@ -2504,6 +2512,7 @@ api.get('/groups/:id/token', async (c) => {
 
 // GET /api/groups/:id/token/leaderboard — Token 持有排行榜（公开）
 api.get('/groups/:id/token/leaderboard', async (c) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
   const db = c.get('db')
   const groupId = c.req.param('id')
 

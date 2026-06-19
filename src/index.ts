@@ -15,6 +15,7 @@ import apiRoutes from './routes/api'
 import timelineRoutes from './routes/timeline'
 import dvmRoutes from './routes/dvm'
 import tokenRoutes from './routes/token'
+import searchRoutes from './routes/search'
 import type { AppContext, Bindings } from './types'
 import { isNostrEnabled } from './lib/utils'
 // import { pollMentions } from './services/mastodon-bot' // Legacy bot polling disabled
@@ -683,6 +684,7 @@ app.route('/group', groupRoutes)
 app.route('/group', tokenRoutes)
 app.route('/user', userRoutes)
 app.route('/notifications', notificationRoutes)
+app.route('/', searchRoutes)
 app.route('/', homeRoutes)
 
 // 管理端点：为所有无 Nostr 密钥的用户批量生成密钥并开启同步

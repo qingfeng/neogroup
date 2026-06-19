@@ -7,6 +7,7 @@ import { generateId, truncate, now, getExtensionFromUrl, getContentType, resizeI
 import { postStatus } from '../services/mastodon'
 import { deliverTopicToFollowers, announceToGroupFollowers, getNoteJson, discoverRemoteGroup, ensureKeyPair, signAndDeliver, getApUsername } from '../services/activitypub'
 import { buildSignedEvent, generateNostrKeypair, pubkeyToNpub, buildCommunityDefinitionEvent } from '../services/nostr'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const group = new Hono<AppContext>()
 
@@ -778,15 +779,16 @@ group.post('/:id/join', async (c) => {
         createdAt: new Date(),
       })
 
-      // Token airdrop on join
-      c.executionCtx.waitUntil((async () => {
-        try {
-          const { airdropOnJoin } = await import('../lib/token')
-          await airdropOnJoin(db, groupId, user.id)
-        } catch (e) {
-          console.error('[Token] Airdrop on join failed:', e)
-        }
-      })())
+      if (isSocialPaymentEnabled(c.env)) {
+        c.executionCtx.waitUntil((async () => {
+          try {
+            const { airdropOnJoin } = await import('../lib/token')
+            await airdropOnJoin(db, groupId, user.id)
+          } catch (e) {
+            console.error('[Token] Airdrop on join failed:', e)
+          }
+        })())
+      }
     }
   }
 
@@ -1201,15 +1203,16 @@ group.post('/:id/topic/new', async (c) => {
     updatedAt: topicNow,
   })
 
-  // Token mining: reward_post
-  c.executionCtx.waitUntil((async () => {
-    try {
-      const { tryMineReward } = await import('../lib/token')
-      await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
-    } catch (e) {
-      console.error('[Token] Mining reward_post failed:', e)
-    }
-  })())
+  if (isSocialPaymentEnabled(c.env)) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        await tryMineReward(db, groupId, user.id, 'reward_post', topicId)
+      } catch (e) {
+        console.error('[Token] Mining reward_post failed:', e)
+      }
+    })())
+  }
 
   // 同步发布到 Mastodon
   if (syncMastodon === '1') {
@@ -1416,9 +1419,10 @@ group.get('/:id/settings', async (c) => {
     return c.redirect(`/group/${groupData.actorName || groupId}`)
   }
 
-  // ── Token Info ──
-  const groupTokenResult = await db.select().from(groupTokens)
-    .where(eq(groupTokens.groupId, groupId)).limit(1)
+  const socialPaymentsEnabled = isSocialPaymentEnabled(c.env)
+  const groupTokenResult = socialPaymentsEnabled
+    ? await db.select().from(groupTokens).where(eq(groupTokens.groupId, groupId)).limit(1)
+    : []
   const groupToken = groupTokenResult.length > 0 ? groupTokenResult[0] : null
 
   let tokenHolderCount = 0
@@ -1488,6 +1492,7 @@ group.get('/:id/settings', async (c) => {
           </div>
         </form>
 
+        {socialPaymentsEnabled && (
         <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">
           <a href={`/group/${groupSlug}/token`} style="color: #e67e22; font-weight: 500;">
             <span style="margin-right: 6px;">&#x1fa99;</span>打赏设置
@@ -1527,6 +1532,7 @@ group.get('/:id/settings', async (c) => {
             </div>
           )}
         </div>
+        )}
 
         {isNostrEnabled(c.env) && (
           <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8;">

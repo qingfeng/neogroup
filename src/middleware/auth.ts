@@ -4,6 +4,7 @@ import type { AppContext } from '../types'
 import { users, authProviders, notifications } from '../db/schema'
 import { getSession, getSessionIdFromCookie } from '../services/session'
 import { hashApiKey } from '../lib/utils'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 // 加载用户信息（不强制登录）
 export const loadUser = createMiddleware<AppContext>(async (c, next) => {
@@ -45,10 +46,17 @@ export const loadUser = createMiddleware<AppContext>(async (c, next) => {
       if (user) {
         c.set('user', user)
         c.set('sessionId', sessionId)
+        const notificationCondition = isSocialPaymentEnabled(c.env)
+          ? and(eq(notifications.userId, user.id), eq(notifications.isRead, 0))
+          : and(
+            eq(notifications.userId, user.id),
+            eq(notifications.isRead, 0),
+            sql`${notifications.type} NOT IN ('token_tip', 'token_airdrop', 'token_transfer')`
+          )
         const unread = await db
           .select({ count: sql<number>`count(*)` })
           .from(notifications)
-          .where(and(eq(notifications.userId, user.id), eq(notifications.isRead, 0)))
+          .where(notificationCondition)
         c.set('unreadNotificationCount', unread[0]?.count || 0)
       }
     }

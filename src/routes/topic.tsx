@@ -10,6 +10,7 @@ import { syncMastodonReplies, syncCommentReplies } from '../services/mastodon-sy
 import { postStatus, resolveStatusId, reblogStatus, resolveStatusByUrl, unreblogStatus, deleteStatus } from '../services/mastodon'
 import { deliverCommentToFollowers, announceToUserFollowers, ensureKeyPair, signAndDeliver, fetchActor, getApUsername } from '../services/activitypub'
 import { buildSignedEvent } from '../services/nostr'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const topic = new Hono<AppContext>()
 
@@ -183,12 +184,13 @@ topic.get('/:id', async (c) => {
     hasMastodonAuth = !!(ap?.accessToken)
   }
   const canRepost = hasMastodonAuth
+  const socialPaymentsEnabled = isSocialPaymentEnabled(c.env)
 
   // ── Token Tip 数据 ──
   // 用户持有的 Token（供打赏弹窗选择）
   type UserTokenInfo = { tokenId: string; tokenType: string; balance: number; symbol: string; name: string; iconUrl: string }
   let userTokens: UserTokenInfo[] = []
-  if (user) {
+  if (socialPaymentsEnabled && user) {
     const balances = await db.select({
       tokenId: tokenBalances.tokenId,
       tokenType: tokenBalances.tokenType,
@@ -210,11 +212,13 @@ topic.get('/:id', async (c) => {
 
   // 话题收到的打赏汇总
   type TipSummary = { tokenId: string; symbol: string; iconUrl: string; total: number }
-  const topicTipRows = await db.all<{ token_id: string; token_type: string; total: number }>(
-    sql`SELECT token_id, token_type, SUM(amount) as total FROM token_tx
-        WHERE ref_id = ${topicId} AND ref_type = 'topic' AND type = 'tip'
-        GROUP BY token_id, token_type`
-  )
+  const topicTipRows = socialPaymentsEnabled
+    ? await db.all<{ token_id: string; token_type: string; total: number }>(
+      sql`SELECT token_id, token_type, SUM(amount) as total FROM token_tx
+          WHERE ref_id = ${topicId} AND ref_type = 'topic' AND type = 'tip'
+          GROUP BY token_id, token_type`
+    )
+    : []
   const topicTipSummary: TipSummary[] = []
   for (const row of topicTipRows) {
     if (row.token_type === 'local') {
@@ -296,7 +300,7 @@ topic.get('/:id', async (c) => {
 
   // 评论收到的打赏汇总（按评论 ID 分组）
   const commentTipMap = new Map<string, TipSummary[]>()
-  if (commentList.length > 0) {
+  if (socialPaymentsEnabled && commentList.length > 0) {
     const commentIds = commentList.map(c => c.id)
     const commentTipRows = await db.all<{ ref_id: string; token_id: string; token_type: string; total: number }>(
       sql`SELECT ref_id, token_id, token_type, SUM(amount) as total FROM token_tx
@@ -476,7 +480,7 @@ topic.get('/:id', async (c) => {
                 {repostCount} 人转发
               </button>
             )}
-            {c.env.LNBITS_URL && (
+            {socialPaymentsEnabled && c.env.LNBITS_URL && (
             <button type="button" class="topic-like-btn zap-btn" onclick="document.getElementById('zap-modal').style.display='flex'">
               Zap
             </button>
@@ -521,7 +525,7 @@ topic.get('/:id', async (c) => {
             </div>
           )}
 
-          {c.env.LNBITS_URL && (<>
+          {socialPaymentsEnabled && c.env.LNBITS_URL && (<>
           {/* Zap Modal */}
           <div id="zap-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
             <div class="modal-content">
@@ -620,6 +624,7 @@ topic.get('/:id', async (c) => {
           </>
           )}
 
+          {user && userTokens.length > 0 && (
           <script dangerouslySetInnerHTML={{ __html: `
             async function sendTokenTip(type, id, commentId) {
               var prefix = type === 'comment' ? 'comment-tip-' + commentId : 'topic-tip';
@@ -660,6 +665,7 @@ topic.get('/:id', async (c) => {
               }
             }
           `}} />
+          )}
 
           <div class="comments-section">
             <div class="comments-header">
@@ -1046,23 +1052,22 @@ topic.post('/:id/comment', async (c) => {
     }
   }
 
-  // Token mining: reward_reply + reward_liked
-  c.executionCtx.waitUntil((async () => {
-    try {
-      const { tryMineReward } = await import('../lib/token')
-      const groupId = topicResult[0].groupId
-      if (!groupId) return
-      // Commenter gets reward_reply
-      await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
-      // Author gets reward_liked (topic author or parent comment author)
-      const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
-      if (authorId !== user.id) {
-        await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+  if (isSocialPaymentEnabled(c.env)) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { tryMineReward } = await import('../lib/token')
+        const groupId = topicResult[0].groupId
+        if (!groupId) return
+        await tryMineReward(db, groupId, user.id, 'reward_reply', commentId)
+        const authorId = replyCommentData ? replyCommentData.userId : topicResult[0].userId
+        if (authorId !== user.id) {
+          await tryMineReward(db, groupId, authorId, 'reward_liked', commentId)
+        }
+      } catch (e) {
+        console.error('[Token] Mining reward_reply failed:', e)
       }
-    } catch (e) {
-      console.error('[Token] Mining reward_reply failed:', e)
-    }
-  })())
+    })())
+  }
 
   // AP: deliver Create(Note) to followers
   const baseUrlForAp = c.env.APP_URL || new URL(c.req.url).origin
@@ -1530,19 +1535,20 @@ topic.post('/:id/like', async (c) => {
         topicId,
       })
 
-      // Token mining: reward_like + reward_liked
-      c.executionCtx.waitUntil((async () => {
-        try {
-          const { tryMineReward } = await import('../lib/token')
-          if (!topicData[0].groupId) return
-          await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
-          if (topicData[0].userId !== user.id) {
-            await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+      if (isSocialPaymentEnabled(c.env)) {
+        c.executionCtx.waitUntil((async () => {
+          try {
+            const { tryMineReward } = await import('../lib/token')
+            if (!topicData[0].groupId) return
+            await tryMineReward(db, topicData[0].groupId, user.id, 'reward_like', topicId)
+            if (topicData[0].userId !== user.id) {
+              await tryMineReward(db, topicData[0].groupId, topicData[0].userId, 'reward_liked', topicId)
+            }
+          } catch (e) {
+            console.error('[Token] Mining reward_like failed:', e)
           }
-        } catch (e) {
-          console.error('[Token] Mining reward_like failed:', e)
-        }
-      })())
+        })())
+      }
 
       // Nostr Kind 7 reaction
       if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted
@@ -1789,22 +1795,22 @@ topic.post('/:id/comment/:commentId/like', async (c) => {
       commentId,
     })
 
-    // Token mining: reward_like + reward_liked
-    c.executionCtx.waitUntil((async () => {
-      try {
-        const { tryMineReward } = await import('../lib/token')
-        // Get topic's groupId
-        const topicForMining = await db.select({ groupId: topics.groupId }).from(topics).where(eq(topics.id, topicId)).limit(1)
-        if (topicForMining.length === 0 || !topicForMining[0].groupId) return
-        const groupId = topicForMining[0].groupId
-        await tryMineReward(db, groupId, user.id, 'reward_like', commentId)
-        if (commentResult[0].userId !== user.id) {
-          await tryMineReward(db, groupId, commentResult[0].userId, 'reward_liked', commentId)
+    if (isSocialPaymentEnabled(c.env)) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { tryMineReward } = await import('../lib/token')
+          const topicForMining = await db.select({ groupId: topics.groupId }).from(topics).where(eq(topics.id, topicId)).limit(1)
+          if (topicForMining.length === 0 || !topicForMining[0].groupId) return
+          const groupId = topicForMining[0].groupId
+          await tryMineReward(db, groupId, user.id, 'reward_like', commentId)
+          if (commentResult[0].userId !== user.id) {
+            await tryMineReward(db, groupId, commentResult[0].userId, 'reward_liked', commentId)
+          }
+        } catch (e) {
+          console.error('[Token] Mining reward_like (comment) failed:', e)
         }
-      } catch (e) {
-        console.error('[Token] Mining reward_like (comment) failed:', e)
-      }
-    })())
+      })())
+    }
 
     // Nostr Kind 7 reaction for comment
     if (isNostrEnabled(c.env) && user.nostrSyncEnabled && user.nostrPrivEncrypted

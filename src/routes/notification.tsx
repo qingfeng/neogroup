@@ -4,6 +4,7 @@ import type { AppContext } from '../types'
 import { notifications, users, topics } from '../db/schema'
 import { Layout } from '../components/Layout'
 import { stripHtml, truncate } from '../lib/utils'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const notification = new Hono<AppContext>()
 
@@ -16,7 +17,7 @@ notification.get('/', async (c) => {
   }
 
   // 查询提醒列表（leftJoin 以支持远程 actor）
-  const notificationList = await db
+  const rawNotificationList = await db
     .select({
       id: notifications.id,
       type: notifications.type,
@@ -40,6 +41,10 @@ notification.get('/', async (c) => {
     .where(eq(notifications.userId, user.id))
     .orderBy(desc(notifications.createdAt))
     .limit(50)
+  const tokenNotificationTypes = new Set(['token_tip', 'token_airdrop', 'token_transfer'])
+  const notificationList = isSocialPaymentEnabled(c.env)
+    ? rawNotificationList
+    : rawNotificationList.filter((n) => !tokenNotificationTypes.has(n.type))
 
   // 获取关联的话题标题
   const topicIds = [...new Set(notificationList.map(n => n.topicId).filter(Boolean))] as string[]

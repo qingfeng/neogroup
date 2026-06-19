@@ -7,6 +7,7 @@ import { Layout } from '../components/Layout'
 import { stripHtml, truncate, resizeImage, getExtensionFromUrl, getContentType, escapeHtml, unescapeHtml, generateId, isNostrEnabled } from '../lib/utils'
 import { SafeHtml } from '../components/SafeHtml'
 import { createNotification } from '../lib/notifications'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const user = new Hono<AppContext>()
 
@@ -310,18 +311,19 @@ user.get('/:id', async (c) => {
     1
   )
   const followingCount = followingCountRow[0]?.count || 0
+  const socialPaymentsEnabled = isSocialPaymentEnabled(c.env)
 
   // ── Token Portfolio ──
   type ProfileTokenInfo = { tokenId: string; tokenType: string; balance: number; symbol: string; name: string; iconUrl: string; groupName?: string }
   const profileTokens: ProfileTokenInfo[] = []
-  const balances = await applyLimit(
+  const balances = socialPaymentsEnabled ? await applyLimit(
     db.select({
       tokenId: tokenBalances.tokenId,
       tokenType: tokenBalances.tokenType,
       balance: tokenBalances.balance,
     }).from(tokenBalances).where(eq(tokenBalances.userId, userId)),
     50
-  )
+  ) : []
   for (const b of balances) {
     if (b.balance <= 0) continue
     if (b.tokenType === 'local') {
@@ -391,7 +393,7 @@ user.get('/:id', async (c) => {
                 <button class="copy-btn" type="button" onclick={`navigator.clipboard.writeText('${pubkeyToNpub(profileUser.nostrPubkey)}')`} title="复制 npub">📋</button>
               </div>
             )}
-            {c.env.LNBITS_URL && (
+            {socialPaymentsEnabled && c.env.LNBITS_URL && (
             <div class="profile-lightning">
               <span class="lightning-label">Lightning</span>
               <code>{profileUser.username}@{host}</code>
@@ -425,7 +427,7 @@ user.get('/:id', async (c) => {
             <a class="link" href={`/user/${profileUser.username}/followers`}>查看被关注 ({followerCount})</a>
           </div>
 
-          {profileTokens.length > 0 && (
+          {socialPaymentsEnabled && profileTokens.length > 0 && (
             <div class="profile-section">
               <h2>Token</h2>
               <div class="token-portfolio">
@@ -770,6 +772,7 @@ user.get('/:id/edit', async (c) => {
             <p class="form-hint">最多 500 字</p>
           </div>
 
+          {isSocialPaymentEnabled(c.env) && (
           <div class="form-group">
             <label for="lightningAddress">Lightning Address</label>
             <input
@@ -782,6 +785,7 @@ user.get('/:id/edit', async (c) => {
             />
             <p class="form-hint">用于 Nostr 闪电打赏（Zap），可在 Alby、Wallet of Satoshi 等服务免费获取</p>
           </div>
+          )}
 
           <div class="form-actions">
             <a href={`/user/${userId}`} class="btn-secondary">取消</a>
@@ -829,7 +833,9 @@ user.post('/:id/edit', async (c) => {
   const formData = await c.req.formData()
   const displayName = (formData.get('displayName') as string || '').trim().slice(0, 50)
   const bioText = (formData.get('bio') as string || '').trim().slice(0, 500)
-  const lightningAddress = (formData.get('lightningAddress') as string || '').trim().slice(0, 100) || null
+  const lightningAddress = isSocialPaymentEnabled(c.env)
+    ? (formData.get('lightningAddress') as string || '').trim().slice(0, 100) || null
+    : undefined
   const avatarFile = formData.get('avatar') as File | null
 
   // 处理 bio：将纯文本转换为 HTML 段落（先转义特殊字符）
@@ -873,8 +879,11 @@ user.post('/:id/edit', async (c) => {
   const updateData: Record<string, unknown> = {
     displayName: displayName || null,
     bio,
-    lightningAddress,
     updatedAt: new Date(),
+  }
+
+  if (lightningAddress !== undefined) {
+    updateData.lightningAddress = lightningAddress
   }
 
   if (avatarUrl) {

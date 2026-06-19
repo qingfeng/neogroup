@@ -13,6 +13,7 @@ import {
   getGroupWebFingerJson, getGroupActorJson, ensureGroupKeyPair, getOrCreateRemoteUser,
   boostToGroupFollowers, deliverTokenTip
 } from '../services/activitypub'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const ap = new Hono<AppContext>()
 
@@ -871,7 +872,7 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
-  if (type === 'neogroup:TokenTip') {
+  if (type === 'neogroup:TokenTip' && isSocialPaymentEnabled(c.env)) {
     // Handle cross-site token tip to a topic/comment in this group
     const result = await handleIncomingTokenTip(db, baseUrl, activity)
     if (result.handled) {
@@ -1109,7 +1110,7 @@ ap.post('/ap/users/:username/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
-  if (type === 'neogroup:TokenTip') {
+  if (type === 'neogroup:TokenTip' && isSocialPaymentEnabled(c.env)) {
     // Handle cross-site token tip
     const result = await handleIncomingTokenTip(db, baseUrl, activity)
     if (result.handled) {
@@ -2225,7 +2226,7 @@ ap.post('/ap/inbox', async (c) => {
     return c.json({ status: 'accepted' }, 202)
   }
 
-  if (type === 'neogroup:TokenTip') {
+  if (type === 'neogroup:TokenTip' && isSocialPaymentEnabled(c.env)) {
     // Handle cross-site token tip via shared inbox
     const result = await handleIncomingTokenTip(db, baseUrl, activity)
     if (result.handled) {

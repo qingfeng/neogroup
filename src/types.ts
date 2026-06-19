@@ -5,6 +5,7 @@ export type Bindings = {
   KV: KVNamespace
   APP_URL: string
   APP_NAME: string
+  SOCIAL_PAYMENTS_ENABLED?: string
   R2?: R2Bucket
   QUEUE?: Queue
   NOSTR_QUEUE?: Queue

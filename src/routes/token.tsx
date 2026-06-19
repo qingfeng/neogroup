@@ -5,8 +5,14 @@ import { groups, groupMembers, groupTokens, tokenBalances, users, topics, commen
 import { Layout } from '../components/Layout'
 import { generateId } from '../lib/utils'
 import { creditToken, recordTokenTx, getClaimableAmount, getRemainingPool } from '../lib/token'
+import { isSocialPaymentEnabled } from '../lib/features'
 
 const token = new Hono<AppContext>()
+
+token.use('*', async (c, next) => {
+  if (!isSocialPaymentEnabled(c.env)) return c.notFound()
+  await next()
+})
 
 /** Resolve group ID or actorName to actual group ID */
 async function resolveGroupId(db: any, idOrSlug: string): Promise<string | null> {

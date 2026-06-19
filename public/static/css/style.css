@@ -100,6 +100,15 @@ a:hover {
     display: flex;
   }
 
+  .navbar-search {
+    width: 100%;
+  }
+
+  .navbar-search input {
+    flex: 1;
+    width: auto;
+  }
+
   .nav-toggle-input:checked + .nav-toggle-label span:nth-child(1) {
     transform: translateY(7px) rotate(45deg);
   }
@@ -122,10 +131,48 @@ a:hover {
 .navbar-menu {
   display: flex;
   gap: 20px;
+  align-items: center;
 }
 
 .navbar-menu a {
   color: #072;
+}
+
+.navbar-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.navbar-search input {
+  width: 150px;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #c7deb8;
+  border-radius: 3px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.navbar-search input:focus {
+  border-color: #9bc07d;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(155, 192, 125, 0.25);
+}
+
+.navbar-search button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #c7deb8;
+  border-radius: 3px;
+  background: #f0efe8;
+  color: #072;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.navbar-search button:hover {
+  background: #e8e7e0;
 }
 
 /* Container */
@@ -301,6 +348,43 @@ a:hover {
 .form-group textarea {
   min-height: 100px;
   resize: vertical;
+}
+
+.search-page h1 {
+  font-size: 20px;
+  font-weight: normal;
+  margin-bottom: 15px;
+}
+
+.search-page-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 15px;
+}
+
+.search-page-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #ccc;
+  font-size: 13px;
+}
+
+.search-page-form input:focus {
+  border-color: #9bc07d;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(155, 192, 125, 0.3);
+}
+
+.search-summary {
+  margin-bottom: 10px;
+  color: #666;
+}
+
+@media (max-width: 480px) {
+  .search-page-form {
+    flex-direction: column;
+  }
 }
 
 /* Avatar */

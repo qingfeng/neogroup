@@ -21,6 +21,10 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
         <span></span>
       </label>
       <div class="navbar-menu">
+        <form action="/search" method="get" class="navbar-search">
+          <input type="search" name="q" placeholder="搜索" aria-label="站内搜索" />
+          <button type="submit" aria-label="搜索">搜索</button>
+        </form>
         {user ? (
           <>
             <a href="/timeline">说说</a>
