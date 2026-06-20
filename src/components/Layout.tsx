@@ -72,6 +72,10 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title, description,
         )}
 
         <link rel="stylesheet" href="/static/css/style.css" />
+
+        {/* Google Analytics */}
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-09H7WQS4S9"></script>
+        <script dangerouslySetInnerHTML={{ __html: `window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'G-09H7WQS4S9');` }} />
       </head>
       <body>
         <a href="#main-content" class="skip-link">跳至主内容</a>
