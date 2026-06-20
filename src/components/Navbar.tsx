@@ -12,7 +12,10 @@ export const Navbar: FC<NavbarProps> = ({ user, unreadCount = 0, siteName }) => 
   return (
     <nav class="navbar" aria-label="主导航">
       <div class="navbar-brand">
-        <a href="/">{siteName || 'NeoGroup'}</a>
+        <a href="/" aria-label={`${siteName || 'NeoGroup'} 首页`}>
+          <img src="/static/img/logo.svg" alt="" class="navbar-logo" />
+          <span class="navbar-brand-text">{siteName || 'NeoGroup'}</span>
+        </a>
       </div>
       <input type="checkbox" id="nav-toggle" class="nav-toggle-input" aria-hidden="true" />
       <label for="nav-toggle" class="nav-toggle-label" aria-label="展开菜单">

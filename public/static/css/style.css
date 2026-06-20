@@ -129,9 +129,29 @@ a:hover {
 }
 
 .navbar-brand a {
-  font-size: 20px;
-  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
   color: #072;
+  line-height: 1;
+}
+
+.navbar-brand a:hover {
+  text-decoration: none;
+}
+
+.navbar-logo {
+  display: block;
+  width: 155px;
+  height: 40px;
+}
+
+.navbar-brand-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .navbar-menu {
