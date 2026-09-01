@@ -2,11 +2,14 @@ import type { Database } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { topics, comments, users, authProviders } from '../db/schema'
 import { generateId, mastodonUsername, ensureUniqueUsername } from '../lib/utils'
+import { resolveMastodonContextTarget, type MastodonContextTarget } from '../lib/mastodon-sync-target'
 
 const SYNC_COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
 interface MastodonStatus {
   id: string
+  uri?: string
+  url?: string
   content: string
   account: {
     id: string
@@ -28,16 +31,29 @@ interface MastodonContext {
 async function fetchMastodonReplies(
   domain: string,
   statusId: string
-): Promise<MastodonStatus[]> {
+): Promise<{ target: MastodonContextTarget; descendants: MastodonStatus[] }> {
+  const target = resolveMastodonContextTarget(domain, statusId)
   const response = await fetch(
-    `https://${domain}/api/v1/statuses/${statusId}/context`
+    `https://${target.domain}/api/v1/statuses/${target.statusId}/context`
   )
   if (!response.ok) {
     console.error(`Mastodon context API error: ${response.status}`)
-    return []
+    return { target, descendants: [] }
   }
   const context = (await response.json()) as MastodonContext
-  return context.descendants
+  return { target, descendants: context.descendants }
+}
+
+function storedStatusId(reply: MastodonStatus, target: MastodonContextTarget): string {
+  return target.storesCanonicalUri
+    ? (reply.uri || reply.url || reply.id)
+    : reply.id
+}
+
+function addStatusAliases(map: Map<string, string>, status: Pick<MastodonStatus, 'id' | 'uri' | 'url'>, commentId: string): void {
+  map.set(status.id, commentId)
+  if (status.uri) map.set(status.uri, commentId)
+  if (status.url) map.set(status.url, commentId)
 }
 
 export async function syncMastodonReplies(
@@ -61,7 +77,7 @@ export async function syncMastodonReplies(
   }
 
   // 2. Fetch replies from Mastodon
-  const descendants = await fetchMastodonReplies(mastodonDomain, mastodonStatusId)
+  const { target, descendants } = await fetchMastodonReplies(mastodonDomain, mastodonStatusId)
 
   if (descendants.length === 0) {
     await db.update(topics)
@@ -83,7 +99,10 @@ export async function syncMastodonReplies(
   )
 
   // 4. Filter to only new replies
-  const newReplies = descendants.filter(d => !existingStatusIds.has(d.id))
+  const newReplies = descendants.filter(d => {
+    const canonicalId = storedStatusId(d, target)
+    return !existingStatusIds.has(canonicalId) && !existingStatusIds.has(d.id) && !(d.uri && existingStatusIds.has(d.uri)) && !(d.url && existingStatusIds.has(d.url))
+  })
 
   if (newReplies.length === 0) {
     await db.update(topics)
@@ -103,18 +122,19 @@ export async function syncMastodonReplies(
   // Pre-generate IDs for new replies so we can resolve in_reply_to references among the batch
   const replyIdMap = new Map<string, string>()
   for (const reply of newReplies) {
-    replyIdMap.set(reply.id, generateId())
+    const commentId = generateId()
+    addStatusAliases(replyIdMap, reply, commentId)
   }
 
   // 6. Process each new reply
   const now = new Date()
   for (const reply of newReplies) {
-    const userId = await getOrCreateMastodonUser(db, reply.account, mastodonDomain)
+    const userId = await getOrCreateMastodonUser(db, reply.account, target.domain)
     const commentId = replyIdMap.get(reply.id)!
 
     // Resolve replyToId
     let replyToId: string | null = null
-    if (reply.in_reply_to_id && reply.in_reply_to_id !== mastodonStatusId) {
+    if (reply.in_reply_to_id && reply.in_reply_to_id !== target.rootStatusId) {
       replyToId = statusToCommentId.get(reply.in_reply_to_id)
         ?? replyIdMap.get(reply.in_reply_to_id)
         ?? null
@@ -128,13 +148,13 @@ export async function syncMastodonReplies(
       userId,
       content: reply.content,
       replyToId,
-      mastodonStatusId: reply.id,
-      mastodonDomain,
+      mastodonStatusId: storedStatusId(reply, target),
+      mastodonDomain: target.domain,
       createdAt,
       updatedAt: createdAt,
     })
 
-    statusToCommentId.set(reply.id, commentId)
+    addStatusAliases(statusToCommentId, reply, commentId)
   }
 
   // 7. Update topic timestamps
@@ -235,7 +255,7 @@ export async function syncCommentReplies(
   }
 
   // 2. Fetch replies from Mastodon
-  const descendants = await fetchMastodonReplies(mastodonDomain, mastodonStatusId)
+  const { target, descendants } = await fetchMastodonReplies(mastodonDomain, mastodonStatusId)
 
   if (descendants.length === 0) {
     await db.update(comments)
@@ -257,7 +277,10 @@ export async function syncCommentReplies(
   )
 
   // 4. Filter to only new replies
-  const newReplies = descendants.filter(d => !existingStatusIds.has(d.id))
+  const newReplies = descendants.filter(d => {
+    const canonicalId = storedStatusId(d, target)
+    return !existingStatusIds.has(canonicalId) && !existingStatusIds.has(d.id) && !(d.uri && existingStatusIds.has(d.uri)) && !(d.url && existingStatusIds.has(d.url))
+  })
 
   if (newReplies.length === 0) {
     await db.update(comments)
@@ -275,22 +298,24 @@ export async function syncCommentReplies(
   }
   // Map the parent comment's status ID to its comment ID
   statusToCommentId.set(mastodonStatusId, parentCommentId)
+  statusToCommentId.set(target.rootStatusId, parentCommentId)
 
   // Pre-generate IDs for new replies so we can resolve in_reply_to references among the batch
   const replyIdMap = new Map<string, string>()
   for (const reply of newReplies) {
-    replyIdMap.set(reply.id, generateId())
+    const commentId = generateId()
+    addStatusAliases(replyIdMap, reply, commentId)
   }
 
   // 6. Process each new reply
   const now = new Date()
   for (const reply of newReplies) {
-    const userId = await getOrCreateMastodonUser(db, reply.account, mastodonDomain)
+    const userId = await getOrCreateMastodonUser(db, reply.account, target.domain)
     const commentId = replyIdMap.get(reply.id)!
 
     // Resolve replyToId - default to parent comment if direct reply
     let replyToId: string | null = parentCommentId
-    if (reply.in_reply_to_id && reply.in_reply_to_id !== mastodonStatusId) {
+    if (reply.in_reply_to_id && reply.in_reply_to_id !== target.rootStatusId) {
       replyToId = statusToCommentId.get(reply.in_reply_to_id)
         ?? replyIdMap.get(reply.in_reply_to_id)
         ?? parentCommentId
@@ -304,13 +329,13 @@ export async function syncCommentReplies(
       userId,
       content: reply.content,
       replyToId,
-      mastodonStatusId: reply.id,
-      mastodonDomain,
+      mastodonStatusId: storedStatusId(reply, target),
+      mastodonDomain: target.domain,
       createdAt,
       updatedAt: createdAt,
     })
 
-    statusToCommentId.set(reply.id, commentId)
+    addStatusAliases(statusToCommentId, reply, commentId)
   }
 
   // 7. Update comment sync timestamp
