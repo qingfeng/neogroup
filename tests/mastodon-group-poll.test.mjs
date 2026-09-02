@@ -51,6 +51,10 @@ test('parses Mastodon actor URIs for group mention polling', () => {
     JSON.parse(JSON.stringify(parseMastodonActor('https://mastodon.social/users/asahi001'))),
     { domain: 'mastodon.social', acct: 'asahi001' },
   )
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(parseMastodonActor('https://mstdn.jp/@qingfeng'))),
+    { domain: 'mstdn.jp', acct: 'qingfeng' },
+  )
 })
 
 test('detects Mastodon mentions for a local group actor', () => {

@@ -933,6 +933,15 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
+function extractUsername(actorUri: string): string {
+  try {
+    const url = new URL(actorUri)
+    return url.pathname.split('/').filter(Boolean).at(-1)?.replace(/^@/, '') || actorUri
+  } catch {
+    return actorUri
+  }
+}
+
 export async function getOrCreateRemoteUser(db: Database, actorUri: string, actorData?: any): Promise<typeof users.$inferSelect | undefined> {
   const preferredUsername = actorData?.preferredUsername || actorData?.name || extractUsername(actorUri)
   let actorDomain: string | null = null

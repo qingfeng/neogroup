@@ -110,15 +110,18 @@ function candidateFromAuthProvider(row: { providerId: string; metadata: string |
 
   let domain = actor?.domain || null
   const providerParts = row.providerId.split('@')
+  const providerDomain = providerParts.length >= 2 ? providerParts.at(-1) : null
   if (!domain && providerParts.length >= 2) {
-    domain = providerParts.at(-1) || null
+    domain = providerDomain || null
   }
 
   const acct = actor?.acct || metadata.username || metadata.acct?.split('@')[0]
   if (!domain || !acct) return null
 
   const providerAccountId = providerParts.length >= 2 ? providerParts[0] : undefined
-  const accountId = metadata.id || (/^\d+$/.test(providerAccountId || '') ? providerAccountId : undefined)
+  const accountId = providerDomain === domain
+    ? (metadata.id || (/^\d+$/.test(providerAccountId || '') ? providerAccountId : undefined))
+    : undefined
   const actorUri = metadata.uri || `https://${domain}/users/${acct}`
 
   return {
