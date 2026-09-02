@@ -942,10 +942,35 @@ function extractUsername(actorUri: string): string {
   }
 }
 
+async function findMastodonUserForActor(db: Database, preferredUsername: string | null, actorDomain: string | null) {
+  if (!preferredUsername || !actorDomain) return null
+
+  const mastodonAuth = await db.select({ userId: authProviders.userId, metadata: authProviders.metadata, providerId: authProviders.providerId })
+    .from(authProviders)
+    .where(eq(authProviders.providerType, 'mastodon'))
+    .limit(500)
+
+  for (const auth of mastodonAuth) {
+    try {
+      const meta = auth.metadata ? JSON.parse(auth.metadata) as { username?: string; acct?: string; uri?: string; url?: string } : {}
+      const providerDomain = auth.providerId.split('@').at(-1)
+      const metaDomain = meta.uri ? new URL(meta.uri).host : (meta.url ? new URL(meta.url).host : providerDomain)
+      const metaUsername = meta.username || meta.acct?.split('@')[0]
+      if (metaDomain === actorDomain && metaUsername === preferredUsername) {
+        const userResult = await db.select().from(users).where(eq(users.id, auth.userId)).limit(1)
+        if (userResult.length > 0) return userResult[0]
+      }
+    } catch { /* ignore parse errors */ }
+  }
+
+  return null
+}
+
 export async function getOrCreateRemoteUser(db: Database, actorUri: string, actorData?: any): Promise<typeof users.$inferSelect | undefined> {
   const preferredUsername = actorData?.preferredUsername || actorData?.name || extractUsername(actorUri)
   let actorDomain: string | null = null
   try { actorDomain = new URL(actorUri).host } catch { /* ignore */ }
+  const mastodonUser = await findMastodonUserForActor(db, preferredUsername, actorDomain)
 
   // 1) existing activitypub mapping
   const existingAuth = await db.select()
@@ -954,7 +979,15 @@ export async function getOrCreateRemoteUser(db: Database, actorUri: string, acto
     .limit(1)
   if (existingAuth.length > 0) {
     const userResult = await db.select().from(users).where(eq(users.id, existingAuth[0].userId)).limit(1)
-    if (userResult.length > 0) return userResult[0]
+    if (userResult.length > 0) {
+      if (mastodonUser && userResult[0].username.startsWith('ap_user_')) {
+        await db.update(authProviders)
+          .set({ userId: mastodonUser.id })
+          .where(eq(authProviders.id, existingAuth[0].id))
+        return mastodonUser
+      }
+      return userResult[0]
+    }
   }
 
   // 2) match by users.username (username@domain)
@@ -966,21 +999,7 @@ export async function getOrCreateRemoteUser(db: Database, actorUri: string, acto
 
   // 3) match existing mastodon auth provider with same domain+username
   if (preferredUsername && actorDomain) {
-    const mastodonAuth = await db.select({ userId: authProviders.userId, metadata: authProviders.metadata, providerId: authProviders.providerId })
-      .from(authProviders)
-      .where(eq(authProviders.providerType, 'mastodon'))
-      .limit(200) // small scan
-
-    for (const auth of mastodonAuth) {
-      try {
-        const meta = auth.metadata ? JSON.parse(auth.metadata) as { username?: string } : {}
-        const domain = auth.providerId.split('@')[1]
-        if (domain === actorDomain && meta.username === preferredUsername) {
-          const userResult = await db.select().from(users).where(eq(users.id, auth.userId)).limit(1)
-          if (userResult.length > 0) return userResult[0]
-        }
-      } catch { /* ignore parse errors */ }
-    }
+    if (mastodonUser) return mastodonUser
   }
 
   // 2. Create new user
@@ -1003,8 +1022,9 @@ export async function getOrCreateRemoteUser(db: Database, actorUri: string, acto
       avatarUrl = actorData.icon.url
     }
   } else {
-    username = `ap_user_${Date.now()}`
-    displayName = 'Fediverse User'
+    const domain = actorDomain || 'fediverse'
+    username = `${preferredUsername || `ap_user_${Date.now()}`}@${domain}`
+    displayName = preferredUsername || 'Fediverse User'
   }
 
   // Check username uniqueness and append suffix if needed
