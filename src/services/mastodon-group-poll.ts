@@ -1,4 +1,4 @@
-import { desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Database } from '../db'
 import { authProviders, groups, groupFollowers, topics } from '../db/schema'
 import type { Bindings } from '../types'
@@ -134,12 +134,19 @@ function candidateFromAuthProvider(row: { providerId: string; metadata: string |
   }
 }
 
-async function hasExistingTopic(db: Database, status: MastodonStatus): Promise<boolean> {
-  const ids = [status.uri, status.url, status.id].filter(Boolean)
+export function remoteStatusIds(status: Pick<MastodonStatus, 'uri' | 'url' | 'id'>): string[] {
+  return [status.uri, status.url, status.id].filter(Boolean)
+}
+
+async function hasExistingTopic(db: Database, groupId: string, status: MastodonStatus): Promise<boolean> {
+  const ids = remoteStatusIds(status)
   const existing = await db
     .select({ id: topics.id })
     .from(topics)
-    .where(inArray(topics.mastodonStatusId, ids))
+    .where(and(
+      eq(topics.groupId, groupId),
+      inArray(topics.mastodonStatusId, ids)
+    ))
     .limit(1)
   return existing.length > 0
 }
@@ -233,7 +240,7 @@ export async function pollMastodonGroupMentions(
 
         for (const group of candidate.groups) {
           if (!mentionsGroup(status, group.actorName, host)) continue
-          if (await hasExistingTopic(db, status)) continue
+          if (await hasExistingTopic(db, group.id, status)) continue
 
           const userId = await getOrCreateMastodonUser(db, status.account, candidate.domain)
           const topicId = generateId()
@@ -250,7 +257,14 @@ export async function pollMastodonGroupMentions(
             mastodonDomain: 'activitypub_origin',
             createdAt,
             updatedAt: createdAt,
-          })
+          }).onConflictDoNothing()
+
+          const inserted = await db
+            .select({ id: topics.id })
+            .from(topics)
+            .where(eq(topics.id, topicId))
+            .limit(1)
+          if (inserted.length === 0) continue
 
           topicsCreated++
           await boostToGroupFollowers(db, group.actorName, status.uri || status.url || status.id, baseUrl)

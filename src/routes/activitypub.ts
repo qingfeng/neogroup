@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, desc, sql, and } from 'drizzle-orm'
+import { eq, desc, sql, and, inArray } from 'drizzle-orm'
 import type { AppContext } from '../types'
 import { authProviders, users, apFollowers, topics, comments, groups, groupFollowers, groupActivities, remoteGroups, groupMembers, notifications, topicLikes, commentLikes, groupTokens, remoteTokens } from '../db/schema'
 import { generateId, stripHtml, truncate, now, isNostrEnabled } from '../lib/utils'
@@ -40,6 +40,56 @@ function escapeHtml(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+function getApObjectIds(object: Record<string, any>): string[] {
+  const ids: string[] = []
+  const add = (value: unknown) => {
+    if (typeof value === 'string' && value) ids.push(value)
+  }
+
+  add(object.id)
+  add(object.url)
+  if (Array.isArray(object.url)) {
+    for (const url of object.url) {
+      if (typeof url === 'string') add(url)
+      else if (url && typeof url === 'object') add((url as Record<string, unknown>).href)
+    }
+  }
+
+  return Array.from(new Set(ids))
+}
+
+async function findTopicByRemoteObject(
+  db: ReturnType<typeof import('../db').createDb>,
+  groupId: string,
+  objectIds: string[]
+) {
+  if (objectIds.length === 0) return null
+  const existing = await db.select({ id: topics.id })
+    .from(topics)
+    .where(and(
+      eq(topics.groupId, groupId),
+      inArray(topics.mastodonStatusId, objectIds)
+    ))
+    .limit(1)
+  return existing[0] || null
+}
+
+async function findCommentByRemoteObject(
+  db: ReturnType<typeof import('../db').createDb>,
+  topicId: string,
+  objectIds: string[]
+) {
+  if (objectIds.length === 0) return null
+  const existing = await db.select({ id: comments.id })
+    .from(comments)
+    .where(and(
+      eq(comments.topicId, topicId),
+      inArray(comments.mastodonStatusId, objectIds)
+    ))
+    .limit(1)
+  return existing[0] || null
 }
 
 // Resolve AP username to local user by users.username (unique)
@@ -689,6 +739,8 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
       const content = obj.content || ''
       const actorUri = activity.actor
       const inReplyTo = obj.inReplyTo as string | undefined
+      const noteObjectIds = getApObjectIds(obj)
+      if (noteObjectIds.length === 0 && noteId) noteObjectIds.push(noteId)
 
       // Fetch the remote actor info
       const remoteActor = await fetchActor(actorUri)
@@ -739,6 +791,12 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
             .limit(1)
 
           if (topicResult.length > 0) {
+            const existingComment = await findCommentByRemoteObject(db, topicId, noteObjectIds)
+            if (existingComment) {
+              console.log('[AP GroupInbox] Skipping duplicate comment from reply:', { commentId: existingComment.id, topicId, noteId })
+              return c.json({ status: 'accepted' }, 202)
+            }
+
             // Create comment from reply
             const commentId = generateId()
             const commentNow = new Date()
@@ -754,7 +812,16 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
               mastodonDomain: 'activitypub_origin',
               createdAt: commentNow,
               updatedAt: commentNow,
-            })
+            }).onConflictDoNothing()
+
+            const insertedComment = await db.select({ id: comments.id })
+              .from(comments)
+              .where(eq(comments.id, commentId))
+              .limit(1)
+            if (insertedComment.length === 0) {
+              console.log('[AP GroupInbox] Skipping duplicate comment insert from reply:', { topicId, noteId })
+              return c.json({ status: 'accepted' }, 202)
+            }
 
             // Notify topic/comment owners (support remote actors)
             const topicOwner = await db.select({ userId: topics.userId })
@@ -812,6 +879,12 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
       const title = extractNoteTitle(obj, content)
       const fullContent = content
 
+      const existingTopic = await findTopicByRemoteObject(db, group.id, noteObjectIds)
+      if (existingTopic) {
+        console.log('[AP GroupInbox] Skipping duplicate topic from @mention:', { topicId: existingTopic.id, groupId: group.id, noteId })
+        return c.json({ status: 'accepted' }, 202)
+      }
+
       const topicId = generateId()
       const topicNow = new Date()
 
@@ -826,7 +899,16 @@ ap.post('/ap/groups/:actorName/inbox', async (c) => {
         mastodonDomain: 'activitypub_origin',
         createdAt: topicNow,
         updatedAt: topicNow,
-      })
+      }).onConflictDoNothing()
+
+      const insertedTopic = await db.select({ id: topics.id })
+        .from(topics)
+        .where(eq(topics.id, topicId))
+        .limit(1)
+      if (insertedTopic.length === 0) {
+        console.log('[AP GroupInbox] Skipping duplicate topic insert from @mention:', { groupId: group.id, noteId })
+        return c.json({ status: 'accepted' }, 202)
+      }
 
       console.log('[AP GroupInbox] Created topic from @mention:', { topicId, actorName, noteId })
 
@@ -1522,6 +1604,7 @@ ap.post('/ap/inbox', async (c) => {
             const noteContent = noteObject.content || ''
             const inReplyTo = noteObject.inReplyTo as string | undefined
             const noteId = noteObject.id
+            const noteObjectIds = getApObjectIds(noteObject)
 
             // Check if this is a reply to an existing topic
             if (inReplyTo) {
@@ -1563,6 +1646,12 @@ ap.post('/ap/inbox', async (c) => {
                   .limit(1)
 
                 if (topicResult.length > 0) {
+                  const existingComment = await findCommentByRemoteObject(db, topicId, noteObjectIds)
+                  if (existingComment) {
+                    console.log('[AP SharedInbox] Skipping duplicate comment from group mention:', { commentId: existingComment.id, topicId, noteId })
+                    continue
+                  }
+
                   // Create comment from reply
                   const commentId = generateId()
                   const commentNow = new Date()
@@ -1578,7 +1667,16 @@ ap.post('/ap/inbox', async (c) => {
                     mastodonDomain: 'activitypub_origin',
                     createdAt: commentNow,
                     updatedAt: commentNow,
-                  })
+                  }).onConflictDoNothing()
+
+                  const insertedComment = await db.select({ id: comments.id })
+                    .from(comments)
+                    .where(eq(comments.id, commentId))
+                    .limit(1)
+                  if (insertedComment.length === 0) {
+                    console.log('[AP SharedInbox] Skipping duplicate comment insert from group mention:', { topicId, noteId })
+                    continue
+                  }
 
                   // Notify topic/comment owners (support remote actor)
                   const actorIdLocal = author?.id || null
@@ -1630,6 +1728,12 @@ ap.post('/ap/inbox', async (c) => {
             }
 
             // Not a reply - create new topic
+            const existingTopic = await findTopicByRemoteObject(db, group.id, noteObjectIds)
+            if (existingTopic) {
+              console.log('[AP SharedInbox] Skipping duplicate topic from group mention:', { topicId: existingTopic.id, groupId: group.id, noteId })
+              continue
+            }
+
             console.log('[AP SharedInbox] Creating topic from group mention:', mentionedUsername)
             const title = extractNoteTitle(noteObject, noteContent)
 
@@ -1647,7 +1751,16 @@ ap.post('/ap/inbox', async (c) => {
               mastodonDomain: 'activitypub_origin',
               createdAt: topicNow,
               updatedAt: topicNow,
-            })
+            }).onConflictDoNothing()
+
+            const insertedTopic = await db.select({ id: topics.id })
+              .from(topics)
+              .where(eq(topics.id, topicId))
+              .limit(1)
+            if (insertedTopic.length === 0) {
+              console.log('[AP SharedInbox] Skipping duplicate topic insert from group mention:', { groupId: group.id, noteId })
+              continue
+            }
 
             console.log('[AP SharedInbox] Created topic from mention:', { topicId, groupId: group.id })
 
@@ -1727,17 +1840,13 @@ ap.post('/ap/inbox', async (c) => {
       const group = groupResult[0]
       const noteId = noteObject.id
       const noteContent = noteObject.content || ''
+      const noteObjectIds = getApObjectIds(noteObject)
 
       // Dedup check
-      if (noteId) {
-        const existing = await db.select({ id: topics.id })
-          .from(topics)
-          .where(eq(topics.mastodonStatusId, noteId))
-          .limit(1)
-        if (existing.length > 0) {
-          console.log('[AP SharedInbox] Skipping duplicate note (audience):', noteId)
-          return c.json({ status: 'accepted' }, 202)
-        }
+      const existingTopic = await findTopicByRemoteObject(db, group.id, noteObjectIds)
+      if (existingTopic) {
+        console.log('[AP SharedInbox] Skipping duplicate note (audience):', { topicId: existingTopic.id, groupId: group.id, noteId })
+        return c.json({ status: 'accepted' }, 202)
       }
 
       const remoteActorUri = activity.actor
@@ -1780,6 +1889,12 @@ ap.post('/ap/inbox', async (c) => {
             .limit(1)
 
           if (topicResult.length > 0) {
+            const existingComment = await findCommentByRemoteObject(db, topicId, noteObjectIds)
+            if (existingComment) {
+              console.log('[AP SharedInbox] Skipping duplicate audience reply:', { commentId: existingComment.id, topicId, noteId })
+              return c.json({ status: 'accepted' }, 202)
+            }
+
             const commentId = generateId()
             const commentNow = new Date()
             await db.insert(comments).values({
@@ -1792,7 +1907,16 @@ ap.post('/ap/inbox', async (c) => {
               mastodonDomain: 'activitypub_origin',
               createdAt: commentNow,
               updatedAt: commentNow,
-            })
+            }).onConflictDoNothing()
+
+            const insertedComment = await db.select({ id: comments.id })
+              .from(comments)
+              .where(eq(comments.id, commentId))
+              .limit(1)
+            if (insertedComment.length === 0) {
+              console.log('[AP SharedInbox] Skipping duplicate audience reply insert:', { topicId, noteId })
+              return c.json({ status: 'accepted' }, 202)
+            }
             await db.update(topics).set({ updatedAt: commentNow }).where(eq(topics.id, topicId))
             console.log('[AP SharedInbox] Created comment from audience reply:', { commentId, topicId, noteId })
             return c.json({ status: 'accepted' }, 202)
@@ -1816,7 +1940,16 @@ ap.post('/ap/inbox', async (c) => {
         mastodonDomain: 'activitypub_origin',
         createdAt: topicNow,
         updatedAt: topicNow,
-      })
+      }).onConflictDoNothing()
+
+      const insertedTopic = await db.select({ id: topics.id })
+        .from(topics)
+        .where(eq(topics.id, topicId))
+        .limit(1)
+      if (insertedTopic.length === 0) {
+        console.log('[AP SharedInbox] Skipping duplicate audience topic insert:', { groupId: group.id, noteId })
+        return c.json({ status: 'accepted' }, 202)
+      }
 
       console.log('[AP SharedInbox] Created topic from audience:', { topicId, groupId: group.id, noteId })
 

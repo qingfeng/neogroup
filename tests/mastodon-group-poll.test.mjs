@@ -58,13 +58,21 @@ test('parses Mastodon actor URIs for group mention polling', () => {
 })
 
 test('detects Mastodon mentions for a local group actor', () => {
-  const { mentionsGroup, titleFromStatus } = loadModule('src/services/mastodon-group-poll.ts')
+  const { mentionsGroup, remoteStatusIds, titleFromStatus } = loadModule('src/services/mastodon-group-poll.ts')
 
   const status = {
+    id: '117200457809757229',
+    uri: 'https://mstdn.jp/users/qingfeng/statuses/117200457809757229',
+    url: 'https://mstdn.jp/@qingfeng/117200457809757229',
     mentions: [{ acct: 'board@neogrp.club', username: 'board', url: 'https://neogrp.club/group/AbjyyyMQgftC' }],
     content: '<p><span>@<span>board</span></span> 最近香港天气如何？</p>',
   }
 
   assert.equal(mentionsGroup(status, 'board', 'neogrp.club'), true)
   assert.equal(titleFromStatus(status.content), '最近香港天气如何？')
+  assert.deepEqual(JSON.parse(JSON.stringify(remoteStatusIds(status))), [
+    'https://mstdn.jp/users/qingfeng/statuses/117200457809757229',
+    'https://mstdn.jp/@qingfeng/117200457809757229',
+    '117200457809757229',
+  ])
 })
