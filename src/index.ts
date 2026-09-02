@@ -890,7 +890,7 @@ export default {
     try {
       const { pollMastodonGroupMentions } = await import('./services/mastodon-group-poll')
       const result = await pollMastodonGroupMentions(env, db)
-      console.log(`[Cron] Mastodon group mention poll checked ${result.followersChecked} followers and created ${result.topicsCreated} topics`)
+      console.log(`[Cron] Mastodon group mention poll checked ${result.followersChecked} followers, ${result.knownAccountsChecked} known accounts and created ${result.topicsCreated} topics`)
     } catch (e) {
       console.error('[Cron] Mastodon group mention poll failed:', e)
     }
