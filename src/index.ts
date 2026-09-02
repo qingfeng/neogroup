@@ -887,6 +887,14 @@ export default {
       console.error('[Cron] Mastodon replies sync failed:', e)
     }
 
+    try {
+      const { pollMastodonGroupMentions } = await import('./services/mastodon-group-poll')
+      const result = await pollMastodonGroupMentions(env, db)
+      console.log(`[Cron] Mastodon group mention poll checked ${result.followersChecked} followers and created ${result.topicsCreated} topics`)
+    } catch (e) {
+      console.error('[Cron] Mastodon group mention poll failed:', e)
+    }
+
     if (!isNostrEnabled(env)) return
 
     // Poll followed Nostr users (run first to avoid relay rate-limiting from 55+ community polls)
