@@ -876,10 +876,18 @@ export default {
   fetch: app.fetch,
   // Cron: NIP-72 community poll + Nostr follow sync
   scheduled: async (_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) => {
-    if (!isNostrEnabled(env)) return
-
     const { createDb } = await import('./db')
     const db = createDb(env.DB)
+
+    try {
+      const { syncDueMastodonReplies } = await import('./services/mastodon-sync')
+      const result = await syncDueMastodonReplies(db)
+      console.log(`[Cron] Mastodon replies sync checked ${result.topicsChecked} topics and ${result.commentsChecked} comments`)
+    } catch (e) {
+      console.error('[Cron] Mastodon replies sync failed:', e)
+    }
+
+    if (!isNostrEnabled(env)) return
 
     // Poll followed Nostr users (run first to avoid relay rate-limiting from 55+ community polls)
     try {

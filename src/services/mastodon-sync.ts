@@ -1,10 +1,17 @@
 import type { Database } from '../db'
-import { eq, and } from 'drizzle-orm'
+import { asc, eq, and, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { topics, comments, users, authProviders } from '../db/schema'
 import { generateId, mastodonUsername, ensureUniqueUsername } from '../lib/utils'
 import { resolveMastodonContextTarget, type MastodonContextTarget } from '../lib/mastodon-sync-target'
 
 const SYNC_COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
+const DEFAULT_CRON_TOPIC_LIMIT = 20
+const DEFAULT_CRON_COMMENT_LIMIT = 20
+
+export interface MastodonCronSyncResult {
+  topicsChecked: number
+  commentsChecked: number
+}
 
 interface MastodonStatus {
   id: string
@@ -342,4 +349,74 @@ export async function syncCommentReplies(
   await db.update(comments)
     .set({ mastodonSyncedAt: now })
     .where(eq(comments.id, parentCommentId))
+}
+
+export async function syncDueMastodonReplies(
+  db: Database,
+  options: { topicLimit?: number; commentLimit?: number } = {},
+): Promise<MastodonCronSyncResult> {
+  const topicLimit = options.topicLimit ?? DEFAULT_CRON_TOPIC_LIMIT
+  const commentLimit = options.commentLimit ?? DEFAULT_CRON_COMMENT_LIMIT
+  const dueBefore = new Date(Date.now() - SYNC_COOLDOWN_MS)
+
+  const dueTopics = await db
+    .select({
+      id: topics.id,
+      mastodonStatusId: topics.mastodonStatusId,
+      mastodonDomain: topics.mastodonDomain,
+    })
+    .from(topics)
+    .where(and(
+      isNotNull(topics.mastodonStatusId),
+      isNotNull(topics.mastodonDomain),
+      or(
+        lt(topics.mastodonSyncedAt, dueBefore),
+        isNull(topics.mastodonSyncedAt),
+      ),
+    ))
+    .orderBy(asc(topics.mastodonSyncedAt), asc(topics.updatedAt))
+    .limit(topicLimit)
+
+  let topicsChecked = 0
+  for (const topic of dueTopics) {
+    if (!topic.mastodonStatusId || !topic.mastodonDomain) continue
+    try {
+      await syncMastodonReplies(db, topic.id, topic.mastodonDomain, topic.mastodonStatusId)
+      topicsChecked++
+    } catch (e) {
+      console.error(`[Cron] Mastodon topic sync failed for ${topic.id}:`, e)
+    }
+  }
+
+  const dueComments = await db
+    .select({
+      id: comments.id,
+      topicId: comments.topicId,
+      mastodonStatusId: comments.mastodonStatusId,
+      mastodonDomain: comments.mastodonDomain,
+    })
+    .from(comments)
+    .where(and(
+      isNotNull(comments.mastodonStatusId),
+      isNotNull(comments.mastodonDomain),
+      or(
+        lt(comments.mastodonSyncedAt, dueBefore),
+        isNull(comments.mastodonSyncedAt),
+      ),
+    ))
+    .orderBy(asc(comments.mastodonSyncedAt), asc(comments.updatedAt))
+    .limit(commentLimit)
+
+  let commentsChecked = 0
+  for (const comment of dueComments) {
+    if (!comment.mastodonStatusId || !comment.mastodonDomain) continue
+    try {
+      await syncCommentReplies(db, comment.topicId, comment.id, comment.mastodonDomain, comment.mastodonStatusId)
+      commentsChecked++
+    } catch (e) {
+      console.error(`[Cron] Mastodon comment sync failed for ${comment.id}:`, e)
+    }
+  }
+
+  return { topicsChecked, commentsChecked }
 }
