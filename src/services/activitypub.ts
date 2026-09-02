@@ -221,6 +221,10 @@ export async function ensureGroupKeyPair(db: Database, groupId: string): Promise
     .where(eq(groups.id, groupId))
     .limit(1)
 
+  if (group.length === 0) {
+    throw new Error(`Group not found: ${groupId}`)
+  }
+
   if (group.length > 0 && group[0].apPublicKey && group[0].apPrivateKey) {
     return { publicKeyPem: group[0].apPublicKey, privateKeyPem: group[0].apPrivateKey }
   }
@@ -243,18 +247,7 @@ export async function announceToGroupFollowers(
   noteObject: Record<string, unknown>,
   baseUrl: string
 ): Promise<void> {
-  // Get group's private key
-  const groupData = await db.select({ apPrivateKey: groups.apPrivateKey })
-    .from(groups)
-    .where(eq(groups.id, groupId))
-    .limit(1)
-
-  if (groupData.length === 0 || !groupData[0].apPrivateKey) {
-    console.log('[AP Announce] Group has no private key:', groupId)
-    return
-  }
-
-  const privateKeyPem = groupData[0].apPrivateKey
+  const { privateKeyPem } = await ensureGroupKeyPair(db, groupId)
   const groupActorUrl = `${baseUrl}/ap/groups/${groupActorName}`
 
   // Get all followers
